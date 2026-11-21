@@ -5,18 +5,33 @@
 //! classify → spawn extractor → pick stream → generic HTTP download → verify,
 //! independent of YouTube's own bot walls.
 
-use std::path::{Path, PathBuf};
+#[cfg(unix)]
+use std::path::Path;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+#[cfg(unix)]
+use std::time::Duration;
+// Unix-gated tests use these; keep the windows build warning-free (-D warnings).
+#[cfg(unix)]
+use std::path::PathBuf;
+#[cfg(unix)]
+use std::time::Instant;
 
-use engine_core::config::{EngineConfig, HashAlgo};
+use engine_core::config::EngineConfig;
+#[cfg(unix)]
+use engine_core::config::HashAlgo;
 use engine_core::manager::DownloadManager;
+#[cfg(unix)]
 use engine_core::task::compute_hash_blocking;
 use engine_http::ReqwestBackend;
+#[cfg(unix)]
 use engine_testserver::{content_pattern, Behavior, TestServer};
 
+// Unix-gated stub tests use these; gating keeps the windows build warning-free
+// (-D warnings) — watch_url_without_extractor… is the only windows-compiled test.
+#[cfg(unix)]
 const KIB: usize = 1024;
 
+#[cfg(unix)]
 fn engine_cfg(data: &Path, out: &Path, extractor: &Path) -> EngineConfig {
     let mut c = EngineConfig {
         data_dir: data.to_path_buf(),

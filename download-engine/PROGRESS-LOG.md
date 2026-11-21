@@ -265,3 +265,4 @@
   #[ignore]d lock-holder never ran — args added (same as unix variant).
 - All three are test/fixture-level; no product code change except the honest
   LockError::Held(0) Display wording. Suite 170/0, clippy clean.
+- **2026-11-21 17:05 [watchdog]** GREEN: fmt+clippy clean, 170 tests passed
