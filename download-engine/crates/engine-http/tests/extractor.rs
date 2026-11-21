@@ -133,6 +133,11 @@ async fn watch_url_without_extractor_fails_with_guidance() {
 /// process as --add-headers — the standard remedy for YouTube's bot wall. The stub
 /// dumps its argv to a file; the test asserts the cookie is present on the extractor
 /// command line.
+///
+/// Unix-only FIXTURE (the engine behavior is platform-independent): the stub is a
+/// `#!/bin/sh` script. Windows coverage needs a stub that can dump argv and a
+/// tasklist-based liveness check — tracked in KNOWN-ISSUES (windows CI gate).
+#[cfg(unix)]
 #[tokio::test]
 async fn extractor_receives_user_cookies_as_add_headers() {
     let dir = tempfile::tempdir().unwrap();
@@ -195,6 +200,10 @@ async fn extractor_receives_user_cookies_as_add_headers() {
 /// Audit D1 evidence: a hung extractor (sleeps forever) must (a) surface a TIMEOUT
 /// error honestly and (b) be KILLED — kill_on_drop(true) — instead of leaking an
 /// orphan process per timed-out add.
+///
+/// Unix-only FIXTURE (`#!/bin/sh` stub + /proc PID liveness) — see the cookies test
+/// note; Windows coverage tracked in KNOWN-ISSUES (windows CI gate).
+#[cfg(unix)]
 #[tokio::test]
 async fn hung_extractor_times_out_and_the_process_is_killed() {
     let dir = tempfile::tempdir().unwrap();

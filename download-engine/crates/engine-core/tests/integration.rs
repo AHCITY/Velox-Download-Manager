@@ -798,7 +798,11 @@ async fn destination_preflight_and_missing_file_detection() {
     if let Some(_id) = err {
         // real size passed (expected); drop it and continue with (c)
     }
-    let check = crate_manager_preflight(&mgr, "/proc/definitely-not-a-dir-velox/dest");
+    // Cross-platform unavailable destination: a path UNDER an existing FILE —
+    // create_dir_all fails on every OS (the /proc trick only worked on Linux).
+    let blocker = data.join("blocker-file");
+    std::fs::write(&blocker, b"").unwrap();
+    let check = crate_manager_preflight(&mgr, blocker.join("dest").to_str().unwrap());
     assert!(check.is_err(), "unavailable destination must fail");
     let msg = check.err().unwrap().message;
     assert!(

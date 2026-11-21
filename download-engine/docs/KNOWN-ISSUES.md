@@ -27,17 +27,24 @@ docs/ROOT-CAUSE-REPORT.md and docs/ENGINE-AUDIT-2026-11-21.md, not here.
 
 ## Open work (tracked, not defects)
 
-6. **GitHub sync blocked**: no remote configured, no `gh` CLI, no credentials in this
-   sandbox. All commits are local; push requires the user's auth (paused per user
-   instruction). Notify-on-return.
+6. **~~GitHub sync blocked~~ RESOLVED (2026-11-21)**: AHCITY/Velox-Download-Manager
+   live; every verified milestone pushed; v0.1.0 installer published to Releases
+   (round-trip hash verified).
 7. **Browser integration (Phase 9 mission)**: gate checklist not yet fully re-run this
    cycle; native-messaging host + extension design drafted in
    docs/ENGINE_ARCHITECTURE_REVIEW.md + external-audit ideas; implementation starts
    only after the engine acceptance gate.
-8. **UrlAdapter trait refactor**: proposed (architecture review §3), not yet merged.
-9. **Windows 2026-11-21 rebuild**: in progress at commit time — installers to be
-   produced and SHA256SUMS refreshed once the cross-build lands on a clean disk
-   (two ENOSPC interruptions documented in PROGRESS-LOG.md).
+8. **~~UrlAdapter trait refactor~~ DONE (2026-11-21)**: merged at 728c5a2 (roadmap 3).
+9. **~~Windows 2026-11-21 rebuild~~ DONE (2026-11-21)**: installers + SHA256SUMS
+   published to GitHub Releases v0.1.0.
 10. **Nightly watchdog died with sandbox recycles** (processes don't survive); it is
     relaunched manually at end of each working turn. No cron service exists in this
     runtime (documented 2026-11-20).
+11. **Windows CI gate red — 5 pre-existing Windows-only test failures** (first-ever
+    real Windows run exposed them after workflows moved to the repo root, 2026-11-21).
+    Fixed in a65f6f2+ : preflight tests used Linux-only `/proc` paths (replaced with a
+    cross-platform blocker-file); crash-resume kill used a fixed 150 ms sleep that can
+    precede process startup on Windows (now polls for the manifest row); extractor
+    tests are `#[cfg(unix)]`-gated pending Windows stubs (powershell stub + tasklist
+    liveness). GATE IS NOT GREEN until a windows.yml run passes — no Windows-support
+    claim may be made before that (windows.yml header rule).

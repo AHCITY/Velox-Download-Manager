@@ -239,7 +239,21 @@ async fn kill_before_first_checkpoint_resume_restarts_cleanly() {
     let server = TestServer::start(b);
 
     let mut child = spawn_download(&server.url("/file"), &out, &home);
-    tokio::time::sleep(Duration::from_millis(150)).await; // likely before any durable checkpoint
+    // Kill as early as possible once the manifest row exists (the row is inserted
+    // before any byte checkpoint — still "before the first checkpoint"). A fixed
+    // 150 ms sleep was racy on Windows, where process startup can outlast the window
+    // and the kill landed before the row was even written (CI failure 2026-11-21).
+    let deadline = std::time::Instant::now() + Duration::from_secs(15);
+    loop {
+        if !db(&home).list_downloads().unwrap().is_empty() {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "manifest row never appeared"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
     child.kill().await.unwrap();
     let _ = child.wait().await;
     check_manifest_consistency(&home);

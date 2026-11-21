@@ -225,3 +225,20 @@
   failures (preflight destination, extractor stubs, crash-resume kill) surfaced by the
   first real Windows run; desktop job correctly skipped (dispatch-only; app/ sources
   not in repo). Windows test fixes = next work item.
+
+## 2026-11-21 ~17:35 (windows CI gate fixes)
+- 5 pre-existing Windows-only failures from the first real windows.yml run:
+  1-2. preflight "unavailable destination" tests used /proc paths — Linux-only trick
+     (Windows creates C:\proc\... happily). Replaced with a cross-platform blocker:
+     a path UNDER an existing FILE (create_dir_all fails on every OS). [manager.rs
+     preflight_tests + tests/integration.rs]
+  3. crash-resume kill_before_first_checkpoint used a fixed 150 ms sleep — on Windows
+     process startup can outlast it, so the kill landed before the manifest row was
+     written. Now polls for row existence (up to 15 s) then kills immediately — same
+     intent, deterministic on every OS. [engine-cli/tests/crash_resume.rs]
+  4-5. extractor stub tests are Unix-only fixtures (#!/bin/sh stubs, /proc/{pid}
+     liveness) — gated #[cfg(unix)] with KNOWN-ISSUES #11 tracking Windows equivalents
+     (powershell stub + tasklist liveness).
+- KNOWN-ISSUES: #6/#8/#9 closed (GitHub sync, UrlAdapter, Windows rebuild); #11 added
+  (windows gate not green until windows.yml passes).
+- Local suite still 170/0; pushed for CI re-run on both platforms.

@@ -1119,11 +1119,14 @@ mod preflight_tests {
 
     #[test]
     fn preflight_distinguishes_unavailable_destination() {
-        let e = DownloadManager::preflight_checked(
-            std::path::Path::new("/proc/velox-cannot-create-this/dest"),
-            Some(1024),
-        )
-        .unwrap_err();
+        // Cross-platform "unavailable destination": a path UNDER an existing FILE.
+        // create_dir_all must fail on every OS (ENOTDIR / path-not-found). The old
+        // /proc trick only worked on Linux — Windows happily creates C:\proc\... .
+        let dir = tempfile::tempdir().unwrap();
+        let blocker = dir.path().join("blocker");
+        std::fs::write(&blocker, b"").unwrap();
+        let dest = blocker.join("sub");
+        let e = DownloadManager::preflight_checked(&dest, Some(1024)).unwrap_err();
         assert!(
             e.message.contains("unavailable"),
             "must say 'unavailable', got: {}",
