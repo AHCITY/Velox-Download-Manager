@@ -116,6 +116,12 @@ pub fn wire_event(e: &Event) -> (String, String) {
             "resolved".to_string(),
             json!({ "url": url, "note": note }).to_string(),
         ),
+        // MediaPipeline (architecture review §9): merge phase events, ids per contract
+        Event::Merging { id } => ("merging".to_string(), json!({ "id": id }).to_string()),
+        Event::Merged { id, path } => (
+            "merged".to_string(),
+            json!({ "id": id, "path": path }).to_string(),
+        ),
     }
 }
 
@@ -150,7 +156,9 @@ async fn pump(manager: Arc<DownloadManager>, hub: Arc<Hub>) {
                             | Event::Restarting { id, .. }
                             | Event::Completed { id, .. }
                             | Event::Failed { id, .. }
-                            | Event::Verified { id, .. } => {
+                            | Event::Verified { id, .. }
+                            | Event::Merging { id, .. }
+                            | Event::Merged { id, .. } => {
                                 pending.remove(id);
                             }
                             // audit D4: resolve-phase events carry no download id

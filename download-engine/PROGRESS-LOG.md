@@ -170,3 +170,22 @@
 - Suite: 154 passed / 0 failed (146 prior + 8 new), fmt+clippy -D warnings clean.
 - Media classification intentionally returns Direct for all URLs today; DASH/HLS
   detection arrives with the MediaPipeline milestone (roadmap 4).
+- **2026-11-21 16:04 [watchdog]** FAILED — logs archived: /home/z/my-project/backup/watchdog-failures
+
+## 2026-11-21 ~16:50 (roadmap 4 — MediaPipeline merge core)
+- NEW crate crates/engine-media (manager-level wrapper per review §9): MediaPipelinePort
+  (subprocess port, faked in tests), SubprocessPort (tokio::process, kill_on_drop +
+  cancel-trigger select), build_merge_args (PINNED `-c copy` argv, transcode impossible),
+  verify_lgpl (rejects --enable-gpl/--enable-nonfree per audit §D), validate_probe_json
+  (≥1 stream + format section), MediaPipeline::discover (honest MISSING_FFMPEG early),
+  merge() with Merging/Merged events. 10 tests incl. REAL-PROCESS kill-safety (sleep).
+- Kill-safety semantics: watch trigger true OR channel-close both kill the child
+  (manager gone → child dead). Call sites hold senders for the run duration.
+- engine-core: ErrorKind + MissingFfmpeg/GplBuild/CorruptMedia/MergeFailed (all
+  Permanent), events + Merging{id}/Merged{id,path}; engine-bridge wires both to SSE
+  ("merging"/"merged").
+- NEW docs/FFMPEG_INTEGRATION.md — the spec the audit referenced (was missing):
+  licence policy + verification procedure, kill-safety contract, event contract,
+  honest errors, argv shape, testing rules, non-goals.
+- Suite: workspace GREEN (164 total incl. 10 new), fmt+clippy -D warnings clean.
+- Next slice: manager job-type wiring (merge as post-download phase) + yt-dlp resolve.

@@ -27,6 +27,16 @@ pub enum ErrorKind {
     /// The URL is a media page/stream that generic HTTP cannot fetch; an external
     /// extractor (yt-dlp) or a direct media URL is required.
     UnsupportedUrl,
+    /// MediaPipeline: no usable ffmpeg/ffprobe binary found (honest missing-tool error).
+    MissingFfmpeg,
+    /// MediaPipeline: the ffmpeg build advertises `--enable-gpl` — LGPL policy rejects it
+    /// (docs/FFMPEG_INTEGRATION.md §3).
+    GplBuild,
+    /// MediaPipeline: the merge ran but ffprobe post-validation says the output is not
+    /// playable media (honest corrupt-output error, never silent success).
+    CorruptMedia,
+    /// MediaPipeline: the ffmpeg subprocess itself failed (nonzero exit / spawn error).
+    MergeFailed,
     DiskFull,
     Permission,
     FileLock,
@@ -52,6 +62,10 @@ impl ErrorKind {
             ErrorKind::InvalidResponse => "INVALID_RESPONSE",
             ErrorKind::NotAFile => "NOT_A_FILE",
             ErrorKind::UnsupportedUrl => "UNSUPPORTED_URL",
+            ErrorKind::MissingFfmpeg => "MISSING_FFMPEG",
+            ErrorKind::GplBuild => "GPL_BUILD",
+            ErrorKind::CorruptMedia => "CORRUPT_MEDIA",
+            ErrorKind::MergeFailed => "MERGE_FAILED",
             ErrorKind::DiskFull => "DISK_FULL",
             ErrorKind::Permission => "PERMISSION",
             ErrorKind::FileLock => "FILE_LOCK",
@@ -126,6 +140,13 @@ impl EngineError {
             | ErrorKind::InvalidResponse
             | ErrorKind::NotAFile
             | ErrorKind::UnsupportedUrl
+            // MediaPipeline failures are permanent: retrying a merge cannot fix a
+            // missing binary, a GPL-flagged build, or corrupt output (the caller
+            // must act instead).
+            | ErrorKind::MissingFfmpeg
+            | ErrorKind::GplBuild
+            | ErrorKind::CorruptMedia
+            | ErrorKind::MergeFailed
             | ErrorKind::DiskFull
             | ErrorKind::Permission
             | ErrorKind::FileLock => ErrorClass::Permanent,

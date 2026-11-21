@@ -49,6 +49,16 @@ pub enum Event {
         url: String,
         note: Option<String>,
     },
+    /// MediaPipeline (architecture review §9): the ffmpeg `-c copy` merge stage for a
+    /// finished download started. One event per merge attempt.
+    Merging {
+        id: i64,
+    },
+    /// MediaPipeline: merge finished and passed ffprobe post-validation.
+    Merged {
+        id: i64,
+        path: String,
+    },
 }
 
 pub type EventBus = broadcast::Sender<Event>;

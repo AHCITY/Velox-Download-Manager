@@ -9,6 +9,7 @@ members = [
     "crates/engine-cli",
     "crates/engine-testserver",
     "crates/engine-bridge",
+    "crates/engine-media",
 ]
 
 [workspace.package]
