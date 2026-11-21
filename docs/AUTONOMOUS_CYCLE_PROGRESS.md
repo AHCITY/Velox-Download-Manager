@@ -29,3 +29,14 @@ Format per entry: cycle, timestamp, completed, files, tests (real counts), git, 
 - Environment: cross-build toolchain fully rebuilt (clang-19 + builtin headers + llvm-lib, cargo-xwin 0.23.1, makensis 3.13, fresh SDK+CRT); Windows Velox.exe cross-built successfully from the tree (4m08s, 13,861,888 bytes) — final installer will be rebuilt after the merge-wiring commit so the published hash corresponds to a clean commit.
 - Scheduling note: the platform's cron tool is NOT available (verified — tool call rejected). Continuation is sequential in-turn cycles + documented resume instructions (mission §6 fallback).
 - Next: full suite gate → commit/push → clean rebuild + package + Release refresh (delete old assets, round-trip verify) → Cycle 3 (merge temp-file lifecycle + MERGING startup sweep).
+
+### Cycle 3 — merge safety: temp-file lifecycle + startup sweep + single-flight (audit P0-2) (COMPLETE pending full-suite gate)
+- Completed:
+  - merge_streams now writes ffmpeg output to `<final>.merging.part` and renames only on success; on failure or cancel the residue is deleted (a killed merge can no longer leave a truncated file at the destination).
+  - Startup sweep: rows stuck in MERGING after a process death are failed honestly with MERGE_INTERRUPTED and their partial merge output (exact + numbered-collision variants) is removed.
+  - Single-flight guard on merge_streams (video-id keyed); transition DB-write failure no longer wedges the guard.
+  - engine-core tests: merge_failure_leaves_no_residue_and_fails_row, merge_single_flight_rejects_second_concurrent_merge, stale_merging_row_swept_on_startup.
+- Files: crates/engine-core/src/manager.rs.
+- Tests: engine-core 53 lib + 52 integration binaries all green; clippy -D warnings clean; fmt clean. Full workspace gate running.
+- Release: v0.1.0 assets refreshed from commit 4d083f8 (Cycle 2) — deleted old assets, uploaded setup + portable + sums + guide, round-trip hash verified byte-exact (ea69f511…).
+- Next: Cycle 4 (probe-loop stop-awareness, worker backoff stop-awareness, finalize truncate belt).

@@ -1,6 +1,6 @@
 //! DownloadManager: the engine facade every client (CLI, API, future UIs) talks to.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -103,6 +103,9 @@ pub struct DownloadManager {
     media_merge: Mutex<Option<Arc<dyn crate::ports::MediaMergePort>>>,
     /// Kill triggers for in-flight merge phases (id → sender); cancel() uses them.
     merge_triggers: Mutex<HashMap<i64, tokio::sync::watch::Sender<bool>>>,
+    /// Single-flight guard for merge phases (video ids currently merging): two
+    /// concurrent merges into the same row would both write the same output.
+    merging: Mutex<HashSet<i64>>,
 }
 
 impl DownloadManager {
@@ -115,6 +118,10 @@ impl DownloadManager {
             &engine.data_dir.join("locks"),
             std::time::Duration::from_secs(7 * 24 * 3600),
         );
+        // merge-crash recovery (audit P0-2): a row left `merging` by a process death
+        // is stuck forever — no trigger exists after restart and the half-written
+        // ffmpeg output would leak into the out dir. Sweep at startup instead.
+        Self::sweep_stale_merging(&db);
         let (events, _) = make_bus(engine.event_capacity);
         let download_slots = engine
             .max_concurrent_downloads
@@ -129,6 +136,7 @@ impl DownloadManager {
             download_slots,
             media_merge: Mutex::new(None),
             merge_triggers: Mutex::new(HashMap::new()),
+            merging: Mutex::new(HashSet::new()),
         }))
     }
 
@@ -136,6 +144,56 @@ impl DownloadManager {
     /// `merge_streams` then fails honestly instead of pretending.
     pub fn set_media_merge(&self, port: Option<Arc<dyn crate::ports::MediaMergePort>>) {
         *self.media_merge.lock().unwrap() = port;
+    }
+
+    /// Startup sweep for rows left in MERGING by a process death (audit P0-2).
+    /// The half-written merge output is deleted (it lives at `<final>.merging.part`
+    /// since the temp-file lifecycle change) and the row is failed honestly with
+    /// MERGE_INTERRUPTED so the user re-runs the merge instead of owning garbage.
+    fn sweep_stale_merging(db: &Db) {
+        let Ok(rows) = db.list_downloads() else {
+            return;
+        };
+        for row in rows {
+            if row.state != states::MERGING {
+                continue;
+            }
+            let cfg: DownloadConfig = serde_json::from_str(&row.config_json).unwrap_or_default();
+            let ext = cfg
+                .media_merge
+                .as_ref()
+                .and_then(|m| m.output_ext.clone())
+                .unwrap_or_else(|| "mp4".into());
+            let stem = row
+                .final_name
+                .rsplit_once('.')
+                .map(|(s, _)| s.to_string())
+                .unwrap_or_else(|| row.final_name.clone());
+            let dest = std::path::Path::new(&row.dest_dir);
+            if let Ok(entries) = std::fs::read_dir(dest) {
+                let exact = format!("{stem}.{ext}.merging.part");
+                let variant_prefix = format!("{stem}(");
+                let variant_suffix = format!(".{ext}.merging.part");
+                for e in entries.flatten() {
+                    let name = e.file_name().to_string_lossy().into_owned();
+                    if name == exact
+                        || (name.starts_with(&variant_prefix) && name.ends_with(&variant_suffix))
+                    {
+                        let _ = std::fs::remove_file(e.path());
+                    }
+                }
+            }
+            let mut r = row.clone();
+            r.state = states::FAILED.to_string();
+            r.error_code = Some("MERGE_INTERRUPTED".into());
+            r.error_message = Some("merge interrupted by restart; re-run the merge".into());
+            if db.update_download(&r).is_ok() {
+                info!(
+                    id = row.id,
+                    "startup sweep: stale MERGING row failed (MERGE_INTERRUPTED)"
+                );
+            }
+        }
     }
 
     /// Whether the merge stage is available (API layers report capability honestly).
@@ -685,11 +743,37 @@ impl DownloadManager {
             ));
         }
 
+        // Single-flight guard (audit P2): two concurrent merges for the same row
+        // would both write the same output path.
+        {
+            let mut mg = self.merging.lock().unwrap();
+            if mg.contains(&video_id) {
+                return Err(EngineError::new(
+                    ErrorKind::InvalidConfig,
+                    format!("merge already in progress for id {video_id}"),
+                ));
+            }
+            mg.insert(video_id);
+        }
+
+        // Write to a temp path and rename only on success (audit P0-2): a killed
+        // or failed merge must never leave a truncated file at the destination.
+        let part = dest_dir.join(format!(
+            "{}.merging.part",
+            output
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default()
+        ));
+
         // Phase transition: video row becomes the merged-artifact row.
         let id = video_id;
         let mut row = video_row.clone();
         row.state = states::MERGING.to_string();
-        self.db.update_download(&row).map_err(db_err)?;
+        if let Err(e) = self.db.update_download(&row) {
+            self.merging.lock().unwrap().remove(&id);
+            return Err(db_err(e));
+        }
         self.events
             .send(crate::events::Event::DownloadState {
                 id,
@@ -705,10 +789,27 @@ impl DownloadManager {
             .insert(id, kill_tx.clone());
 
         let result = port
-            .merge(id, &video_path, &audio_path, &output, &self.events, kill_rx)
+            .merge(id, &video_path, &audio_path, &part, &self.events, kill_rx)
             .await;
 
         self.merge_triggers.lock().unwrap().remove(&id);
+        self.merging.lock().unwrap().remove(&id);
+
+        // Finalize: rename the temp output only on success; on failure or cancel,
+        // delete the residue so the out dir stays clean.
+        let result = match result {
+            Ok(()) => match std::fs::rename(&part, &output) {
+                Ok(()) => Ok(()),
+                Err(e) => Err(EngineError::new(
+                    ErrorKind::Io,
+                    format!("cannot finalize merged output: {e}"),
+                )),
+            },
+            r @ Err(_) => r,
+        };
+        if result.is_err() {
+            let _ = std::fs::remove_file(&part);
+        }
 
         match result {
             Ok(()) => {
@@ -1165,6 +1266,7 @@ mod merge_tests {
     enum Mode {
         Ok,
         Fail,
+        WriteThenFail,
         WaitCancel,
     }
 
@@ -1191,6 +1293,14 @@ mod merge_tests {
                     Ok(())
                 }
                 Mode::Fail => Err(EngineError::new(ErrorKind::MergeFailed, "boom")),
+                Mode::WriteThenFail => {
+                    // simulate ffmpeg dying mid-encode: bytes exist at the part path
+                    let _ = std::fs::write(output, b"partial-merge-bytes");
+                    Err(EngineError::new(
+                        ErrorKind::MergeFailed,
+                        "boom after partial write",
+                    ))
+                }
                 Mode::WaitCancel => {
                     let mut kill = kill;
                     let _ = kill.wait_for(|v| *v).await;
@@ -1198,6 +1308,99 @@ mod merge_tests {
                 }
             }
         }
+    }
+
+    #[tokio::test]
+    async fn merge_failure_leaves_no_residue_and_fails_row() {
+        let data = tempfile::tempdir().unwrap();
+        let dest = tempfile::tempdir().unwrap();
+        let m = mgr(data.path());
+        std::fs::write(dest.path().join("video.m4s"), b"v").unwrap();
+        std::fs::write(dest.path().join("audio.m4s"), b"a").unwrap();
+        let v =
+            m.db.insert_download(&completed_row(dest.path(), "video.m4s", "{}"))
+                .unwrap();
+        let a =
+            m.db.insert_download(&completed_row(dest.path(), "audio.m4s", "{}"))
+                .unwrap();
+        m.set_media_merge(Some(Arc::new(FakeMerge(Mode::WriteThenFail))));
+
+        let err = m.merge_streams(v, a).await.unwrap_err();
+        assert_eq!(err.kind, ErrorKind::MergeFailed);
+        let row = m.db.get_download(v).unwrap().unwrap();
+        assert_eq!(row.state, states::FAILED);
+        // no truncated output at the destination, no residue part file
+        assert!(!dest.path().join("video.mp4").exists());
+        let residue = std::fs::read_dir(dest.path())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .any(|e| e.file_name().to_string_lossy().ends_with(".merging.part"));
+        assert!(!residue, "merge residue leaked into the out dir");
+    }
+
+    #[tokio::test]
+    async fn merge_single_flight_rejects_second_concurrent_merge() {
+        let data = tempfile::tempdir().unwrap();
+        let dest = tempfile::tempdir().unwrap();
+        let m = mgr(data.path());
+        std::fs::write(dest.path().join("video.m4s"), b"v").unwrap();
+        std::fs::write(dest.path().join("audio.m4s"), b"a").unwrap();
+        let v =
+            m.db.insert_download(&completed_row(dest.path(), "video.m4s", "{}"))
+                .unwrap();
+        let a =
+            m.db.insert_download(&completed_row(dest.path(), "audio.m4s", "{}"))
+                .unwrap();
+        m.set_media_merge(Some(Arc::new(FakeMerge(Mode::WaitCancel))));
+
+        let m2 = m.clone();
+        let first = tokio::spawn(async move { m2.merge_streams(v, a).await });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let second = m.merge_streams(v, a).await.unwrap_err();
+        // Rejected honestly — either by the row-state check (row is already
+        // MERGING) or by the in-memory single-flight guard.
+        let msg = second.message.clone();
+        assert!(
+            msg.contains("not completed") || msg.contains("already in progress"),
+            "{msg}"
+        );
+        // unwind the parked first merge via the cancel trigger
+        let _ = m.cancel(v).await;
+        let first_err = first.await.unwrap().unwrap_err();
+        assert_eq!(first_err.kind, ErrorKind::Cancelled);
+        // residue cleaned up on the cancel path
+        assert!(!dest.path().join("video.mp4.merging.part").exists());
+    }
+
+    #[tokio::test]
+    async fn stale_merging_row_swept_on_startup() {
+        let data = tempfile::tempdir().unwrap();
+        let dest = tempfile::tempdir().unwrap();
+        let m = mgr(data.path());
+        std::fs::write(dest.path().join("video.m4s"), b"v").unwrap();
+        let v =
+            m.db.insert_download(&completed_row(dest.path(), "video.m4s", "{}"))
+                .unwrap();
+        let mut row = m.db.get_download(v).unwrap().unwrap();
+        row.state = states::MERGING.to_string();
+        m.db.update_download(&row).unwrap();
+        // residue from the pre-crash attempt: exact + numbered-collision variants
+        std::fs::write(dest.path().join("video.mp4.merging.part"), b"half-written").unwrap();
+        std::fs::write(
+            dest.path().join("video(1).mp4.merging.part"),
+            b"half-written-variant",
+        )
+        .unwrap();
+        drop(m);
+
+        // restart: the sweep must fail the row honestly and clean the residue
+        let m2 = mgr(data.path());
+        let row = m2.db.get_download(v).unwrap().unwrap();
+        assert_eq!(row.state, states::FAILED);
+        assert_eq!(row.error_code.as_deref(), Some("MERGE_INTERRUPTED"));
+        assert!(!dest.path().join("video.mp4.merging.part").exists());
+        assert!(!dest.path().join("video(1).mp4.merging.part").exists());
+        assert!(dest.path().join("video.m4s").exists()); // source stream untouched
     }
 
     fn mgr(dir: &std::path::Path) -> Arc<DownloadManager> {
