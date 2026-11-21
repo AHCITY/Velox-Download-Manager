@@ -112,6 +112,7 @@ async fn wait_part_bytes(part: &Path, min: u64, timeout: Duration) {
 /// stdio::null() made windows-runner failures undiagnosable.
 fn spawn_download(server_url: &str, out: &Path, home: &Path) -> tokio::process::Child {
     let stderr_log = home.join("velox-stderr.log");
+    std::fs::create_dir_all(home).expect("create DXDL_HOME");
     let stderr = std::fs::OpenOptions::new()
         .create(true)
         .write(true)
