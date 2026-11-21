@@ -132,3 +132,18 @@
 - Windows build #3: SDK splat was truncated by rollback (stale DONE marker, 114 MB
   without CRT headers) → full re-splat; build failed once on an in-flight editor error,
   re-running after cycle-5 code landed.
+
+## 2026-11-21 ~15:30 (rollback #3 + restore + GitHub prep)
+- ROLLBACK #3 at session start: git history reset to a NEW initial commit (5a93517),
+  engine tree reduced to 4 .rs files, cargo/rustup wiped, scripts wiped (only
+  installer-online-template.nsi survived). Survived: cycle-5 ZIP backup, windows-build
+  artifacts, xwin SDK splat.
+- RESTORED from backup/velox-source-20261121-cycle5.zip (122 files: all cycle-5 code,
+  docs, progress log). rustup reinstalling. All build/watchdog/bench/licence scripts
+  recreated from session records and committed (they are now part of the repo).
+- GitHub prep (user request): remote origin added
+  (https://github.com/AHCITY/velox-download-manager.git — name adjustable),
+  scripts/github-push.sh (token via env only, never stored, push verified against
+  remote head), root .gitignore hardened (.cargo/.rustup/.xwin-cache/backup/download/
+  .env/upload excluded; 133 files tracked). Git-over-HTTPS egress VERIFIED working
+  (git ls-remote to github.com OK). Awaiting: repo creation + PAT from user.
