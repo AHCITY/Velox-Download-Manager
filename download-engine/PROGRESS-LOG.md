@@ -251,3 +251,17 @@
   (MISSING_FFMPEG/GPL_BUILD/CORRUPT_MEDIA); per-scenario recording format for
   KNOWN-ISSUES #1; lists exactly what CI already proved vs what residential testing
   adds. Copy delivered to download/YOUTUBE_VERIFICATION.md for the user.
+- **2026-11-21 16:51 [watchdog]** GREEN: fmt+clippy clean, 170 tests passed
+
+## 2026-11-21 ~18:05 (windows gate round 2 — lock + third extractor fixture)
+- 90f719f windows run: the 5 earlier fixes PASS; 3 more failures surfaced (they were
+  behind the earlier aborts): (a) stub_extractor_resolves_watch_url… — third Unix
+  #!/bin/sh fixture, cfg(unix)-gated like the others; (b) download_lock_exclusive…
+  — Held(pid) reads 0 on Windows because the holder's exclusive whole-file LockFileEx
+  region makes the lockfile unreadable: exclusivity WORKS, only diagnostics differ;
+  test now asserts pid==0 on windows, Display says "pid unavailable on this platform"
+  (honest, no fake pid 0); (c) lock_recovered_after_child_process_death (windows
+  variant) spawned the child test binary WITHOUT the test-filter args, so the
+  #[ignore]d lock-holder never ran — args added (same as unix variant).
+- All three are test/fixture-level; no product code change except the honest
+  LockError::Held(0) Display wording. Suite 170/0, clippy clean.

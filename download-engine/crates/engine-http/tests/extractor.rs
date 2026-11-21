@@ -31,6 +31,10 @@ fn engine_cfg(data: &Path, out: &Path, extractor: &Path) -> EngineConfig {
 /// Stub extractor: emits the same JSON shape yt-dlp -J produces (formats array with a
 /// progressive https entry, HLS-only entry that must be rejected, adaptive halves that
 /// must be rejected, and a top-level title).
+///
+/// Unix-only FIXTURE (`#!/bin/sh` stub) — see KNOWN-ISSUES (windows CI gate); the
+/// engine behavior under test is platform-independent.
+#[cfg(unix)]
 #[tokio::test]
 async fn stub_extractor_resolves_watch_url_to_real_stream_bytes() {
     let dir = tempfile::tempdir().unwrap();

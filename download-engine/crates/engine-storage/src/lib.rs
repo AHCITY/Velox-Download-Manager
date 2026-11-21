@@ -248,6 +248,13 @@ pub enum LockError {
 impl std::fmt::Display for LockError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            // pid 0 = unknown: on Windows the holder's exclusively-locked lockfile
+            // cannot be read by a second handle (whole-file LockFileEx region), so
+            // the recorded pid is unrecoverable there — say so instead of "pid 0".
+            LockError::Held(0) => write!(
+                f,
+                "download is in use by another process (pid unavailable on this platform)"
+            ),
             LockError::Held(p) => write!(f, "download is in use by another process (pid {p})"),
             LockError::Io(e) => write!(f, "io: {e}"),
         }
@@ -505,7 +512,14 @@ mod tests {
         // a second acquire while ours is alive must fail (same process: flock is
         // per open-file-description, so a second fd conflicts)
         match DownloadLock::acquire(&part, &locks_dir) {
-            Err(LockError::Held(p)) => assert_eq!(p, std::process::id()),
+            Err(LockError::Held(p)) => {
+                // Windows: the holder's pid is NOT readable while its exclusive OS
+                // lock covers the whole file — recorded_pid returns 0 (unknown).
+                #[cfg(unix)]
+                assert_eq!(p, std::process::id());
+                #[cfg(windows)]
+                assert_eq!(p, 0);
+            }
             other => panic!("expected Held, got {other:?}"),
         }
         // a stale lockfile (holder dead: OS lock free but file remains) is CLAIMED
@@ -577,6 +591,15 @@ mod tests {
         let lock_path = locks_dir.join("crash.part.lock");
         let exe = std::env::current_exe().unwrap();
         let mut child = std::process::Command::new(exe)
+            .args([
+                // Same filter as the unix variant: without it the child libtest
+                // runner would execute the whole suite and zz_lock_holder_child
+                // (#[ignore]) would never run — "child never took the lock".
+                "tests::zz_lock_holder_child",
+                "--exact",
+                "--ignored",
+                "--test-threads=1",
+            ])
             .env("VELOX_LOCK_HOLDER_PATH", &lock_path)
             .spawn()
             .unwrap();
