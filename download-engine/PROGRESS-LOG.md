@@ -292,3 +292,5 @@
 - Known follow-up (next cycle): merge output still written to final path by the pipeline; temp+.part rename + MERGING startup sweep queued (P0-2).
 - **2026-11-21 18:40 [watchdog]** SKIPPED gate (only 966648KB free disk)
 - **2026-11-21 18:52 [watchdog]** SKIPPED gate (only 355848KB free disk)
+- **2026-11-21 19:10 [watchdog]** FAILED — logs archived: /home/z/my-project/backup/watchdog-failures
+- **2026-11-21 19:22 [watchdog]** SKIPPED gate (only 1214116KB free disk)

@@ -1,8 +1,0 @@
-/home/z/my-project/download-engine/app/src-tauri/target/x86_64-pc-windows-msvc/release/build/tauri-plugin-single-instance/1241e0ddb3424887/out/tauri_plugin_single_instance-1241e0ddb3424887.d: /home/z/my-project/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tauri-plugin-single-instance-2.5.5/src/lib.rs /home/z/my-project/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tauri-plugin-single-instance-2.5.5/src/platform_impl/windows.rs
-
-/home/z/my-project/download-engine/app/src-tauri/target/x86_64-pc-windows-msvc/release/build/tauri-plugin-single-instance/1241e0ddb3424887/out/libtauri_plugin_single_instance-1241e0ddb3424887.rlib: /home/z/my-project/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tauri-plugin-single-instance-2.5.5/src/lib.rs /home/z/my-project/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tauri-plugin-single-instance-2.5.5/src/platform_impl/windows.rs
-
-/home/z/my-project/download-engine/app/src-tauri/target/x86_64-pc-windows-msvc/release/build/tauri-plugin-single-instance/1241e0ddb3424887/out/libtauri_plugin_single_instance-1241e0ddb3424887.rmeta: /home/z/my-project/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tauri-plugin-single-instance-2.5.5/src/lib.rs /home/z/my-project/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tauri-plugin-single-instance-2.5.5/src/platform_impl/windows.rs
-
-/home/z/my-project/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tauri-plugin-single-instance-2.5.5/src/lib.rs:
-/home/z/my-project/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tauri-plugin-single-instance-2.5.5/src/platform_impl/windows.rs:
