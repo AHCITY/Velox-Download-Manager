@@ -148,3 +148,13 @@
   .env/upload excluded; 133 files tracked). Git-over-HTTPS egress VERIFIED working
   (git ls-remote to github.com OK). Awaiting: repo creation + PAT from user.
 - **2026-11-21 15:30 [watchdog]** GREEN: fmt+clippy clean, 146 tests passed
+
+## 2026-11-21 ~16:00 (GitHub sync LIVE)
+- Push SUCCEEDED and verified: remote main == local 8321808 (7 commits: engine
+  cycle-5, scripts, docs, LICENSE merge, watchdog GREEN line). Repo renamed by
+  user to AHCITY/Velox-Download-Manager; remote URL updated to canonical case.
+- Token workflow: fine-grained PAT via GITHUB_TOKEN env only (scripts/github-push.sh),
+  never stored in files or remote URL. Required permissions: Contents R+W,
+  Workflows R+W (windows.yml in tree).
+- From now on: every verified milestone ends with a commit + push. GitHub is the
+  durable source of truth (3rd sandbox rollback proved local-only storage unsafe).
