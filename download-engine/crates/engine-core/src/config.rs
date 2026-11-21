@@ -115,6 +115,21 @@ pub struct DownloadConfig {
     /// None (default) = automatic policy: HTML is accepted only when the user named the
     /// file *.html/.htm or the resolved URL path ends in .html/.htm.
     pub allow_html: Option<bool>,
+    /// MediaPipeline (review §9): this download is stream 1 (video) of a two-stream
+    /// media job; `audio_url` is stream 2, downloaded with the same config after
+    /// stream 1 completes, then merged (`-c copy`) into the final artifact.
+    /// The merge itself only runs when a MediaMergePort is configured on the manager.
+    pub media_merge: Option<MediaMergeSpec>,
+}
+
+/// Two-stream media job spec (DASH/HLS resolved by yt-dlp upstream — the URLs here
+/// are direct media URLs, not pages).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MediaMergeSpec {
+    /// Direct media URL of the audio stream.
+    pub audio_url: String,
+    /// Extension of the final merged file (default "mp4").
+    pub output_ext: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

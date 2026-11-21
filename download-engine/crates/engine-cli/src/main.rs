@@ -219,6 +219,7 @@ fn make_config(engine: &EngineConfig, opts: &Opts) -> DownloadConfig {
         resume_policy: Default::default(),
         insecure_tls: opts.insecure_tls,
         allow_html: opts.allow_html,
+        media_merge: None,
     };
     if let Some((user, pass)) = &opts.basic {
         cfg.auth = Some(engine_core::config::AuthConfig::Basic {

@@ -26,6 +26,9 @@ pub mod states {
     pub const DOWNLOADING: &str = "downloading";
     pub const PAUSED: &str = "paused";
     pub const VERIFYING: &str = "verifying";
+    /// MediaPipeline (architecture review §9): the `-c copy` merge phase runs after
+    /// both streams are complete. Not pausable; cancellable via the merge trigger.
+    pub const MERGING: &str = "merging";
     pub const COMPLETED: &str = "completed";
     pub const FAILED: &str = "failed";
     pub const CANCELLED: &str = "cancelled";

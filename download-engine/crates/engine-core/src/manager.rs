@@ -98,6 +98,11 @@ pub struct DownloadManager {
     running: Mutex<HashMap<i64, RunningTask>>,
     /// Admission control: a permit per running download (None = unlimited).
     download_slots: Option<Arc<Semaphore>>,
+    /// MediaPipeline merge stage (review §9), implemented in engine-media and
+    /// injected from outside core — the transfer engine never links ffmpeg.
+    media_merge: Mutex<Option<Arc<dyn crate::ports::MediaMergePort>>>,
+    /// Kill triggers for in-flight merge phases (id → sender); cancel() uses them.
+    merge_triggers: Mutex<HashMap<i64, tokio::sync::watch::Sender<bool>>>,
 }
 
 impl DownloadManager {
@@ -122,7 +127,20 @@ impl DownloadManager {
             host_sems: Mutex::new(HashMap::new()),
             running: Mutex::new(HashMap::new()),
             download_slots,
+            media_merge: Mutex::new(None),
+            merge_triggers: Mutex::new(HashMap::new()),
         }))
+    }
+
+    /// Inject the MediaPipeline merge stage (engine-media). None disables merges:
+    /// `merge_streams` then fails honestly instead of pretending.
+    pub fn set_media_merge(&self, port: Option<Arc<dyn crate::ports::MediaMergePort>>) {
+        *self.media_merge.lock().unwrap() = port;
+    }
+
+    /// Whether the merge stage is available (API layers report capability honestly).
+    pub fn has_media_merge(&self) -> bool {
+        self.media_merge.lock().unwrap().is_some()
     }
 
     pub fn events(&self) -> tokio::sync::broadcast::Receiver<Event> {
@@ -611,7 +629,172 @@ impl DownloadManager {
         Ok(())
     }
 
+    /// MediaPipeline phase (review §9, docs/FFMPEG_INTEGRATION.md §2): merge two
+    /// COMPLETED stream downloads (video + audio) into the final artifact via the
+    /// injected `MediaMergePort` (`-c copy`, ffprobe-validated). The video row moves
+    /// MERGING → COMPLETED and ends up describing the merged file; the audio row is
+    /// left untouched. Cancel during MERGING kills the ffmpeg child (merge trigger).
+    pub async fn merge_streams(&self, video_id: i64, audio_id: i64) -> Result<(), EngineError> {
+        let port = self.media_merge.lock().unwrap().clone().ok_or_else(|| {
+            EngineError::new(
+                ErrorKind::InvalidConfig,
+                "media pipeline not configured — set an LGPL ffmpeg integration first \
+                     (docs/FFMPEG_INTEGRATION.md §3)",
+            )
+        })?;
+
+        let video_row = self.completed_row(video_id, "video")?;
+        let audio_row = self.completed_row(audio_id, "audio")?;
+        let video_path = std::path::Path::new(&video_row.dest_dir).join(&video_row.final_name);
+        let audio_path = std::path::Path::new(&audio_row.dest_dir).join(&audio_row.final_name);
+        for (p, what) in [(&video_path, "video"), (&audio_path, "audio")] {
+            if !p.is_file() {
+                return Err(EngineError::new(
+                    ErrorKind::InvalidConfig,
+                    format!("{what} stream file is missing: {}", p.display()),
+                ));
+            }
+        }
+
+        // Output path: video's name with the merged extension (default mp4). If it
+        // exists, pick `name(1).ext`, `name(2).ext`, … unless the row says overwrite.
+        let cfg: DownloadConfig = serde_json::from_str(&video_row.config_json).unwrap_or_default();
+        let ext = cfg
+            .media_merge
+            .as_ref()
+            .and_then(|m| m.output_ext.clone())
+            .unwrap_or_else(|| "mp4".into());
+        let stem = video_row
+            .final_name
+            .rsplit_once('.')
+            .map(|(s, _)| s.to_string())
+            .unwrap_or_else(|| video_row.final_name.clone());
+        let dest_dir = std::path::Path::new(&video_row.dest_dir).to_path_buf();
+        let mut output = dest_dir.join(format!("{stem}.{ext}"));
+        if !cfg.overwrite {
+            let mut n = 1;
+            while output.exists() {
+                output = dest_dir.join(format!("{stem}({n}).{ext}"));
+                n += 1;
+            }
+        }
+        if output == video_path || output == audio_path {
+            return Err(EngineError::new(
+                ErrorKind::InvalidConfig,
+                "merge output path would overwrite a source stream",
+            ));
+        }
+
+        // Phase transition: video row becomes the merged-artifact row.
+        let id = video_id;
+        let mut row = video_row.clone();
+        row.state = states::MERGING.to_string();
+        self.db.update_download(&row).map_err(db_err)?;
+        self.events
+            .send(crate::events::Event::DownloadState {
+                id,
+                state: states::MERGING.to_string(),
+            })
+            .ok();
+
+        // Kill trigger registered for the phase duration; cancel() fires it.
+        let (kill_tx, kill_rx) = tokio::sync::watch::channel(false);
+        self.merge_triggers
+            .lock()
+            .unwrap()
+            .insert(id, kill_tx.clone());
+
+        let result = port
+            .merge(id, &video_path, &audio_path, &output, &self.events, kill_rx)
+            .await;
+
+        self.merge_triggers.lock().unwrap().remove(&id);
+
+        match result {
+            Ok(()) => {
+                let size = std::fs::metadata(&output).ok().map(|m| m.len() as i64);
+                row.state = states::COMPLETED.to_string();
+                row.final_name = output
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| row.final_name.clone());
+                row.temp_path = None;
+                row.completed_at = Some(engine_state::now_iso());
+                row.total_size = size;
+                // Honest: the merged artifact is NOT the hash-verified stream — the
+                // stream checksums do not describe this file. ffprobe validation is
+                // the merge stage's own success criterion (FFMPEG_INTEGRATION §8).
+                row.sha256 = None;
+                row.blake3 = None;
+                row.verified = false;
+                self.db.update_download(&row).map_err(db_err)?;
+                self.events
+                    .send(crate::events::Event::Completed {
+                        id,
+                        path: output.display().to_string(),
+                        size: size.unwrap_or(0) as u64,
+                        sha256: None,
+                        blake3: None,
+                    })
+                    .ok();
+                Ok(())
+            }
+            Err(e) if e.kind == ErrorKind::Cancelled => {
+                row.state = states::CANCELLED.to_string();
+                row.error_code = Some("CANCELLED".into());
+                row.error_message = Some("merge cancelled".into());
+                let _ = self.db.update_download(&row);
+                self.events
+                    .send(crate::events::Event::DownloadState {
+                        id,
+                        state: states::CANCELLED.to_string(),
+                    })
+                    .ok();
+                Err(e)
+            }
+            Err(e) => {
+                row.state = states::FAILED.to_string();
+                row.error_code = Some(e.kind.code().into());
+                row.error_message = Some(e.message.clone());
+                let _ = self.db.update_download(&row);
+                self.events
+                    .send(crate::events::Event::Failed {
+                        id,
+                        kind: e.kind.code().into(),
+                        message: e.message.clone(),
+                    })
+                    .ok();
+                Err(e)
+            }
+        }
+    }
+
+    fn completed_row(&self, id: i64, what: &str) -> Result<engine_state::DownloadRow, EngineError> {
+        let row = self.db.get_download(id).map_err(db_err)?.ok_or_else(|| {
+            EngineError::new(ErrorKind::InvalidConfig, format!("unknown {what} id {id}"))
+        })?;
+        if row.state != states::COMPLETED {
+            return Err(EngineError::new(
+                ErrorKind::InvalidConfig,
+                format!(
+                    "{what} stream (id {id}) is not completed (state: {})",
+                    row.state
+                ),
+            ));
+        }
+        Ok(row)
+    }
+
     pub async fn pause(&self, id: i64) -> Result<(), EngineError> {
+        // merge phase is not pausable (ffmpeg has no resume) — honest error
+        if let Ok(Some(row)) = self.db.get_download(id) {
+            if row.state == states::MERGING {
+                return Err(EngineError::new(
+                    ErrorKind::InvalidConfig,
+                    "merge in progress cannot be paused — cancel instead",
+                ));
+            }
+        }
         // queued rows are paused by state alone: the runner re-checks after admission
         // and will not start a PAUSED row
         if let Some(mut row) = self.db.get_download(id).map_err(db_err)? {
@@ -674,6 +857,32 @@ impl DownloadManager {
                 .unwrap_or_default();
             if state == states::COMPLETED {
                 return Ok(());
+            }
+        }
+        // merge phase (review §9): a MERGING row has no download task — kill the
+        // ffmpeg child via the trigger and wait for the phase to settle the row.
+        let trigger = self.merge_triggers.lock().unwrap().get(&id).cloned();
+        if let Some(tx) = trigger {
+            let _ = tx.send(true);
+            let deadline = std::time::Instant::now() + Duration::from_secs(60);
+            loop {
+                let st = self
+                    .db
+                    .get_download(id)
+                    .ok()
+                    .flatten()
+                    .map(|r| r.state)
+                    .unwrap_or_default();
+                if st != states::MERGING {
+                    break;
+                }
+                if std::time::Instant::now() > deadline {
+                    return Err(EngineError::new(
+                        ErrorKind::Io,
+                        "cancel timed out; merge phase still settling",
+                    ));
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
             }
         }
         self.remove_partial(id)
@@ -921,5 +1130,262 @@ mod preflight_tests {
             e.message
         );
         assert!(!matches!(e.kind, ErrorKind::DiskFull));
+    }
+}
+
+#[cfg(test)]
+mod merge_tests {
+    use super::*;
+
+    struct NoHttp;
+    #[async_trait::async_trait]
+    impl crate::ports::HttpPort for NoHttp {
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+        async fn inspect(
+            &self,
+            _url: &str,
+            _h: &crate::ports::RequestHeaders,
+        ) -> Result<crate::inspect::ResourceInfo, EngineError> {
+            Err(EngineError::new(ErrorKind::Io, "unused in merge tests"))
+        }
+        async fn open_range(
+            &self,
+            _r: crate::ports::RangeRequest,
+        ) -> Result<crate::ports::RangeResponse, EngineError> {
+            Err(EngineError::new(ErrorKind::Io, "unused in merge tests"))
+        }
+    }
+
+    #[derive(Clone, Copy)]
+    enum Mode {
+        Ok,
+        Fail,
+        WaitCancel,
+    }
+
+    /// Fake merge stage: Ok writes the output (like ffmpeg would), Fail returns a
+    /// merge failure, WaitCancel blocks until the kill trigger fires.
+    struct FakeMerge(Mode);
+
+    #[async_trait::async_trait]
+    impl crate::ports::MediaMergePort for FakeMerge {
+        async fn merge(
+            &self,
+            _id: i64,
+            _video: &std::path::Path,
+            _audio: &std::path::Path,
+            output: &std::path::Path,
+            _bus: &crate::events::EventBus,
+            kill: tokio::sync::watch::Receiver<bool>,
+        ) -> Result<(), EngineError> {
+            match self.0 {
+                Mode::Ok => {
+                    std::fs::write(output, b"merged-bytes").map_err(|e| {
+                        EngineError::new(ErrorKind::Io, format!("write failed: {e}"))
+                    })?;
+                    Ok(())
+                }
+                Mode::Fail => Err(EngineError::new(ErrorKind::MergeFailed, "boom")),
+                Mode::WaitCancel => {
+                    let mut kill = kill;
+                    let _ = kill.wait_for(|v| *v).await;
+                    Err(EngineError::new(ErrorKind::Cancelled, "merge cancelled"))
+                }
+            }
+        }
+    }
+
+    fn mgr(dir: &std::path::Path) -> Arc<DownloadManager> {
+        let cfg = EngineConfig {
+            data_dir: dir.to_path_buf(),
+            ..Default::default()
+        };
+        DownloadManager::new(cfg, Arc::new(NoHttp)).unwrap()
+    }
+
+    fn completed_row(dest: &std::path::Path, name: &str, config_json: &str) -> DownloadRow {
+        DownloadRow {
+            url: "https://example.com/stream".into(),
+            dest_dir: dest.display().to_string(),
+            final_name: name.into(),
+            state: states::COMPLETED.to_string(),
+            accept_ranges: "yes".into(),
+            mode: "segmented".into(),
+            config_json: config_json.into(),
+            created_at: engine_state::now_iso(),
+            ..Default::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn merge_streams_happy_path_updates_video_row() {
+        let data = tempfile::tempdir().unwrap();
+        let dest = tempfile::tempdir().unwrap();
+        let m = mgr(data.path());
+        std::fs::write(dest.path().join("video.m4s"), b"v").unwrap();
+        std::fs::write(dest.path().join("audio.m4s"), b"a").unwrap();
+        let v =
+            m.db.insert_download(&completed_row(dest.path(), "video.m4s", "{}"))
+                .unwrap();
+        let a =
+            m.db.insert_download(&completed_row(dest.path(), "audio.m4s", "{}"))
+                .unwrap();
+        m.set_media_merge(Some(Arc::new(FakeMerge(Mode::Ok))));
+        let mut rx = m.events();
+
+        m.merge_streams(v, a).await.unwrap();
+
+        let row = m.db.get_download(v).unwrap().unwrap();
+        assert_eq!(row.state, states::COMPLETED);
+        assert_eq!(row.final_name, "video.mp4");
+        assert!(!row.verified);
+        assert!(row.sha256.is_none());
+        let out = dest.path().join("video.mp4");
+        assert_eq!(std::fs::read(&out).unwrap(), b"merged-bytes");
+        // audio row untouched
+        assert_eq!(
+            m.db.get_download(a).unwrap().unwrap().state,
+            states::COMPLETED
+        );
+        // events: merging, merged (from the pipeline layer would come here — the fake
+        // doesn't emit), download-state merging, completed
+        let mut saw_merging = false;
+        let mut saw_completed = false;
+        while let Ok(ev) = rx.try_recv() {
+            match ev {
+                Event::DownloadState { state, .. } if state == states::MERGING => {
+                    saw_merging = true
+                }
+                Event::Completed { path, .. } => {
+                    assert_eq!(path, out.display().to_string());
+                    saw_completed = true;
+                }
+                _ => {}
+            }
+        }
+        assert!(saw_merging && saw_completed);
+    }
+
+    #[tokio::test]
+    async fn merge_streams_without_pipeline_is_honest() {
+        let data = tempfile::tempdir().unwrap();
+        let m = mgr(data.path());
+        let e = m.merge_streams(1, 2).await.unwrap_err();
+        assert_eq!(e.kind, ErrorKind::InvalidConfig);
+        assert!(e.message.contains("media pipeline not configured"));
+    }
+
+    #[tokio::test]
+    async fn merge_failure_marks_row_failed() {
+        let data = tempfile::tempdir().unwrap();
+        let dest = tempfile::tempdir().unwrap();
+        let m = mgr(data.path());
+        std::fs::write(dest.path().join("video.m4s"), b"v").unwrap();
+        std::fs::write(dest.path().join("audio.m4s"), b"a").unwrap();
+        let v =
+            m.db.insert_download(&completed_row(dest.path(), "video.m4s", "{}"))
+                .unwrap();
+        let a =
+            m.db.insert_download(&completed_row(dest.path(), "audio.m4s", "{}"))
+                .unwrap();
+        m.set_media_merge(Some(Arc::new(FakeMerge(Mode::Fail))));
+        let mut rx = m.events();
+        let e = m.merge_streams(v, a).await.unwrap_err();
+        assert_eq!(e.kind, ErrorKind::MergeFailed);
+        let row = m.db.get_download(v).unwrap().unwrap();
+        assert_eq!(row.state, states::FAILED);
+        assert_eq!(row.error_code.as_deref(), Some("MERGE_FAILED"));
+        let mut saw_failed = false;
+        while let Ok(ev) = rx.try_recv() {
+            if let Event::Failed { kind, .. } = ev {
+                assert_eq!(kind, "MERGE_FAILED");
+                saw_failed = true;
+            }
+        }
+        assert!(saw_failed);
+    }
+
+    #[tokio::test]
+    async fn cancel_during_merge_kills_and_forgets() {
+        let data = tempfile::tempdir().unwrap();
+        let dest = tempfile::tempdir().unwrap();
+        let m = mgr(data.path());
+        std::fs::write(dest.path().join("video.m4s"), b"v").unwrap();
+        std::fs::write(dest.path().join("audio.m4s"), b"a").unwrap();
+        let v =
+            m.db.insert_download(&completed_row(dest.path(), "video.m4s", "{}"))
+                .unwrap();
+        let a =
+            m.db.insert_download(&completed_row(dest.path(), "audio.m4s", "{}"))
+                .unwrap();
+        m.set_media_merge(Some(Arc::new(FakeMerge(Mode::WaitCancel))));
+
+        let m2 = m.clone();
+        let job = tokio::spawn(async move { m2.merge_streams(v, a).await });
+
+        // wait for the phase transition
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            let st = m.db.get_download(v).unwrap().unwrap().state;
+            if st == states::MERGING {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "never reached MERGING"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+
+        m.cancel(v).await.unwrap(); // cancel-and-forget
+        let e = job.await.unwrap().unwrap_err();
+        assert_eq!(e.kind, ErrorKind::Cancelled);
+        assert!(m.db.get_download(v).unwrap().is_none(), "row forgotten");
+    }
+
+    #[tokio::test]
+    async fn existing_output_picks_numbered_name() {
+        let data = tempfile::tempdir().unwrap();
+        let dest = tempfile::tempdir().unwrap();
+        let m = mgr(data.path());
+        std::fs::write(dest.path().join("video.m4s"), b"v").unwrap();
+        std::fs::write(dest.path().join("audio.m4s"), b"a").unwrap();
+        std::fs::write(dest.path().join("video.mp4"), b"old").unwrap();
+        let v =
+            m.db.insert_download(&completed_row(dest.path(), "video.m4s", "{}"))
+                .unwrap();
+        let a =
+            m.db.insert_download(&completed_row(dest.path(), "audio.m4s", "{}"))
+                .unwrap();
+        m.set_media_merge(Some(Arc::new(FakeMerge(Mode::Ok))));
+        m.merge_streams(v, a).await.unwrap();
+        assert_eq!(
+            m.db.get_download(v).unwrap().unwrap().final_name,
+            "video(1).mp4"
+        );
+    }
+
+    #[tokio::test]
+    async fn output_ext_from_media_merge_spec() {
+        let data = tempfile::tempdir().unwrap();
+        let dest = tempfile::tempdir().unwrap();
+        let m = mgr(data.path());
+        std::fs::write(dest.path().join("video.m4s"), b"v").unwrap();
+        std::fs::write(dest.path().join("audio.m4s"), b"a").unwrap();
+        let cfg = r#"{"media_merge":{"audio_url":"https://example.com/a.m4a","output_ext":"mkv"}}"#;
+        let v =
+            m.db.insert_download(&completed_row(dest.path(), "video.m4s", cfg))
+                .unwrap();
+        let a =
+            m.db.insert_download(&completed_row(dest.path(), "audio.m4s", "{}"))
+                .unwrap();
+        m.set_media_merge(Some(Arc::new(FakeMerge(Mode::Ok))));
+        m.merge_streams(v, a).await.unwrap();
+        assert_eq!(
+            m.db.get_download(v).unwrap().unwrap().final_name,
+            "video.mkv"
+        );
     }
 }

@@ -199,3 +199,29 @@
   (cleaned for disk pressure earlier).
 - Script: scripts/github-release-upload.sh (token via env only).
 - **2026-11-21 16:34 [watchdog]** GREEN: fmt+clippy clean, 164 tests passed
+
+## 2026-11-21 ~17:15 (roadmap 4 slice 2 — merge phase wired into the manager)
+- engine-core: NEW MediaMergePort trait (ports.rs — same seam pattern as HttpPort);
+  DownloadManager gains media_merge + merge_triggers fields, set_media_merge()/
+  has_media_merge(), and merge_streams(video_id, audio_id): both rows must be
+  COMPLETED with files on disk → video row MERGING (event) → port.merge
+  (`-c copy` + ffprobe via engine-media) → COMPLETED with merged path; honest
+  failures set FAILED+MERGE_FAILED, cancel sets CANCELLED. Output naming: stem + ext
+  (media_merge.output_ext, default mp4), collision → name(1).ext unless overwrite.
+  Merged row hash fields cleared honestly (stream hashes ≠ merged artifact).
+- cancel() now kills in-flight merges via the trigger (60s settle); pause() during
+  MERGING refuses honestly (ffmpeg has no resume).
+- config: DownloadConfig.media_merge: Option<MediaMergeSpec { audio_url, output_ext }>
+  — declared contract for the resolved-job flow (#[serde(default)] keeps old rows).
+- engine-state: states::MERGING.
+- engine-media: MergePort<P> adapter implements MediaMergePort (delegates to
+  MediaPipeline); discover_subprocess() for hosts.
+- 6 new manager tests (happy path + events, not-configured honesty, failure marking,
+  cancel-during-merge kill-and-forget, collision numbering, output_ext spec). Suite:
+  170 passed / 0 failed, clippy -D warnings clean.
+- CI (roadmap 7): workflows moved to repo ROOT (nested download-engine/.github was
+  invisible to GitHub — windows.yml had NEVER run); ci.yml added. First runs: ci ✅
+  SUCCESS on f3b8ac7; windows ❌ at the test step — 5 PRE-EXISTING windows-specific
+  failures (preflight destination, extractor stubs, crash-resume kill) surfaced by the
+  first real Windows run; desktop job correctly skipped (dispatch-only; app/ sources
+  not in repo). Windows test fixes = next work item.

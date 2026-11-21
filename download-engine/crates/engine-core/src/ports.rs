@@ -148,6 +148,28 @@ pub trait HttpPort: Send + Sync {
     async fn open_range(&self, req: RangeRequest) -> Result<RangeResponse, EngineError>;
 }
 
+/// MediaPipeline seam (architecture review §9): the `-c copy` merge stage lives
+/// OUTSIDE the transfer engine — engine-media implements this and injects it via
+/// `DownloadManager::set_media_merge`. Contract for implementations: LGPL-gated
+/// ffmpeg subprocess, kill-safe on `kill`, ffprobe post-validation, honest errors
+/// (`MISSING_FFMPEG`/`GPL_BUILD`/`MERGE_FAILED`/`CORRUPT_MEDIA`), and `Merging`/`Merged`
+/// events on the given bus. Docs: docs/FFMPEG_INTEGRATION.md.
+#[async_trait]
+pub trait MediaMergePort: Send + Sync {
+    /// Stream-copy `video`+`audio` into `output` (the manager owns the output path).
+    /// On cancel (kill trigger) implementations return `Cancelled` and must have
+    /// killed the child. Never claim success without post-validation.
+    async fn merge(
+        &self,
+        id: i64,
+        video: &std::path::Path,
+        audio: &std::path::Path,
+        output: &std::path::Path,
+        bus: &crate::events::EventBus,
+        kill: tokio::sync::watch::Receiver<bool>,
+    ) -> Result<(), EngineError>;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
