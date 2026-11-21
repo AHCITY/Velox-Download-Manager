@@ -11,8 +11,9 @@
 # (A classic PAT with the "repo" scope also works.)
 set -eu
 # env var first; fallback: gitignored local token file (0600) for unattended cycles
-[ -n "${GITHUB_TOKEN:-}" ] && [ -r /home/z/my-project/.secrets/github-token ] && \
+if [ -z "${GITHUB_TOKEN:-}" ] && [ -r /home/z/my-project/.secrets/github-token ]; then
   GITHUB_TOKEN="$(cat /home/z/my-project/.secrets/github-token)"
+fi
 : "${GITHUB_TOKEN:?Set GITHUB_TOKEN (env) or provide .secrets/github-token (0600, gitignored)}"
 cd /home/z/my-project
 

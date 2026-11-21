@@ -20,8 +20,10 @@ PORTABLE_HASH="$(sha256sum "$DIR/Velox.exe" | cut -d' ' -f1)"
 for f in "$DIR/Velox-Setup-x64.exe" "$DIR/Velox.exe" "$DIR/SHA256SUMS.txt" "$DIR/INSTALL-AND-VERIFY.md"; do
   [ -f "$f" ] || { echo "MISSING: $f"; exit 1; }
 done
-[ -n "${GITHUB_TOKEN:-}" ] || [ -r /home/z/my-project/.secrets/github-token ] || { echo "GITHUB_TOKEN not set"; exit 1; }
-[ -n "${GITHUB_TOKEN:-}" ] || GITHUB_TOKEN="$(cat /home/z/my-project/.secrets/github-token)"
+if [ -z "${GITHUB_TOKEN:-}" ] && [ -r /home/z/my-project/.secrets/github-token ]; then
+  GITHUB_TOKEN="$(cat /home/z/my-project/.secrets/github-token)"
+fi
+[ -n "${GITHUB_TOKEN:-}" ] || { echo "GITHUB_TOKEN not set"; exit 1; }
 
 H=(-H "Authorization: Bearer $GITHUB_TOKEN" -H "Accept: application/vnd.github+json")
 API="https://api.github.com/repos/$REPO"
