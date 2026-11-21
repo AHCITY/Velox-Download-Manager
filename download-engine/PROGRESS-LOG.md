@@ -242,3 +242,12 @@
 - KNOWN-ISSUES: #6/#8/#9 closed (GitHub sync, UrlAdapter, Windows rebuild); #11 added
   (windows gate not green until windows.yml passes).
 - Local suite still 170/0; pushed for CI re-run on both platforms.
+
+## 2026-11-21 ~17:50 (roadmap 5 — YouTube verification checklist)
+- NEW docs/YOUTUBE_VERIFICATION.md: user-executable residential-network checklist —
+  S0 baseline (standalone yt-dlp isolates the IP question), S1 honest refusal,
+  S2 extractor+download (core case), S3 cookie remedy (D2 path), S4 DASH two-stream
+  + merge incl. cancel-during-merging kill test; honest-failure taxonomy
+  (MISSING_FFMPEG/GPL_BUILD/CORRUPT_MEDIA); per-scenario recording format for
+  KNOWN-ISSUES #1; lists exactly what CI already proved vs what residential testing
+  adds. Copy delivered to download/YOUTUBE_VERIFICATION.md for the user.

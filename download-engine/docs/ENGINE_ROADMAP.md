@@ -26,7 +26,8 @@ Order follows the master execution control (strict sequence, no parallel mission
 4. FFmpeg merge stage (MediaPipeline) per docs/OPEN_SOURCE_AUDIT.md constraints:
    LGPL build, subprocess, kill-safe, `Merging { id }` events, ffprobe post-validation,
    "corrupt media / missing ffmpeg" honest errors. Authorized test media only.
-5. YouTube residential-network verification checklist (documented for the user; cannot
+5. ✅ DONE (2026-11-21): YouTube residential-network verification checklist written to
+   docs/YOUTUBE_VERIFICATION.md (user-executable copy in download/); cannot
    be executed from this sandbox — bot wall).
 6. Adaptive connection policy: only with real-network evidence; keep current static
    caps otherwise.
