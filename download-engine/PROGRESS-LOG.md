@@ -189,3 +189,12 @@
   honest errors, argv shape, testing rules, non-goals.
 - Suite: workspace GREEN (164 total incl. 10 new), fmt+clippy -D warnings clean.
 - Next slice: manager job-type wiring (merge as post-download phase) + yt-dlp resolve.
+
+## 2026-11-21 ~16:25 (Windows installer published to GitHub Releases)
+- Release v0.1.0 (tagged @ 01e3fe5, make_latest): Velox-Setup-x64.exe (5.2 MB),
+  Velox.exe portable (13.8 MB), SHA256SUMS.txt, INSTALL-AND-VERIFY.md.
+- Verified: local sha256 == SHA256SUMS.txt BEFORE upload; round-trip download from
+  GitHub hashes identical (a848e272…). Release notes document certutil verification,
+  LGPL-ffmpeg-only policy (no bundling), and that the -offline variant is not included
+  (cleaned for disk pressure earlier).
+- Script: scripts/github-release-upload.sh (token via env only).
