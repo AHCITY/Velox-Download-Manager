@@ -52,12 +52,31 @@ Format per entry: cycle, timestamp, completed, files, tests (real counts), git, 
 - Tests: engine-core 53+15+16+22+2 all green; workspace clippy -D warnings clean; fmt clean. Full workspace gate running.
 - Next: commit/push → Cycle 5 (auth/redirect e2e tests + sustained-429 exhaustion test).
 
-### Cycle 5 — adversarial HTTP tests: credential scoping, redirect loops, rate-limit exhaustion (audit P1-4 + test-gap batch) (COMPLETE pending full-suite gate)
+### Cycle 5 — adversarial HTTP tests: credential scoping, redirect loops, rate-limit exhaustion (audit P1-4 + test-gap batch) (COMPLETE)
 - Completed:
   - engine-testserver knobs: `redirect_to` (interior-mutable, wires A→B→A loops after both servers know their ports) + `redirect_times` + `sustained_429_from_request` (rate-limit from an exact request index onward).
   - cross_origin_redirect_strips_credentials_but_keeps_range: bearer token reaches the authenticated origin, is stripped on the cross-origin hop, Range survives — closes the audit's "auth forwarding completely untested e2e" gap (a regression here leaked credentials silently).
   - redirect_loop_fails_instead_of_spinning: A↔B infinite loop fails the probe with the typed redirect-loop error (never spins).
   - sustained_429_exhausts_retries_honestly_and_stays_resumable: sustained 429 after start → 5 in-place retries → honest failed row with resumable part file; limiter cleared → resume completes byte-exact. Proves the "paused-by-transient-failure stays resumable" invariant end-to-end.
 - Files: crates/engine-testserver/src/lib.rs, crates/engine-core/tests/http_compat.rs.
-- Tests: engine-core 53 lib + 18 http_compat (4 new) + 16 + 22 + 2, all green; clippy -D warnings clean (one field_reassign_with_default fixed); fmt clean. Full workspace gate running.
-- Next: commit/push → Cycle 6 (installer hygiene batch + WINDOWS_COMPAT.md reconciliation).
+- Tests: workspace suite 178 passed / 0 failed; clippy -D warnings clean; fmt clean.
+- Git: commit ccfe556 pushed + remote verified.
+- Incident note: the first full-suite gate failed on engine-bridge's SSE test — root cause was disk exhaustion (target dirs filled the 9.9G root fs mid-run), not code; isolated rerun 10/10, clean gate green after freeing 2.4G. CARGO_INCREMENTAL=0 is now used for suite runs to avoid incremental-cache bloat.
+
+## SESSION PAUSE (2026-11-21 ~19:30) — continuation instructions
+
+Session hit its execution limit after 5 cycles (setup+audit, merge wiring, merge safety,
+responsiveness, adversarial HTTP tests). All work committed + pushed + remote-verified.
+
+Resume by sending any follow-up message: the on-duty agent reads
+docs/AUTONOMOUS_CYCLE_TASK_QUEUE.md (remaining tasks 6-15, top-down) and
+docs/AUTONOMOUS_CYCLE_PROGRESS.md, then continues cycles. Rules are in the queue file header.
+
+Environment state at pause:
+- HEAD ccfe556 on main, pushed + verified; suite 178/0; clippy+fmt clean.
+- GitHub Release v0.1.0 assets = installer from de7a165 (Cycle 4), round-trip verified (10cb2586…).
+  NOTE: Cycle 5 changed no engine behavior → no installer refresh was required.
+- Windows cross-toolchain live in /tmp (llvmroot + nsisx + .xwin-cache persistent) — see scripts/TOOLCHAIN-SETUP.md.
+- app/src-tauri/target deleted for disk; next installer refresh = full ~5 min rebuild.
+- GitHub token: gitignored /home/z/my-project/.secrets/github-token (0600), auto-loaded by scripts.
+- Disk budget: ~1.2G free — clean download-engine/target before big test runs.
