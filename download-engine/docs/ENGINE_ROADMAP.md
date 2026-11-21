@@ -21,7 +21,7 @@ Order follows the master execution control (strict sequence, no parallel mission
 2. Restore Linux CLI (cleaned for disk) + rerun full suite to re-verify tree.
 
 ## Next (engine mission remainder — P0/P1 first)
-3. `UrlAdapter` trait refactor (architecture review §3) — narrow, tested, no behavior
+3. ✅ DONE (2026-11-21): `UrlAdapter` trait refactor (architecture review §3) — narrow, tested, no behavior
    change; unblocks media pipeline cleanly.
 4. FFmpeg merge stage (MediaPipeline) per docs/OPEN_SOURCE_AUDIT.md constraints:
    LGPL build, subprocess, kill-safe, `Merging { id }` events, ffprobe post-validation,

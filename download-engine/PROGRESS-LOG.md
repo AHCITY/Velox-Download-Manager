@@ -158,3 +158,15 @@
   Workflows R+W (windows.yml in tree).
 - From now on: every verified milestone ends with a commit + push. GitHub is the
   durable source of truth (3rd sandbox rollback proved local-only storage unsafe).
+
+## 2026-11-21 ~16:15 (roadmap 3 — UrlAdapter refactor)
+- NEW: crates/engine-core/src/url_adapter.rs — UrlKind {Direct, Media}, UrlAdapter
+  trait (parse/classify, no I/O), HttpUrlAdapter = the manager URL gate ported
+  VERBATIM (http/https only, host required, no embedded credentials; identical
+  messages), validate() via static adapter. 8 unit tests incl. trait-object usage.
+- manager.rs::validate_url now delegates to the seam (call sites untouched, zero
+  behavior change — incl. documented lenient-parse parity for `https:///path`).
+- lib.rs re-exports UrlAdapter/HttpUrlAdapter/UrlKind.
+- Suite: 154 passed / 0 failed (146 prior + 8 new), fmt+clippy -D warnings clean.
+- Media classification intentionally returns Direct for all URLs today; DASH/HLS
+  detection arrives with the MediaPipeline milestone (roadmap 4).

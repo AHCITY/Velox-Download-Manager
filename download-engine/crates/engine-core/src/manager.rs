@@ -264,28 +264,11 @@ impl DownloadManager {
     /// URL gate shared by add/inspect (audit A12): http/https only, authority required,
     /// embedded userinfo rejected — credentials belong in AuthConfig (URL-borne credentials
     /// are persisted in the manifest and echoed in status output).
+    ///
+    /// Delegates to the `url_adapter` seam (architecture review §3); the gate itself
+    /// lives there now, tested in isolation.
     fn validate_url(url: &str) -> Result<url::Url, EngineError> {
-        let parsed = url::Url::parse(url)
-            .map_err(|e| EngineError::new(ErrorKind::InvalidUrl, format!("invalid url: {e}")))?;
-        if !matches!(parsed.scheme(), "http" | "https") {
-            return Err(EngineError::new(
-                ErrorKind::InvalidUrl,
-                format!(
-                    "unsupported scheme {:?} (engine supports http/https)",
-                    parsed.scheme()
-                ),
-            ));
-        }
-        if parsed.host_str().is_none() || parsed.host_str() == Some("") {
-            return Err(EngineError::new(ErrorKind::InvalidUrl, "URL has no host"));
-        }
-        if !parsed.username().is_empty() || parsed.password().is_some() {
-            return Err(EngineError::new(
-                ErrorKind::InvalidUrl,
-                "URL contains embedded credentials; use the auth config instead",
-            ));
-        }
-        Ok(parsed)
+        crate::url_adapter::validate(url)
     }
 
     /// Inspect a URL without registering a download (UI preview; UI_READINESS §2.2).
