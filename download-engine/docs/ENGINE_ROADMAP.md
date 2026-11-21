@@ -31,7 +31,7 @@ Order follows the master execution control (strict sequence, no parallel mission
    be executed from this sandbox — bot wall).
 6. Adaptive connection policy: only with real-network evidence; keep current static
    caps otherwise.
-7. CI workflow (fmt/clippy/test on push) — requires GitHub auth first.
+7. ✅ DONE (2026-11-21): CI workflows at repo ROOT (ci.yml linux + windows.yml); both gates green on 80dfe9e — first green windows run ever (KNOWN-ISSUES #11).
 
 ## ⏸ Gated on engine acceptance gate
 8. Browser integration mission (Phase 9): native-messaging host, extension, download

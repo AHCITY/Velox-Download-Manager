@@ -40,11 +40,13 @@ docs/ROOT-CAUSE-REPORT.md and docs/ENGINE-AUDIT-2026-11-21.md, not here.
 10. **Nightly watchdog died with sandbox recycles** (processes don't survive); it is
     relaunched manually at end of each working turn. No cron service exists in this
     runtime (documented 2026-11-20).
-11. **Windows CI gate red — 5 pre-existing Windows-only test failures** (first-ever
-    real Windows run exposed them after workflows moved to the repo root, 2026-11-21).
-    Fixed in a65f6f2+ : preflight tests used Linux-only `/proc` paths (replaced with a
-    cross-platform blocker-file); crash-resume kill used a fixed 150 ms sleep that can
-    precede process startup on Windows (now polls for the manifest row); extractor
-    tests are `#[cfg(unix)]`-gated pending Windows stubs (powershell stub + tasklist
-    liveness). GATE IS NOT GREEN until a windows.yml run passes — no Windows-support
-    claim may be made before that (windows.yml header rule).
+11. **~~Windows CI gate red~~ GREEN (2026-11-21, run on 80dfe9e — first green windows.yml
+    ever)**. Root causes fixed: Linux-only `/proc` paths in preflight tests; fixed-sleep
+    kill racing process startup on Windows; Unix-only extractor stubs (cfg-gated,
+    Windows equivalents = powershell stub + tasklist liveness, still to write);
+    `Held(0)` pid on Windows (exclusive lockfile unreadable — honest "pid unavailable"
+    message); windows lock-test child spawned without test-filter args; unix-only
+    imports tripping clippy -D warnings; crash-test children' stderr captured for
+    diagnosability + serialized crash tests on CI. No Windows-support claim may still
+    exceed what these runs cover: unit+integration suites, CLI/API smokes, lock
+    crash-recovery — all green.

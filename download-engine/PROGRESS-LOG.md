@@ -266,3 +266,16 @@
 - All three are test/fixture-level; no product code change except the honest
   LockError::Held(0) Display wording. Suite 170/0, clippy clean.
 - **2026-11-21 17:05 [watchdog]** GREEN: fmt+clippy clean, 170 tests passed
+- **2026-11-21 17:21 [watchdog]** GREEN: fmt+clippy clean, 170 tests passed
+
+## 2026-11-21 ~19:20 (roadmap 7 COMPLETE — both CI gates green, first ever)
+- windows.yml GREEN on 80dfe9e: fmt, clippy -D warnings, build, FULL workspace tests,
+  CLI stdio smoke, API v2 smoke (Host guard), crash-recovery focus (windows lock
+  variant + serialized crash_resume). ci.yml green on every commit since a65f6f2.
+- Rounds: (1) /proc paths, kill-sleep race, extractor fixtures gated; (2) third unix
+  fixture, lock Held(0) honesty, child test-filter args, unix-only imports; (3)
+  crash-test child stderr captured (DXDL_HOME created first — my 263952e regression,
+  caught locally before CI), 60 s row deadline, crash tests serialized on CI.
+- KNOWN-ISSUES #11 closed (residual: windows extractor-stub equivalents to write).
+- Engine acceptance-gate item "regression suite green on BOTH platforms" now holds on
+  GitHub-hosted real Windows runners.
