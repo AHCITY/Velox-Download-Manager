@@ -64,10 +64,13 @@ jobs:
           Stop-Process -Id $p.Id -Force
           Write-Host "API v2 smoke: OK"
 
+      # --test-threads=1: each of these tests spawns real velox children + servers;
+      # serialized they stay within windows-runner time budgets (Defender scans on
+      # freshly built exes make parallel spawns flaky — 2026-11-21 CI evidence)
       - name: Crash-recovery focus (windows lock variant + resume tests)
         run: |
           cargo test -p engine-storage -- --exact tests::lock_recovered_after_child_process_death
-          cargo test -p engine-cli --test crash_resume
+          cargo test -p engine-cli --test crash_resume -- --test-threads=1
 
   # ---- Job 2: desktop application + installer (manual dispatch only) ----
   # The Tauri app sources (app/src-tauri) are NOT in this repository yet — the

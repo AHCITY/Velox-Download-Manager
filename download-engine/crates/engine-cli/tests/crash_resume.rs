@@ -107,7 +107,17 @@ async fn wait_part_bytes(part: &Path, min: u64, timeout: Duration) {
     }
 }
 
+/// Spawn a real `velox download`. Child stderr goes to a file next to `home`
+/// (`velox-stderr.log`) so a timeout can show WHY the child produced nothing —
+/// stdio::null() made windows-runner failures undiagnosable.
 fn spawn_download(server_url: &str, out: &Path, home: &Path) -> tokio::process::Child {
+    let stderr_log = home.join("velox-stderr.log");
+    let stderr = std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .open(&stderr_log)
+        .expect("open stderr log");
     tokio::process::Command::new(velox())
         .args([
             "download",
@@ -121,7 +131,7 @@ fn spawn_download(server_url: &str, out: &Path, home: &Path) -> tokio::process::
         .env("DXDL_HOME", home)
         .env("RUST_LOG", "error")
         .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
+        .stderr(stderr)
         .spawn()
         .expect("spawn velox download")
 }
@@ -147,14 +157,20 @@ async fn sigkill_mid_download_resume_in_fresh_process_is_byte_exact() {
 
     let mut child = spawn_download(&server.url("/file"), &out, &home);
     let part = {
-        // wait for the manifest row, then for real progress
-        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        // wait for the manifest row, then for real progress. 60 s (not 30): windows
+        // runners can be slow on the first spawn of a freshly built exe (Defender
+        // scans); on failure the assert prints the child's stderr log.
+        let deadline = std::time::Instant::now() + Duration::from_secs(60);
         let part = loop {
             let d = db(&home);
             if let Some(row) = d.list_downloads().unwrap().first() {
                 break PathBuf::from(row.temp_path.clone().unwrap());
             }
-            assert!(std::time::Instant::now() < deadline, "row never created");
+            assert!(
+                std::time::Instant::now() < deadline,
+                "row never created; child stderr: {}",
+                std::fs::read_to_string(home.join("velox-stderr.log")).unwrap_or_default()
+            );
             tokio::time::sleep(Duration::from_millis(100)).await;
         };
         tokio::time::sleep(Duration::from_millis(300)).await; // let it start writing
