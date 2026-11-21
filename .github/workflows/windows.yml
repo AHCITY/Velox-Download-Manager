@@ -73,9 +73,9 @@ jobs:
           cargo test -p engine-cli --test crash_resume -- --test-threads=1
 
   # ---- Job 2: desktop application + installer (manual dispatch only) ----
-  # The Tauri app sources (app/src-tauri) are NOT in this repository yet — the
-  # shipped installer is cross-built locally. Flip this to push/tags when app/
-  # lands in the repo.
+  # Sources ARE tracked (download-engine/app/src-tauri) but Cargo.lock is NOT
+  # committed yet — the reproducibility gate below requires it. Commit the lock
+  # (and flip this to push/tags) to enable CI-built installers.
   desktop:
     needs: windows
     if: github.event_name == 'workflow_dispatch'
