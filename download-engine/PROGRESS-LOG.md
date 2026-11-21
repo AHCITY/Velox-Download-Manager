@@ -279,3 +279,14 @@
 - KNOWN-ISSUES #11 closed (residual: windows extractor-stub equivalents to write).
 - Engine acceptance-gate item "regression suite green on BOTH platforms" now holds on
   GitHub-hosted real Windows runners.
+- **2026-11-21 17:35 [watchdog]** FAILED — logs archived: /home/z/my-project/backup/watchdog-failures
+- **2026-11-21 17:52 [watchdog]** SKIPPED gate (only 0KB free disk)
+- **2026-11-21 18:06 [watchdog]** FAILED — logs archived: /home/z/my-project/backup/watchdog-failures
+- **2026-11-21 18:22 [watchdog]** SKIPPED gate (only 1397252KB free disk)
+
+## 2026-11-21 — Mission cycle 2: merge stage wired end-to-end (P0 fix)
+- engine-api: `download.merge {video_id, audio_id}`; `engine.info` reports `merge_capable`.
+- engine-cli: `velox merge` subcommand; `wire_media_merge()` discovers LGPL ffmpeg on PATH at serve/serve-http/merge startup (honest stderr either way).
+- Tauri app: engine-media dep + merge-port discovery injected at setup.
+- Tests: workspace 171 passed / 0 failed / 1 ignored; fmt + clippy -D warnings clean. Audit: docs/AUTONOMOUS_CYCLE_INITIAL_AUDIT.md.
+- Known follow-up (next cycle): merge output still written to final path by the pipeline; temp+.part rename + MERGING startup sweep queued (P0-2).

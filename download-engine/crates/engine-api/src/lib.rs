@@ -158,6 +158,7 @@ pub async fn handle_line(manager: &Arc<DownloadManager>, line: &str) -> Option<S
             "data_dir": manager.data_dir().display().to_string(),
             "max_connections_per_host": manager.engine_config().max_connections_per_host,
             "max_concurrent_downloads": manager.engine_config().max_concurrent_downloads,
+            "merge_capable": manager.has_media_merge(),
             "default_out_dir": manager.engine_config().default_out_dir.display().to_string(),
         })),
         "download.create" => {
@@ -232,6 +233,24 @@ pub async fn handle_line(manager: &Arc<DownloadManager>, line: &str) -> Option<S
                 .map(|v| serde_json::to_value(v).unwrap_or(Value::Null))
                 .map_err(engine_err)
         }
+        "download.merge" => {
+            // MediaPipeline phase (docs/FFMPEG_INTEGRATION.md §2): stream-copy merge
+            // of two COMPLETED stream downloads. Fails honestly when the manager has
+            // no merge port configured (no LGPL ffmpeg found at startup).
+            let video_id = params
+                .get("video_id")
+                .or_else(|| params.get("id"))
+                .and_then(parse_id);
+            let audio_id = params.get("audio_id").and_then(parse_id);
+            let (Some(video_id), Some(audio_id)) = (video_id, audio_id) else {
+                return Some(bad_params_json(id, "missing video_id/audio_id"));
+            };
+            manager
+                .merge_streams(video_id, audio_id)
+                .await
+                .map(|_| json!({"video_id": video_id, "audio_id": audio_id, "merged": true}))
+                .map_err(engine_err)
+        }
         other => Err(err(-32601, format!("method not found: {other}"))),
     };
 
@@ -290,6 +309,32 @@ mod tests {
         .await
         .unwrap();
         assert!(r.contains("INVALID_URL"), "{r}");
+    }
+
+    #[tokio::test]
+    async fn merge_params_validated_and_capability_reported() {
+        let m = manager();
+        // missing params → -32602
+        let r = handle_line(
+            &m,
+            r#"{"jsonrpc":"2.0","id":11,"method":"download.merge","params":{}}"#,
+        )
+        .await
+        .unwrap();
+        assert!(r.contains("-32602"), "{r}");
+        // no merge port configured → honest INVALID_CONFIG, not a fake success
+        let r = handle_line(
+            &m,
+            r#"{"jsonrpc":"2.0","id":12,"method":"download.merge","params":{"video_id":1,"audio_id":2}}"#,
+        )
+        .await
+        .unwrap();
+        assert!(r.contains("media pipeline not configured"), "{r}");
+        // capability is reported honestly in engine.info
+        let r = handle_line(&m, r#"{"jsonrpc":"2.0","id":13,"method":"engine.info"}"#)
+            .await
+            .unwrap();
+        assert!(r.contains("\"merge_capable\":false"), "{r}");
     }
 
     #[tokio::test]

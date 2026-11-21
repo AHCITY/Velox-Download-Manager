@@ -70,6 +70,9 @@ USAGE:
   velox list                     list downloads
   velox status <ID>              detailed status incl. segments and recent errors
   velox pause <ID> | resume <ID> | cancel <ID> | remove <ID> | verify <ID>
+  velox merge <VIDEO_ID> <AUDIO_ID>
+                                 stream-copy merge of two COMPLETED stream
+                                 downloads (requires an LGPL ffmpeg on PATH)
   velox serve                    JSON-RPC v1 over stdio
   velox serve-http [options]     API v2 + web UI (desktop preview)
       --bind <ADDR>              bind address (default 127.0.0.1)
@@ -301,6 +304,7 @@ async fn run() -> u8 {
             .await
         }
         "verify" => cmd_verify(&manager, rest).await,
+        "merge" => cmd_merge(manager, rest).await,
         "serve" => cmd_serve(manager).await,
         "serve-http" => cmd_serve_http(manager, opts).await,
         "cookies" => cmd_cookies(&manager, rest).await,
@@ -700,7 +704,55 @@ async fn cmd_verify(manager: &Arc<DownloadManager>, rest: Vec<String>) -> u8 {
     }
 }
 
+/// Wire the MediaPipeline merge stage when an LGPL ffmpeg integration is
+/// discoverable on PATH. Honest one-line stderr report either way; absence
+/// never blocks other commands, merge calls then fail with clear guidance
+/// (docs/FFMPEG_INTEGRATION.md §3).
+async fn wire_media_merge(manager: &Arc<DownloadManager>) {
+    if manager.has_media_merge() {
+        return;
+    }
+    match engine_media::MergePort::discover_subprocess().await {
+        Ok(port) => {
+            manager.set_media_merge(Some(Arc::new(port)));
+            eprintln!("media merge: ready (LGPL ffmpeg found)");
+        }
+        Err(e) => {
+            eprintln!(
+                "media merge: unavailable ({}) — merging disabled (docs/FFMPEG_INTEGRATION.md §3)",
+                e.message
+            );
+        }
+    }
+}
+
+async fn cmd_merge(manager: Arc<DownloadManager>, rest: Vec<String>) -> u8 {
+    let ids: Vec<i64> = rest
+        .iter()
+        .filter_map(|a| a.trim().parse::<i64>().ok())
+        .collect();
+    if ids.len() != 2 || rest.len() != 2 {
+        eprintln!("usage: velox merge <VIDEO_ID> <AUDIO_ID>");
+        return 64;
+    }
+    wire_media_merge(&manager).await;
+    match manager.merge_streams(ids[0], ids[1]).await {
+        Ok(()) => {
+            println!(
+                "merge complete: row {} now describes the merged artifact (audio row {} untouched)",
+                ids[0], ids[1]
+            );
+            0
+        }
+        Err(e) => {
+            eprintln!("merge failed: {}: {}", e.kind_code(), e.message);
+            1
+        }
+    }
+}
+
 async fn cmd_serve(manager: Arc<DownloadManager>) -> u8 {
+    wire_media_merge(&manager).await;
     eprintln!("velox serve: JSON-RPC v1 on stdio (one request per line)");
     let serve_fut = engine_api::serve_stdio(manager);
     tokio::select! {
@@ -716,6 +768,7 @@ async fn cmd_serve(manager: Arc<DownloadManager>) -> u8 {
 }
 
 async fn cmd_serve_http(manager: Arc<DownloadManager>, opts: Opts) -> u8 {
+    wire_media_merge(&manager).await;
     let addr = format!("{}:{}", opts.bind, opts.port);
     // dual-stack by default: browsers resolve `localhost` to ::1 first, so binding
     // only 0.0.0.0 (IPv4) makes the UI unreachable-by-400 on some stacks; bind both

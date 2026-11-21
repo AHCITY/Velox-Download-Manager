@@ -149,6 +149,21 @@ fn main() {
             };
             let backend = Arc::new(ReqwestBackend::new(&cfg).map_err(|e| e.to_string())?);
             let manager = DownloadManager::new(cfg, backend).map_err(|e| e.to_string())?;
+
+            // MediaPipeline merge stage: discover an LGPL ffmpeg on PATH and inject
+            // the port. Honest stderr line when absent — merging stays unavailable
+            // instead of pretending (docs/FFMPEG_INTEGRATION.md §3).
+            match tauri::async_runtime::block_on(engine_media::MergePort::discover_subprocess()) {
+                Ok(port) => {
+                    manager.set_media_merge(Some(Arc::new(port)));
+                    eprintln!("media merge: ready (LGPL ffmpeg found)");
+                }
+                Err(e) => eprintln!(
+                    "media merge: unavailable ({}) — merging disabled (docs/FFMPEG_INTEGRATION.md §3)",
+                    e.message
+                ),
+            }
+
             app.manage(AppState {
                 manager: manager.clone(),
                 downloads_root: downloads_root.clone(),

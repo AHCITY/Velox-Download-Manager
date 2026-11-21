@@ -35,6 +35,7 @@ engine-http = { path = "../../crates/engine-http" }
 engine-state = { path = "../../crates/engine-state" }
 engine-api = { path = "../../crates/engine-api" }
 engine-bridge = { path = "../../crates/engine-bridge" }
+engine-media = { path = "../../crates/engine-media" }
 
 [features]
 # tauri's custom-protocol feature is required for production builds

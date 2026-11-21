@@ -253,6 +253,7 @@ dependencies = [
  "engine-bridge",
  "engine-core",
  "engine-http",
+ "engine-media",
  "engine-state",
  "engine-testserver",
  "serde_json",

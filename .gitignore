@@ -13,6 +13,7 @@ velox-cli-linux
 
 # Local config / user uploads: never publish
 .env
+.secrets/
 upload/
 
 # Runtime noise

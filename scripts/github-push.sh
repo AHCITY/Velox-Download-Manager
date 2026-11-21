@@ -10,7 +10,10 @@
 #   - Contents: Read and Write
 # (A classic PAT with the "repo" scope also works.)
 set -eu
-: "${GITHUB_TOKEN:?Set GITHUB_TOKEN to your Personal Access Token (env var only)}"
+# env var first; fallback: gitignored local token file (0600) for unattended cycles
+[ -n "${GITHUB_TOKEN:-}" ] && [ -r /home/z/my-project/.secrets/github-token ] && \
+  GITHUB_TOKEN="$(cat /home/z/my-project/.secrets/github-token)"
+: "${GITHUB_TOKEN:?Set GITHUB_TOKEN (env) or provide .secrets/github-token (0600, gitignored)}"
 cd /home/z/my-project
 
 URL=$(git remote get-url origin)

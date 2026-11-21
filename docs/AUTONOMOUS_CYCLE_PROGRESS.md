@@ -14,7 +14,18 @@ Format per entry: cycle, timestamp, completed, files, tests (real counts), git, 
 - Completed: audit doc, task queue, toolchain recipe, release-refresh script (scripts/github-release-refresh.sh), windows.yml desktop-job comment corrected (real gate reason: Cargo.lock not committed).
 - Files: docs/AUTONOMOUS_CYCLE_INITIAL_AUDIT.md, docs/AUTONOMOUS_CYCLE_TASK_QUEUE.md, scripts/TOOLCHAIN-SETUP.md, scripts/github-release-refresh.sh, .github/workflows/windows.yml.
 - Tests: n/a (audit only); workspace suite last known 164 green on 69810c0.
-- Git: commit follows; push with verified token; remote HEAD verify after push.
+- Git: commit 9a96dab pushed + remote verified (git ls-remote == local).
 - Next: Cycle 2 (wire merge end-to-end).
 
-(Cycle agents append below this line; keep the table format above.)
+### Cycle 2 — wire merge end-to-end (audit P0-1) (COMPLETE pending full-suite gate)
+- Completed:
+  - engine-api: `download.merge {video_id, audio_id}` JSON-RPC method (honest -32000 with engine kind when no merge port; -32602 on missing params); `engine.info` now reports `merge_capable` honestly.
+  - engine-cli: `velox merge <VIDEO_ID> <AUDIO_ID>` subcommand; `wire_media_merge()` discovers an LGPL ffmpeg at startup for `serve`, `serve-http`, and `merge`, printing an honest one-line stderr report either way; usage updated.
+  - Tauri desktop app: engine-media dependency added; merge port discovered + injected at setup (block_on; honest stderr when ffmpeg absent).
+  - engine-api tests: params validation, not-configured honesty, capability flag (6 tests total in crate).
+- Files: crates/engine-api/src/lib.rs, crates/engine-cli/src/main.rs, crates/engine-cli/Cargo.toml, app/src-tauri/src/main.rs, app/src-tauri/Cargo.toml.
+- Tests: fmt clean; clippy -D warnings clean (engine-api + engine-cli); engine-api 6/6 passed. Full workspace suite gate: running (first run after toolchain rebuild; a prior attempt aborted instantly because a harness-protected /tmp dir could not be rm'ed in a && chain — lesson logged).
+- Git: commit follows the suite gate; push + remote verify after.
+- Environment: cross-build toolchain fully rebuilt (clang-19 + builtin headers + llvm-lib, cargo-xwin 0.23.1, makensis 3.13, fresh SDK+CRT); Windows Velox.exe cross-built successfully from the tree (4m08s, 13,861,888 bytes) — final installer will be rebuilt after the merge-wiring commit so the published hash corresponds to a clean commit.
+- Scheduling note: the platform's cron tool is NOT available (verified — tool call rejected). Continuation is sequential in-turn cycles + documented resume instructions (mission §6 fallback).
+- Next: full suite gate → commit/push → clean rebuild + package + Release refresh (delete old assets, round-trip verify) → Cycle 3 (merge temp-file lifecycle + MERGING startup sweep).
