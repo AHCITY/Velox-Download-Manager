@@ -1,2 +1,20 @@
 skills/
 node_modules/
+
+# Sandboxed caches and toolchains (workspace-local, never published)
+.cargo/
+.rustup/
+.xwin-cache/
+
+# Local backups and generated deliverables (GitHub sync IS the backup)
+backup/
+download/
+velox-cli-linux
+
+# Local config / user uploads: never publish
+.env
+upload/
+
+# Runtime noise
+nohup.out
+db/

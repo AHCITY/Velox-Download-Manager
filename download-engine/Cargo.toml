@@ -1,0 +1,60 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/engine-core",
+    "crates/engine-http",
+    "crates/engine-storage",
+    "crates/engine-state",
+    "crates/engine-api",
+    "crates/engine-cli",
+    "crates/engine-testserver",
+    "crates/engine-bridge",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[workspace.dependencies]
+tokio = { version = "1.54", features = [
+    "rt-multi-thread",
+    "macros",
+    "sync",
+    "time",
+    "io-util",
+    "io-std",
+    "fs",
+    "net",
+    "process",
+    "signal",
+] }
+# TLS: rustls with the ring crypto provider.
+# reqwest 0.13's default `rustls` feature pulls aws-lc-rs (needs cmake); we use
+# `rustls-no-provider` and depend on rustls with ONLY the `ring` feature enabled
+# so rustls auto-selects ring without a runtime install_default() call.
+reqwest = { version = "0.13", default-features = false, features = [
+    "rustls-no-provider",
+    "cookies",
+    "socks",
+] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+rusqlite = { version = "0.43", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+url = "2.5"
+percent-encoding = "2"
+bytes = "1"
+sha2 = "0.11"
+blake3 = "1.8"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+tempfile = "3.27"
+async-trait = "0.1"
+
+[profile.dev]
+opt-level = 1
+
+[profile.release]
+lto = "thin"

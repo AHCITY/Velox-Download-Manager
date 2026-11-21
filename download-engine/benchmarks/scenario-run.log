@@ -1,0 +1,41 @@
+=== building release binary ===
+   Compiling engine-state v0.1.0 (/home/z/my-project/download-engine/crates/engine-state)
+   Compiling engine-storage v0.1.0 (/home/z/my-project/download-engine/crates/engine-storage)
+   Compiling engine-core v0.1.0 (/home/z/my-project/download-engine/crates/engine-core)
+   Compiling engine-api v0.1.0 (/home/z/my-project/download-engine/crates/engine-api)
+   Compiling engine-http v0.1.0 (/home/z/my-project/download-engine/crates/engine-http)
+   Compiling engine-cli v0.1.0 (/home/z/my-project/download-engine/crates/engine-cli)
+    Finished `release` profile [optimized] target(s) in 45.54s
+   Compiling engine-testserver v0.1.0 (/home/z/my-project/download-engine/crates/engine-testserver)
+    Finished `release` profile [optimized] target(s) in 3.91s
+=== scenario: moderate-32mib (size=32MiB rate=4000000B/s/conn delay=0ms) ===
+velox(-c4) [moderate-32mib] run1 wall=4.21s rss=12776kB cpu=1% rc=0
+velox(-c4) [moderate-32mib] run2 wall=0.01s rss=12656kB cpu=99% rc=0
+velox(-c4) [moderate-32mib] run3 wall=0.01s rss=12756kB cpu=99% rc=0
+curl(1)  [moderate-32mib] run1 wall=8.44s rss=12796kB cpu=1% rc=0
+curl(1)  [moderate-32mib] run2 wall=8.44s rss=12600kB cpu=1% rc=0
+curl(1)  [moderate-32mib] run3 wall=8.45s rss=12780kB cpu=1% rc=0
+wget(1)  [moderate-32mib] run1 wall=8.46s rss=12724kB cpu=1% rc=0
+wget(1)  [moderate-32mib] run2 wall=8.44s rss=12684kB cpu=1% rc=0
+wget(1)  [moderate-32mib] run3 wall=8.44s rss=12748kB cpu=1% rc=0
+=== scenario: slow-8mib (size=8MiB rate=256000B/s/conn delay=0ms) ===
+velox(-c4) [slow-8mib] run1 wall=32.56s rss=12788kB cpu=0% rc=0
+velox(-c4) [slow-8mib] run2 wall=0.01s rss=12732kB cpu=98% rc=0
+velox(-c4) [slow-8mib] run3 wall=0.01s rss=12736kB cpu=98% rc=0
+curl(1)  [slow-8mib] run1 wall=32.63s rss=12796kB cpu=0% rc=0
+curl(1)  [slow-8mib] run2 wall=33.05s rss=12768kB cpu=0% rc=0
+curl(1)  [slow-8mib] run3 wall=32.67s rss=12792kB cpu=0% rc=0
+wget(1)  [slow-8mib] run1 wall=32.58s rss=12728kB cpu=0% rc=0
+wget(1)  [slow-8mib] run2 wall=32.55s rss=12756kB cpu=0% rc=0
+wget(1)  [slow-8mib] run3 wall=32.58s rss=12688kB cpu=0% rc=0
+=== scenario: latency-8mib (size=8MiB rate=0B/s/conn delay=120ms) ===
+velox(-c4) [latency-8mib] run1 wall=0.13s rss=12616kB cpu=6% rc=1
+velox(-c4) [latency-8mib] run2 wall=0.13s rss=12692kB cpu=6% rc=1
+velox(-c4) [latency-8mib] run3 wall=0.13s rss=12612kB cpu=6% rc=1
+curl(1)  [latency-8mib] run1 wall=0.14s rss=12672kB cpu=13% rc=0
+curl(1)  [latency-8mib] run2 wall=0.14s rss=12724kB cpu=11% rc=0
+curl(1)  [latency-8mib] run3 wall=0.14s rss=12652kB cpu=11% rc=0
+wget(1)  [latency-8mib] run1 wall=0.13s rss=12720kB cpu=8% rc=0
+wget(1)  [latency-8mib] run2 wall=0.13s rss=12640kB cpu=8% rc=0
+wget(1)  [latency-8mib] run3 wall=0.13s rss=12652kB cpu=8% rc=0
+=== done; medians quoted in docs/PERFORMANCE_PLAN.md §6 ===

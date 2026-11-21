@@ -1,0 +1,124 @@
+# Windows compatibility gate — verifies the COMPLETE workspace on a real Windows runner,
+# and builds the desktop application + NSIS installer as a separate, gated job.
+# NO Windows-support claim may be made before these run green on a push/PR.
+name: windows
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  # ---- Job 1: engine gates (every PR and push) ----
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Formatting check
+        run: cargo fmt --all -- --check
+
+      - name: Clippy (workspace, all targets, warnings are errors)
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Build (workspace, all targets)
+        run: cargo build --workspace --all-targets
+
+      - name: Unit + integration tests (workspace, incl. cfg(windows) lock-crash-recovery test)
+        run: cargo test --workspace --no-fail-fast
+
+      - name: CLI startup/shutdown smoke (v1 stdio, portable ctrl_c path)
+        shell: pwsh
+        run: |
+          cargo run -p engine-cli --bin velox -- version
+          '{"jsonrpc":"2.0","id":1,"method":"engine.info"}' | cargo run -q -p engine-cli --bin velox -- serve
+
+      - name: API v2 smoke — serve-http startup, RPC round-trip, Host guard, clean shutdown
+        shell: pwsh
+        run: |
+          cargo build --release -p engine-cli
+          $p = Start-Process -FilePath target\release\velox.exe `
+            -ArgumentList "serve-http","--bind","127.0.0.1","--port","31987" `
+            -PassThru -WindowStyle Hidden
+          Start-Sleep -Seconds 3
+          $body = '{"jsonrpc":"2.0","id":1,"method":"engine.info"}'
+          $r = Invoke-WebRequest -Uri "http://127.0.0.1:31987/rpc" -Method Post `
+                 -ContentType "application/json" -Body $body -UseBasicParsing
+          if ($r.Content -notmatch '"name":"velox"') { throw "engine.info failed: $($r.Content)" }
+          # strict Host guard: a foreign Host must be refused (403)
+          $refused = $false
+          try {
+            Invoke-WebRequest -Uri "http://127.0.0.1:31987/rpc" -Method Post `
+              -ContentType "application/json" -Headers @{ Host = "evil.example" } `
+              -Body $body -UseBasicParsing | Out-Null
+          } catch { $refused = $true }
+          if (-not $refused) { throw "foreign Host was not refused" }
+          Stop-Process -Id $p.Id -Force
+          Write-Host "API v2 smoke: OK"
+
+      - name: Crash-recovery focus (windows lock variant + resume tests)
+        run: |
+          cargo test -p engine-storage -- --exact tests::lock_recovered_after_child_process_death
+          cargo test -p engine-cli --test crash_resume
+
+  # ---- Job 2: desktop application + installer (gated: main/tags/manual) ----
+  # Builds the Tauri 2 app with the engine IN-PROCESS and produces the NSIS
+  # setup executable. Runs only after meaningful triggers, not every PR.
+  desktop:
+    needs: windows
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Resolve dependencies with the committed Cargo.lock (reproducibility gate)
+        shell: pwsh
+        run: |
+          cd app\src-tauri
+          if (-not (Test-Path Cargo.lock)) { throw "app/src-tauri/Cargo.lock is missing — commit it" }
+          cargo fetch --locked
+
+      - name: Build Velox desktop app + NSIS installer (tauri-cli)
+        shell: pwsh
+        run: |
+          cargo install tauri-cli --version "^2" --locked
+          cd app\src-tauri
+          cargo tauri build --target x86_64-pc-windows-msvc
+          ls target\x86_64-pc-windows-msvc\release\bundle\nsis\
+
+      - name: Verify the installed-app executable and the setup executable are distinct artifacts
+        shell: pwsh
+        run: |
+          $app = Get-ChildItem "app\src-tauri\target\x86_64-pc-windows-msvc\release\Velox.exe" -ErrorAction SilentlyContinue
+          if (-not $app) { throw "Velox.exe (application) was not produced — check the [[bin]] name = Velox target" }
+          if ((Get-ChildItem "app\src-tauri\target\x86_64-pc-windows-msvc\release\*.exe").Count -lt 1 -or $app.Name -ne "Velox.exe") { throw "binary name is not Velox.exe" }
+          $setup = Get-ChildItem "app\src-tauri\target\x86_64-pc-windows-msvc\release\bundle\nsis\*-setup.exe" | Select-Object -First 1
+          if (-not $setup) { throw "NSIS setup executable was not produced" }
+          Write-Host "application exe: $($app.FullName) ($([math]::Round($app.Length/1MB,1)) MB)"
+          Write-Host "installer exe:   $($setup.FullName) ($([math]::Round($setup.Length/1MB,1)) MB)"
+
+      - name: Normalize artifact name
+        shell: pwsh
+        run: |
+          $setup = Get-ChildItem "app\src-tauri\target\x86_64-pc-windows-msvc\release\bundle\nsis\*-setup.exe" | Select-Object -First 1
+          Copy-Item $setup.FullName Velox-Setup-x64.exe
+          Copy-Item "app\src-tauri\target\x86_64-pc-windows-msvc\release\Velox.exe" Velox-app-x64.exe
+
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Velox-Setup-x64
+          path: Velox-Setup-x64.exe
+          if-no-files-found: error
+
+      - name: Upload application executable artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Velox-app-x64
+          path: Velox-app-x64.exe
+          if-no-files-found: error

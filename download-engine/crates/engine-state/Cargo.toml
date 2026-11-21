@@ -1,0 +1,13 @@
+[package]
+name = "engine-state"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Velox persistent state: SQLite download/segment/error store"
+
+[dependencies]
+rusqlite = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

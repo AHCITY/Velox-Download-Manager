@@ -1,0 +1,26 @@
+[package]
+name = "engine-http"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Velox HTTP/HTTPS transport backend (reqwest + rustls/ring)"
+
+[dependencies]
+engine-core = { path = "../engine-core" }
+reqwest = { workspace = true }
+reqwest_cookie_store = "0.10"
+cookie_store = "0.22"
+time = { version = "0.3", default-features = false, features = ["std"] }
+serde_json = { workspace = true }
+rustls = { workspace = true }
+tokio = { workspace = true }
+bytes = { workspace = true }
+url = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+async-trait = { workspace = true }
+
+[dev-dependencies]
+engine-testserver = { path = "../engine-testserver" }
+tempfile = { workspace = true }
+tokio = { workspace = true }

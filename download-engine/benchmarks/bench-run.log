@@ -1,0 +1,38 @@
+=== building release binary ===
+warning: function `bad_params` is never used
+  --> crates/engine-api/src/lib.rs:63:4
+   |
+63 | fn bad_params(msg: impl Into<String>) -> (i32, String) {
+   |    ^^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `engine-api` (lib) generated 1 warning
+    Finished `release` profile [optimized] target(s) in 0.12s
+=== generating payload (67108864 bytes) ===
+=== throughput benchmark: 67108864 bytes ===
+velox(-c8) run1 wall=0.01s rss=12744kB cpu=66% rc=0
+velox(-c8) run2 wall=0.01s rss=12760kB cpu=92% rc=0
+velox(-c8) run3 wall=0.01s rss=12684kB cpu=93% rc=0
+--- (above runs reused the completed record: see session report; fresh runs below) ---
+velox-fresh(-c8) run1 wall=0.04s rss=12452kB cpu=99% rc=0
+velox-fresh(-c8) run2 wall=0.04s rss=12568kB cpu=104% rc=0
+velox-fresh(-c8) run3 wall=0.04s rss=12640kB cpu=96% rc=0
+curl(1-conn) run1 wall=0.09s rss=12680kB cpu=57% rc=0
+curl(1-conn) run2 wall=0.08s rss=12680kB cpu=63% rc=0
+curl(1-conn) run3 wall=0.08s rss=12588kB cpu=62% rc=0
+wget(1-conn) run1 wall=0.06s rss=12640kB cpu=70% rc=0
+wget(1-conn) run2 wall=0.06s rss=12644kB cpu=69% rc=0
+wget(1-conn) run3 wall=0.06s rss=12716kB cpu=70% rc=0
+aria2c: NOT INSTALLED in this environment — comparison documented, not fabricated (docs/PERFORMANCE_PLAN.md)
+=== small-file benchmark (100 KiB, connection-setup dominated) ===
+velox-small(-c1) run1 wall=0.01s rss=12564kB cpu=83% rc=0
+velox-small(-c1) run2 wall=0.01s rss=12752kB cpu=94% rc=0
+velox-small(-c1) run3 wall=0.01s rss=12648kB cpu=93% rc=0
+curl-small run1 wall=0.01s rss=12756kB cpu=92% rc=0
+curl-small run2 wall=0.01s rss=12684kB cpu=92% rc=0
+curl-small run3 wall=0.01s rss=12588kB cpu=92% rc=0
+=== integrity spot check ===
+36bfbd03a5822c088161b59b2da6c1ff5597da4333d65954bb84acd02218188f /home/z/my-project/download-engine/benchmarks/out/payload-67108864.bin
+36bfbd03a5822c088161b59b2da6c1ff5597da4333d65954bb84acd02218188f /home/z/my-project/download-engine/benchmarks/out/v.out
+Results in benchmarks/out/. Quote medians over ≥5 runs; single runs are not evidence.

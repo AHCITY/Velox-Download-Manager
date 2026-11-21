@@ -1,0 +1,192 @@
+   Compiling engine-state v0.1.0 (/home/z/my-project/download-engine/crates/engine-state)
+   Compiling reqwest v0.13.5
+   Compiling engine-core v0.1.0 (/home/z/my-project/download-engine/crates/engine-core)
+   Compiling reqwest_cookie_store v0.10.0
+   Compiling engine-http v0.1.0 (/home/z/my-project/download-engine/crates/engine-http)
+   Compiling engine-api v0.1.0 (/home/z/my-project/download-engine/crates/engine-api)
+   Compiling engine-cli v0.1.0 (/home/z/my-project/download-engine/crates/engine-cli)
+   Compiling engine-testserver v0.1.0 (/home/z/my-project/download-engine/crates/engine-testserver)
+   Compiling engine-storage v0.1.0 (/home/z/my-project/download-engine/crates/engine-storage)
+    Finished `test` profile [optimized + debuginfo] target(s) in 41.83s
+     Running unittests src/lib.rs (target/debug/build/engine-api/16c2619218482e03/out/engine_api-16c2619218482e03)
+
+running 5 tests
+test tests::create_bad_scheme ... ok
+test tests::download_inspect_method_previews_without_registering ... ok
+test tests::notifications_get_no_response_and_ids_are_strict ... ok
+test tests::oversized_request_lines_are_capped ... ok
+test tests::parse_error_and_unknown_method ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+     Running unittests src/main.rs (target/debug/build/engine-cli/71ee56e302b68146/out/velox-71ee56e302b68146)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/crash_resume.rs (target/debug/build/engine-cli/d3bba49e8ae1a4df/out/crash_resume-d3bba49e8ae1a4df)
+
+running 4 tests
+test kill_before_first_checkpoint_resume_restarts_cleanly ... ok
+test rename_orphan_final_file_is_never_adopted_without_evidence ... ok
+test sigkill_during_resume_then_resume_again_is_byte_exact ... ok
+test sigkill_mid_download_resume_in_fresh_process_is_byte_exact ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.82s
+
+     Running unittests src/lib.rs (target/debug/build/engine-core/0d39f3e0e6dae0b6/out/engine_core-0d39f3e0e6dae0b6)
+
+running 24 tests
+test error::tests::io_mapping ... ok
+test error::tests::classification ... ok
+test inspect::tests::http_date_retry_after ... ok
+test naming::tests::choose_order ... ok
+test inspect::tests::retry_after_parsing ... ok
+test naming::tests::disposition_parsing ... ok
+test naming::tests::sanitizer_blocks_traversal_and_devices ... ok
+test plan::tests::connection_clamp ... ok
+test naming::tests::url_names_and_mime ... ok
+test plan::tests::per_download_min_segment_override_widens_first_wave ... ok
+test plan::tests::segmented_split_covers_exact_total ... ok
+test plan::tests::small_or_unsupported_is_single ... ok
+test plan::tests::unknown_length_is_stream ... ok
+test retry::tests::backoff_growth_and_cap ... ok
+test retry::tests::retry_after_is_clamped_to_max_delay ... ok
+test segments::tests::assign_advance_complete ... ok
+test segments::tests::resume_positions ... ok
+test segments::tests::fully_written_unmarked_segment_normalizes ... ok
+test segments::tests::snapshot_roundtrip ... ok
+test segments::tests::stealing_splits_largest_tail ... ok
+test segments::tests::steal_respects_min_split_floor ... ok
+test segments::tests::unbounded_stream_no_steal ... ok
+test speed::tests::burst_within_rate_is_instant ... ok
+test speed::tests::oversized_request_does_not_hang ... ok
+
+test result: ok. 24 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.00s
+
+     Running tests/http_compat.rs (target/debug/build/engine-core/547b57b08e96008f/out/http_compat-547b57b08e96008f)
+
+running 14 tests
+test broken_206_without_content_range_recovers_via_plain_get ... ok
+test changed_etag_mid_flight_restarts_even_in_single_mode ... ok
+test chunked_transfer_downloads_correctly ... ok
+test expiring_url_410_fails_permanently_without_exposing_a_file ... ok
+test head_unsupported_server_still_downloads ... ok
+test mid_body_close_retries_from_checkpoint ... ok
+test changed_last_modified_forces_restart_and_stays_correct ... ok
+test mid_download_503_is_retried_not_restarted ... ok
+test server_503_is_retried_and_download_completes ... ok
+test missing_etag_resume_still_completes ... ok
+test stalled_connection_is_detected_and_retried ... ok
+test weak_etag_resume_never_sends_if_range ... ok
+test zero_length_resource_completes_immediately ... ok
+test validator_less_resume_with_changed_length_restarts_from_zero ... ok
+
+test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 7.56s
+
+     Running tests/integration.rs (target/debug/build/engine-core/641aac111b44af91/out/integration-641aac111b44af91)
+
+running 19 tests
+test checksum_mismatch_fails_and_keeps_part_file ... ok
+test close_delimited_unknown_length_streams ... ok
+test duplicate_add_points_at_existing_record ... ok
+test cancel_removes_temp_file_and_record ... ok
+test finalize_collision_picks_unique_name_and_never_overwrites ... ok
+test finalize_failure_never_reports_completed ... ok
+test max_concurrent_downloads_queues_extra_starts ... ok
+test etag_change_on_resume_restarts_from_zero ... ok
+test per_host_connection_cap_respected ... ok
+test redirects_are_followed_and_names_coming_from_disposition ... ok
+test rename_orphan_with_matching_checksum_is_adopted ... ok
+test pause_then_resume_does_not_redownload_everything ... ok
+test resume_reconciles_truncated_part_file ... ok
+test segmented_download_uses_multiple_connections_and_matches_hash ... ok
+test server_ignoring_ranges_falls_back_to_single_stream ... ok
+test single_stream_download_matches_hash ... ok
+test retry_after_429_is_honored ... ok
+test wrong_content_range_fails_without_corruption ... ok
+test slow_tail_is_stolen_by_idle_workers ... ok
+
+test result: ok. 19 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 16.53s
+
+     Running tests/segments_property.rs (target/debug/build/engine-core/04504e1689328745/out/segments_property-04504e1689328745)
+
+running 2 tests
+test property_multi_segment_plan_is_exact_partition ... ok
+test property_no_overlap_no_gap_exact_coverage ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.91s
+
+     Running unittests src/lib.rs (target/debug/build/engine-http/72090f92a6cdba9b/out/engine_http-72090f92a6cdba9b)
+
+running 3 tests
+test tests::http_date_retry_after_parses ... ok
+test tests::content_range_parsing ... ok
+test tests::origin_distinguishes_scheme_and_port ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (target/debug/build/engine-state/9ae8a86b117e90a6/out/engine_state-9ae8a86b117e90a6)
+
+running 3 tests
+test tests::iso8601_known_values ... ok
+test tests::insert_update_roundtrip ... ok
+test tests::segments_checkpoint_complete_flow ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (target/debug/build/engine-storage/e4ee137a08bc4e00/out/engine_storage-e4ee137a08bc4e00)
+
+running 4 tests
+test tests::finalize_renames_and_avoids_collision ... ok
+test tests::positional_writes_and_size ... ok
+test tests::download_lock_exclusive_and_stale_recovery ... ok
+test tests::sync_dir_works_on_files_and_dirs ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (target/debug/build/engine-testserver/818e01fb84717bec/out/engine_testserver-818e01fb84717bec)
+
+running 2 tests
+test tests::unsatisfiable_range_and_redirect ... ok
+test tests::basic_get_and_range ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests engine_api
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests engine_core
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests engine_http
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests engine_state
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests engine_storage
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests engine_testserver
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

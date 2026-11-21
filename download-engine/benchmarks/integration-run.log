@@ -1,0 +1,41 @@
+   Compiling engine-core v0.1.0 (/home/z/my-project/download-engine/crates/engine-core)
+   Compiling engine-http v0.1.0 (/home/z/my-project/download-engine/crates/engine-http)
+    Finished `test` profile [optimized + debuginfo] target(s) in 4.50s
+     Running tests/integration.rs (/home/z/my-project/download-engine/target/debug/build/engine-core/1dcc5fb8597db9a5/out/integration-1dcc5fb8597db9a5)
+
+running 17 tests
+test checksum_mismatch_fails_and_keeps_part_file ... ok
+test close_delimited_unknown_length_streams ... ok
+test duplicate_add_points_at_existing_record ... ok
+test cancel_removes_temp_file_and_record ... ok
+test finalize_collision_picks_unique_name_and_never_overwrites ... FAILED
+test finalize_failure_never_reports_completed ... ok
+test etag_change_on_resume_restarts_from_zero ... ok
+test per_host_connection_cap_respected ... ok
+test pause_then_resume_does_not_redownload_everything ... ok
+test redirects_are_followed_and_names_coming_from_disposition ... ok
+test retry_after_429_is_honored ... ok
+test segmented_download_uses_multiple_connections_and_matches_hash ... ok
+test server_ignoring_ranges_falls_back_to_single_stream ... ok
+test single_stream_download_matches_hash ... ok
+test resume_reconciles_truncated_part_file ... ok
+test wrong_content_range_fails_without_corruption ... ok
+test slow_tail_is_stolen_by_idle_workers ... ok
+
+failures:
+
+---- finalize_collision_picks_unique_name_and_never_overwrites stdout ----
+
+thread 'finalize_collision_picks_unique_name_and_never_overwrites' (20957) panicked at crates/engine-core/tests/integration.rs:434:5:
+assertion `left != right` failed: second download must not overwrite the first
+  left: "/tmp/.tmpwt590e/out/file"
+ right: "/tmp/.tmpwt590e/out/file"
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    finalize_collision_picks_unique_name_and_never_overwrites
+
+test result: FAILED. 16 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 12.54s
+
+error: test failed, to rerun pass `-p engine-core --test integration`

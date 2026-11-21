@@ -1,0 +1,13 @@
+   Compiling engine-api v0.1.0 (/home/z/my-project/download-engine/crates/engine-api)
+   Compiling engine-cli v0.1.0 (/home/z/my-project/download-engine/crates/engine-cli)
+    Finished `test` profile [optimized + debuginfo] target(s) in 4.43s
+     Running tests/crash_resume.rs (download-engine/target/debug/build/engine-cli/e2a09480546b22a1/out/crash_resume-e2a09480546b22a1)
+
+running 4 tests
+test kill_before_first_checkpoint_resume_restarts_cleanly ... ok
+test rename_orphan_final_file_is_never_adopted_without_evidence ... ok
+test sigkill_during_resume_then_resume_again_is_byte_exact ... ok
+test sigkill_mid_download_resume_in_fresh_process_is_byte_exact ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.82s
+

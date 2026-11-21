@@ -1,0 +1,134 @@
+# VELOX — PROGRESS LOG (append-only; newest at bottom; every agent turn MUST append)
+
+## 2026-11-20 ~17:40–18:05 (setup session)
+- Windows toolchain rebuilt after sandbox rollback: cargo-xwin 0.23.1 installed
+  (CARGO_HOME=/home/z/my-project/.cargo); clang-cl + lld-link 19.1.7 extracted from
+  Debian debs to /tmp/llvmroot (rebuild recipe: scripts/TOOLCHAIN-SETUP.md); makensis
+  3.13 extracted to /tmp/nsisdeb (NSISDIR honored).
+- xwin SDK download hit ENOSPC (disk 100%); freed 3.4 GB (removed Linux target/ + junk).
+- Phase-1 probe setup (scripts/xwin-setup-phase1.sh) launched to complete SDK+CRT
+  splat; then delete dl/+unpack/ before the real build.
+- NSIS installer script drafted at /tmp/installer/installer.nsi (per-user, Start Menu +
+  desktop shortcuts, HKCU uninstall registration, WebView2 Evergreen standalone bundled
+  offline: /tmp/installer/MicrosoftEdgeWebview2Setup.exe 294,099,168 B,
+  sha256 47bc51387aff95c1275ce38cfbbb5fba…).
+- MISSION.md + this log created; backup plan: download/ + backup/ + scripts/ persist
+  across recycles; no external git remote available (documented).
+
+## 2026-11-20 ~18:20 (cycle 1 — baseline audit + toolchain fixes)
+- Toolchain fixes during Windows build bring-up (all documented in scripts/TOOLCHAIN-SETUP.md):
+  missing clang resource dir (libclang-common-19-dev) broke ring's C build
+  (stdalign.h not found); missing llvm-19 deb broke cc-rs (llvm-lib). Both fixed,
+  build proceeding.
+- Code audit of engine P0 behaviors (verified in source, not from reports):
+  * PRESENT + tested: Retry-After honoring, 429 backoff (retry.rs/manager), ETag/
+    If-Range/Last-Modified identity checks (task.rs check_identity), 416/Content-Range
+    handling, truncated-transfer completion proof (finalize refuses Completed unless
+    received == total when length known), hash-before-rename + durable rename + sync_dir,
+    collision-safe final names, DISK_FULL→PAUSED-with-checkpoint policy (task.rs on_failed),
+    gdrive adapter (classify/id/confirm-form/usercontent flow), strict URL naming
+    (naming.rs strict_segment).
+  * GAP FOUND: Windows ENOSPC not mapped — std::fs on Windows reports ERROR_DISK_FULL(112)
+    / ERROR_HANDLE_DISK_FULL(39), from_io only mapped POSIX 28. On Windows a full disk
+    would be classified generic Io (retryable) instead of DiskFull (pause+checkpoint).
+  * FIX APPLIED: crates/engine-core/src/error.rs from_io now maps 112/39 → DiskFull
+    under #[cfg(windows)] (POSIX 39=ENOTEMPTY/112=EHOSTDOWN untouched). Test to be run
+    with the Linux suite once the Windows build frees disk.
+  * Deferred (documented): disk-space PREcheck before starting (std has no statvfs;
+    reactive ENOSPC→DISK_FULL→paused already covers correctness; precheck is UX sugar).
+
+
+## 2026-11-20 ~18:40 (cycle 1 complete)
+- Baseline verified on HEAD: cargo test --workspace = 133 passed / 0 failed
+  (fmt + clippy -D warnings green). Coverage confirmed by reading tests:
+  truncation, range-ignoring, wrong Content-Range, premature-close recovery,
+  chunked unknown-length, HTML gates, Drive confirm interstitial, crash/resume.
+- NEW TEST: http_correctness::overlong_body_completes_with_exactly_claimed_bytes —
+  server claiming 1 MiB while sending 2 MiB must complete with exactly the first
+  claimed MiB (RFC 7230 framing), hash-verified. PASS. Suite now 134 tests.
+- FIX: from_io maps Windows ERROR_DISK_FULL(112)/ERROR_HANDLE_DISK_FULL(39) →
+  DISK_FULL (cfg(windows)); previously only POSIX ENOSPC(28) → on Windows a full
+  disk was misclassified as generic retryable Io.
+- Installer pipeline COMPLETE: Velox.exe 13,807,104 B (sha ea1fec36…),
+  Velox-Setup-x64.exe 5,217,400 B online (sha b328f625…),
+  Velox-Setup-x64-offline.exe 299,179,674 B (sha 4dd5744b…); delivered to
+  download/windows-build-20261120/ with SHA256SUMS.txt + INSTALL-AND-VERIFY.md.
+- Night plan: no cron tool in this runtime (twice: "No such tool available") —
+  deterministic watchdog (scripts/nightly-watchdog.sh, nohup, 30-min cycle,
+  14 h max) guards fmt/clippy/tests and archives failures; deeper agent cycles
+  require a user message in the morning. Documented honestly.
+- **2026-11-20 18:26 [watchdog]** SKIPPED test gate (only 109156KB free disk)
+
+## 2026-11-21 ~11:20 (cycle 2 — sandbox rollback recovery + Phase-1 audit + fixes)
+- ROLLBACK #2: git history reset to initial commit; engine tree reduced to 2 files;
+  .cargo/.rustup + my-project/scripts wiped; /tmp toolchain gone; watchdog died.
+  RECOVERED from backup/velox-source-20261120-cycle1.zip (113 files) — the backup
+  strategy worked exactly as designed. Rust toolchain reinstalled into workspace paths
+  (cargo/rustc 1.100, both targets); cargo-xwin reinstalled; rust-env.sh recreated.
+  Restored tree committed (b8df3c6) + baseline suite verified 133/0 green.
+- PHASE 1 AUDIT COMPLETE: docs/ENGINE-AUDIT-2026-11-21.md. Solid areas evidenced
+  (completion proofs, durability, redirect scoping, admission control, cookie jar,
+  naming). Confirmed defects D1-D7 with file:line evidence; non-issues documented.
+- PHASE 3 FIXES (all test-verified, suite now 140 passed / 0 failed, fmt+clippy clean):
+  * D1 (P1): yt-dlp orphan-process leak — kill_on_drop(true) + configurable
+    extractor_timeout. E2E: hung extractor surfaces TIMEOUT and its PID is reaped.
+  * D2 (P1): user cookies/referer/UA/auth now forwarded to the extractor process as
+    --add-headers (CRLF-sanitized; inline RFC 4648 base64 for Basic, no new deps).
+    E2E: cookie reaches extractor argv through the full manager flow.
+  * D3 (P1): origin-scoped credentials at resolve level (RequestHeaders::
+    scoped_credentials) applied to Drive confirm-walk targets + resolved stream URLs —
+    page-controlled hosts can no longer harvest the user's cookies/auth.
+  * D4 (P2): Resolving/Resolved events (engine + wire bridge) — extraction phase is
+    now observable before any row exists.
+- DEFERRED (documented in audit): D5 mp4-preference decision, D6 verify() event
+  contract, D7 page-fetch hardening.
+
+## 2026-11-21 ~11:15 (cycle 3 — D8 lock-file residue + real-world evidence)
+- REAL-WORLD E2E (engine CLI, live internet): Google Drive share link
+  file/d/0B9P1L--7Wd2vU3VUVlFnbTgtS2c/view → resolved → `spam.txt` (5 B, content
+  byte-verified). EXPOSED DEFECT D8: `spam.txt.part-1.lock` left in the user's OUT dir
+  (mission §5 violation).
+- D8 FIXED (no unlink-on-drop — the existing comment documents a real flock+unlink
+  two-holder race): lock files moved to `<data_dir>/locks/` (internal; basenames keep
+  per-download uniqueness via global ids); race-free GC of stale locks (mtime-gated,
+  flock-checked) at manager startup; storage tests updated; new integration test
+  `out_dir_is_clean_after_completion` (out dir must hold EXACTLY the final file).
+  Re-verified with a fresh real Drive download: out/ clean, lock internal.
+- YouTube real probe (2026.10.26, fresh logs): datacenter IP → "Sign in to confirm
+  you're not a bot … Use --cookies" — confirms ROOT-CAUSE §4: IP-scoped bot wall, and
+  the remedy (cookies) is exactly what D2 wired through. Not an engine defect.
+- Suite: 142 passed / 0 failed; fmt + clippy -D warnings clean. Commit 7092612 (cycle2)
+  then this cycle.
+
+## 2026-11-21 ~11:35 (cycle 4 — Phase 5 benchmarks + docs)
+- Benchmark suite (scripts/run-benchmarks.sh + bench-server.py, Range-capable loopback):
+  256 MiB payload. RSS 12.8-13.1 MB on 256 MiB downloads → memory bounded (mission §8);
+  single 0.12s vs segmented 0.31s on loopback (expected — loopback serializes; honest
+  scope statement, no IDM/FDM comparison); 4×64 MiB concurrent 0.36s; SIGKILL@~60MiB →
+  resume → byte-exact SHA-256 vs source. benchmarks/BENCH-2026-11-21.md.
+- Measure harness lost to rollback #2 was the cause of the first empty run (recreated).
+- Docs synced: audit D8 entry + fresh YouTube bot-wall log; EXTRACTORS.md documents the
+  D2 header pass-through + kill_on_drop.
+
+## 2026-11-21 ~12:20 (cycle 5 — mission docs + disk-preflight correctness cycle)
+- Missions 2-4 delivered: docs/EXTERNAL_VELOX_AUDIT.md (objective similarity audit vs
+  qamarabbas408/velox-download-manager: no code matches; MIT, active since Aug 2026;
+  ideas adopted: disk preflight, missing-file detection, dup-URL policy [already
+  present], browser-assistance concept for Phase 9), docs/OPEN_SOURCE_AUDIT.md
+  (aria2 GPL-2 → not integrated; yt-dlp Unlicense ✓; FFmpeg LGPL build-only spec;
+  curl rejected; dep licences verified), docs/ENGINE_ARCHITECTURE_REVIEW.md (10-layer
+  mapping; UrlAdapter trait + MediaPipeline proposed, core kept),
+  docs/dependency-licence-report.txt + scripts/gen-license-report.sh (155 OK, 0 GPL).
+- CYCLE 5 ENGINE WORK (audit M5, adopted from external-audit ideas, P0 disk handling):
+  * engine-storage::available_space (statvfs / GetDiskFreeSpaceExW) + SPACE_MARGIN
+  * manager add(): destination preflight — create dir, refuse DiskFull BEFORE any row
+    when total+64MiB > free; "destination unavailable" distinct from "low disk space"
+  * task worker: periodic re-check at each checkpoint → honest DiskFull failure,
+    resumable state preserved
+  * StatusView.file_missing: completed rows whose final file vanished surface honestly
+    (state never rewritten); verify() refuses missing files explicitly
+  * duplicate-URL policy verified already-present (find_same_destination → existing_id)
+- Suite: 146 passed / 0 failed (4 new tests); fmt + clippy -D warnings clean.
+- Windows build #3: SDK splat was truncated by rollback (stale DONE marker, 114 MB
+  without CRT headers) → full re-splat; build failed once on an in-flight editor error,
+  re-running after cycle-5 code landed.

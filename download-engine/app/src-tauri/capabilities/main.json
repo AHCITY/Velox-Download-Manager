@@ -1,0 +1,10 @@
+{
+  "identifier": "main-cap",
+  "description": "Main window: engine RPC access, engine events, and the two validated desktop actions (open file / open folder). No filesystem or shell plugins are exposed; remote origins get nothing.",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "core:event:default",
+    "core:window:default"
+  ]
+}

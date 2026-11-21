@@ -1,0 +1,46 @@
+[package]
+name = "velox-app"
+version = "0.2.0"
+description = "Velox desktop download manager"
+edition = "2021"
+rust-version = "1.77"
+
+# The installed application executable must be Velox.exe (not velox-app.exe).
+# Naming the bin target directly is Tauri's recommended way; mainBinaryName in
+# tauri.conf.json mirrors this as belt-and-braces.
+[[bin]]
+name = "Velox"
+path = "src/main.rs"
+
+# Standalone crate: deliberately NOT a member of the engine workspace so the
+# engine's test matrix stays independent of Tauri's GUI-only dependencies.
+[workspace]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-single-instance = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# tokio is used DIRECTLY by main.rs (time::timeout in the shutdown sequence,
+# sync::broadcast error types in the event pump) — this workspace is standalone,
+# so nothing is inherited from the engine workspace
+tokio = { version = "1", features = ["time", "sync"] }
+# engine crates: the EXISTING engine runs in-process — there is no second
+# downloader, no localhost HTTP service inside the packaged app
+engine-core = { path = "../../crates/engine-core" }
+engine-http = { path = "../../crates/engine-http" }
+engine-state = { path = "../../crates/engine-state" }
+engine-api = { path = "../../crates/engine-api" }
+engine-bridge = { path = "../../crates/engine-bridge" }
+
+[features]
+# tauri's custom-protocol feature is required for production builds
+custom-protocol = ["tauri/custom-protocol"]
+
+[profile.release]
+strip = true
+lto = true
+codegen-units = 1

@@ -1,0 +1,13 @@
+/target
+**/*.rs.bk
+*.part-*
+state.db
+state.db-shm
+state.db-wal
+benchmarks/out/
+
+# crash artifacts from local runs
+/core
+/core.*
+*.core
+preview-data/

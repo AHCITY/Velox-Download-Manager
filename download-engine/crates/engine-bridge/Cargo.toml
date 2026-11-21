@@ -1,0 +1,18 @@
+[package]
+name = "engine-bridge"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Velox API v2 transport: HTTP JSON-RPC + SSE event stream for desktop UIs"
+
+[dependencies]
+engine-core = { path = "../engine-core" }
+engine-api = { path = "../engine-api" }
+tokio = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+engine-testserver = { path = "../engine-testserver" }
+engine-http = { path = "../engine-http" }
