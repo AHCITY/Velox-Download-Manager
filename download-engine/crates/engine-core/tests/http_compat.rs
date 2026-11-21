@@ -227,6 +227,47 @@ async fn server_503_is_retried_and_download_completes() {
 }
 
 #[tokio::test]
+async fn pause_settles_during_probe_retries() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut b = Behavior::new(100 * KIB);
+    // request 1 = add()'s inspect (must succeed). Requests 2+3 = the task's
+    // post-start probe → 503,503 opens a ~3s retry window; pre-fix, the task
+    // parked through it ignoring the command watch and pause hit its deadline.
+    b.fail_503_at_requests = std::sync::Arc::new(std::sync::Mutex::new(vec![2, 3]));
+    let server = TestServer::start(b);
+    let (data, out) = (dir.path().join("data"), dir.path().join("out"));
+    let mgr = manager(&engine_cfg(&data, &out, |_| {}));
+    let added = mgr
+        .add(&server.url("/file"), DownloadConfig::default())
+        .await
+        .unwrap();
+    mgr.clone().start(added.id).await.unwrap();
+    // the task is now inside the probe retry window
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    let t0 = std::time::Instant::now();
+    mgr.pause(added.id)
+        .await
+        .expect("pause must settle during probe retries");
+    let elapsed = t0.elapsed();
+    assert!(
+        elapsed < Duration::from_secs(5),
+        "pause took {elapsed:?} — probe loop ignored the stop command"
+    );
+    wait_state(&mgr, added.id, &["paused"], Duration::from_secs(10)).await;
+
+    // the paused row stays resumable and completes byte-exact afterwards
+    mgr.clone().start(added.id).await.unwrap();
+    let s = wait_state(&mgr, added.id, &["completed"], Duration::from_secs(30)).await;
+    let final_path = PathBuf::from(&s.dest_dir).join(&s.final_name);
+    assert_eq!(
+        compute_hash_blocking(&final_path, HashAlgo::Sha256).unwrap(),
+        expected_hash(100 * KIB)
+    );
+    server.stop();
+}
+
+#[tokio::test]
 async fn expiring_url_410_fails_permanently_without_exposing_a_file() {
     let dir = tempfile::tempdir().unwrap();
     let mut b = Behavior::new(300 * KIB);

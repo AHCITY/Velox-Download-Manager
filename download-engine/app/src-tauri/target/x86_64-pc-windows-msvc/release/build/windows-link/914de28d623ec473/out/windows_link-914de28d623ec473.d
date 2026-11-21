@@ -1,0 +1,8 @@
+/home/z/my-project/download-engine/app/src-tauri/target/x86_64-pc-windows-msvc/release/build/windows-link/914de28d623ec473/out/windows_link-914de28d623ec473.d: /home/z/my-project/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/windows-link-0.2.1/src/lib.rs /home/z/my-project/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/windows-link-0.2.1/src/../readme.md
+
+/home/z/my-project/download-engine/app/src-tauri/target/x86_64-pc-windows-msvc/release/build/windows-link/914de28d623ec473/out/libwindows_link-914de28d623ec473.rlib: /home/z/my-project/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/windows-link-0.2.1/src/lib.rs /home/z/my-project/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/windows-link-0.2.1/src/../readme.md
+
+/home/z/my-project/download-engine/app/src-tauri/target/x86_64-pc-windows-msvc/release/build/windows-link/914de28d623ec473/out/libwindows_link-914de28d623ec473.rmeta: /home/z/my-project/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/windows-link-0.2.1/src/lib.rs /home/z/my-project/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/windows-link-0.2.1/src/../readme.md
+
+/home/z/my-project/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/windows-link-0.2.1/src/lib.rs:
+/home/z/my-project/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/windows-link-0.2.1/src/../readme.md:

@@ -1,0 +1,10 @@
+/home/z/my-project/download-engine/app/src-tauri/target/release/build/icu_normalizer/7c53ff40d8e4e4be/out/icu_normalizer-7c53ff40d8e4e4be.d: /home/z/my-project/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/icu_normalizer-2.4.0/src/lib.rs /home/z/my-project/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/icu_normalizer-2.4.0/src/properties.rs /home/z/my-project/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/icu_normalizer-2.4.0/src/provider.rs /home/z/my-project/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/icu_normalizer-2.4.0/src/uts46.rs
+
+/home/z/my-project/download-engine/app/src-tauri/target/release/build/icu_normalizer/7c53ff40d8e4e4be/out/libicu_normalizer-7c53ff40d8e4e4be.rlib: /home/z/my-project/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/icu_normalizer-2.4.0/src/lib.rs /home/z/my-project/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/icu_normalizer-2.4.0/src/properties.rs /home/z/my-project/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/icu_normalizer-2.4.0/src/provider.rs /home/z/my-project/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/icu_normalizer-2.4.0/src/uts46.rs
+
+/home/z/my-project/download-engine/app/src-tauri/target/release/build/icu_normalizer/7c53ff40d8e4e4be/out/libicu_normalizer-7c53ff40d8e4e4be.rmeta: /home/z/my-project/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/icu_normalizer-2.4.0/src/lib.rs /home/z/my-project/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/icu_normalizer-2.4.0/src/properties.rs /home/z/my-project/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/icu_normalizer-2.4.0/src/provider.rs /home/z/my-project/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/icu_normalizer-2.4.0/src/uts46.rs
+
+/home/z/my-project/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/icu_normalizer-2.4.0/src/lib.rs:
+/home/z/my-project/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/icu_normalizer-2.4.0/src/properties.rs:
+/home/z/my-project/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/icu_normalizer-2.4.0/src/provider.rs:
+/home/z/my-project/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/icu_normalizer-2.4.0/src/uts46.rs:

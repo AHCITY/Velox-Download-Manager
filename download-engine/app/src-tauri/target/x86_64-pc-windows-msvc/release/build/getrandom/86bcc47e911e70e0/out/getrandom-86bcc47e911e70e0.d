@@ -1,0 +1,10 @@
+/home/z/my-project/download-engine/app/src-tauri/target/x86_64-pc-windows-msvc/release/build/getrandom/86bcc47e911e70e0/out/getrandom-86bcc47e911e70e0.d: /home/z/my-project/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/getrandom-0.2.17/src/lib.rs /home/z/my-project/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/getrandom-0.2.17/src/error.rs /home/z/my-project/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/getrandom-0.2.17/src/util.rs /home/z/my-project/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/getrandom-0.2.17/src/windows.rs
+
+/home/z/my-project/download-engine/app/src-tauri/target/x86_64-pc-windows-msvc/release/build/getrandom/86bcc47e911e70e0/out/libgetrandom-86bcc47e911e70e0.rlib: /home/z/my-project/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/getrandom-0.2.17/src/lib.rs /home/z/my-project/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/getrandom-0.2.17/src/error.rs /home/z/my-project/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/getrandom-0.2.17/src/util.rs /home/z/my-project/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/getrandom-0.2.17/src/windows.rs
+
+/home/z/my-project/download-engine/app/src-tauri/target/x86_64-pc-windows-msvc/release/build/getrandom/86bcc47e911e70e0/out/libgetrandom-86bcc47e911e70e0.rmeta: /home/z/my-project/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/getrandom-0.2.17/src/lib.rs /home/z/my-project/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/getrandom-0.2.17/src/error.rs /home/z/my-project/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/getrandom-0.2.17/src/util.rs /home/z/my-project/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/getrandom-0.2.17/src/windows.rs
+
+/home/z/my-project/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/getrandom-0.2.17/src/lib.rs:
+/home/z/my-project/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/getrandom-0.2.17/src/error.rs:
+/home/z/my-project/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/getrandom-0.2.17/src/util.rs:
+/home/z/my-project/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/getrandom-0.2.17/src/windows.rs:

@@ -167,6 +167,27 @@ fn segs_to_rows(segs: &[crate::segments::SegSnapshot]) -> Vec<SegmentRow> {
         .collect()
 }
 
+/// Stop requested during the probe phase: settle exactly like the transfer-phase
+/// stop does — persist the row state and emit the event — so manager.pause()/
+/// cancel() observe a settled download instead of a stuck one (audit P1).
+async fn probe_stop_settle(args: &TaskArgs, row: &mut DownloadRow, c: TaskCommand) -> TaskOutcome {
+    row.state = match c {
+        TaskCommand::Cancel => states::CANCELLED.to_string(),
+        _ => states::PAUSED.to_string(),
+    };
+    args.db.update_download(row).ok();
+    args.events
+        .send(Event::DownloadState {
+            id: args.id,
+            state: row.state.clone(),
+        })
+        .ok();
+    match c {
+        TaskCommand::Cancel => TaskOutcome::Cancelled,
+        _ => TaskOutcome::Paused,
+    }
+}
+
 /// Main task entry: runs until Completed / Paused / Cancelled / Failed.
 pub async fn run_task(args: TaskArgs, mgr_cmd: watch::Receiver<TaskCommand>) -> TaskOutcome {
     let retry = args.engine.retry.clone();
@@ -207,16 +228,38 @@ pub async fn run_task(args: TaskArgs, mgr_cmd: watch::Receiver<TaskCommand>) -> 
                 .filter(|_| !row.etag_is_weak)
                 .map(str::to_string);
         }
+        // stop-aware probe (audit P1): pause/cancel must settle during resolve
+        // retries instead of parking the task beyond the manager's settle deadlines
+        // (the probe previously ignored the command watch entirely)
+        let mut stop = mgr_cmd.clone();
         let mut probe_attempts = 0u32;
         let info = loop {
-            match args.http.resolve(&args.url, &probe_headers).await {
+            let res = tokio::select! {
+                r = args.http.resolve(&args.url, &probe_headers) => r,
+                _ = stop.changed() => {
+                    let c = *stop.borrow_and_update();
+                    if c.is_stop() {
+                        return probe_stop_settle(&args, &mut row, c).await;
+                    }
+                    continue;
+                }
+            };
+            match res {
                 Ok(i) if crate::inspect::probe_usable(&i) => break i,
                 Ok(i) => {
                     let e = from_status(i.status, "unexpected status during inspection");
                     if !retry.exhausted(probe_attempts) && e.classify() == ErrorClass::Temporary {
                         probe_attempts += 1;
-                        tokio::time::sleep(retry.delay_for(probe_attempts - 1, e.retry_after))
-                            .await;
+                        let wait = retry.delay_for(probe_attempts - 1, e.retry_after);
+                        tokio::select! {
+                            _ = tokio::time::sleep(wait) => {}
+                            _ = stop.changed() => {
+                                let c = *stop.borrow_and_update();
+                                if c.is_stop() {
+                                    return probe_stop_settle(&args, &mut row, c).await;
+                                }
+                            }
+                        }
                     } else {
                         return finish_failed(&args, &mut row, e).await;
                     }
@@ -224,8 +267,16 @@ pub async fn run_task(args: TaskArgs, mgr_cmd: watch::Receiver<TaskCommand>) -> 
                 Err(e) => {
                     if !retry.exhausted(probe_attempts) && e.classify() == ErrorClass::Temporary {
                         probe_attempts += 1;
-                        tokio::time::sleep(retry.delay_for(probe_attempts - 1, e.retry_after))
-                            .await;
+                        let wait = retry.delay_for(probe_attempts - 1, e.retry_after);
+                        tokio::select! {
+                            _ = tokio::time::sleep(wait) => {}
+                            _ = stop.changed() => {
+                                let c = *stop.borrow_and_update();
+                                if c.is_stop() {
+                                    return probe_stop_settle(&args, &mut row, c).await;
+                                }
+                            }
+                        }
                     } else {
                         return finish_failed(&args, &mut row, e).await;
                     }
@@ -353,10 +404,17 @@ pub async fn run_task(args: TaskArgs, mgr_cmd: watch::Receiver<TaskCommand>) -> 
         if clean_start {
             match plan.total {
                 Some(t) if args.dl.preallocate => {
-                    args.file.preallocate(t).map_err(|e| from_io(&e)).ok();
+                    if let Err(e) = args.file.preallocate(t).map_err(|e| from_io(&e)) {
+                        // honest, non-fatal: the write path catches real space or
+                        // permission problems (DiskFull/Permission → paused,
+                        // resumable) instead of failing a download that might fit
+                        warn!(id = args.id, error = %e, "preallocate failed; continuing sparse");
+                    }
                 }
                 _ => {
-                    args.file.truncate_to(0).map_err(|e| from_io(&e)).ok();
+                    if let Err(e) = args.file.truncate_to(0).map_err(|e| from_io(&e)) {
+                        warn!(id = args.id, error = %e, "truncate-to-0 failed; finalize truncates to total");
+                    }
                 }
             }
         }
@@ -789,8 +847,14 @@ async fn run_segment(
             Err(e) => match e.classify() {
                 ErrorClass::Temporary if !retry.exhausted(attempt) => {
                     attempt += 1;
-                    tokio::time::sleep(retry.delay_for(attempt - 1, e.retry_after)).await;
-                    continue 'request;
+                    let wait = retry.delay_for(attempt - 1, e.retry_after);
+                    tokio::select! {
+                        _ = tokio::time::sleep(wait) => continue 'request,
+                        _ = cmd.changed() => {
+                            sh.table.abandon(work.idx);
+                            return Err(Box::new(SegFailure::Stop));
+                        }
+                    }
                 }
                 ErrorClass::Restart => {
                     sh.table.abandon(work.idx);
@@ -982,8 +1046,13 @@ async fn run_segment(
                             format!("connection closed early at byte {pos} of its range; retries exhausted"),
                         ))));
                     }
-                    tokio::time::sleep(retry.delay_for(attempt - 1, None)).await;
-                    continue 'request;
+                    tokio::select! {
+                        _ = tokio::time::sleep(retry.delay_for(attempt - 1, None)) => continue 'request,
+                        _ = cmd.changed() => {
+                            sh.table.abandon(work.idx);
+                            return Err(Box::new(SegFailure::Stop));
+                        }
+                    }
                 }
                 Err(e) => match e.classify() {
                     ErrorClass::Temporary if !retry.exhausted(attempt) => {
@@ -1160,6 +1229,13 @@ async fn finalize(sh: Arc<Shared>, row: &mut DownloadRow, args: &TaskArgs) -> Ta
     if row.total_size.is_none() {
         let n = stats.received;
         if let Err(e) = sh.file.truncate_to(n) {
+            return finish_failed(args, row, from_io(&e)).await;
+        }
+    } else {
+        // residue-tail belt (audit P2): known-length bodies must not ship stale
+        // bytes past `total` when preallocation was skipped or had failed
+        let t = row.total_size.unwrap() as u64;
+        if let Err(e) = sh.file.truncate_to(t) {
             return finish_failed(args, row, from_io(&e)).await;
         }
     }

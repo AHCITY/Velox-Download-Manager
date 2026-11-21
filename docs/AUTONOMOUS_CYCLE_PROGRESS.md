@@ -40,3 +40,14 @@ Format per entry: cycle, timestamp, completed, files, tests (real counts), git, 
 - Tests: engine-core 53 lib + 52 integration binaries all green; clippy -D warnings clean; fmt clean. Full workspace gate running.
 - Release: v0.1.0 assets refreshed from commit 4d083f8 (Cycle 2) — deleted old assets, uploaded setup + portable + sums + guide, round-trip hash verified byte-exact (ea69f511…).
 - Next: Cycle 4 (probe-loop stop-awareness, worker backoff stop-awareness, finalize truncate belt).
+
+### Cycle 4 — responsiveness + finalization belt (audit P1-1 + P2) (COMPLETE pending full-suite gate)
+- Completed:
+  - Probe loop (resolve + backoff sleeps) is now stop-aware: pause/cancel settle within one await point via select! against the command watch, with honest row-state persistence + event emission (probe_stop_settle mirrors the transfer-phase stop semantics).
+  - Both remaining worker backoff sleeps (open_range transient errors, premature-close retry) are stop-aware → SegFailure::Stop instead of parking through the full retry budget.
+  - Finalize residue-tail belt: known-length bodies are truncated to `total` before hashing/rename (stale bytes past total can no longer ship); preallocate/truncate-to-0 failures are now logged warns instead of silent `.ok()` swallows (non-fatal by design: the write path catches real DiskFull/Permission as paused-resumable).
+  - engine-testserver: new `fail_503_at_requests` knob (pattern-based 503 at exact 1-based request indexes) enabling deterministic mid-phase retry-window tests.
+  - Regression test: pause_settles_during_probe_retries — 503 window at the task's post-start probe, pause settles <5s (was: 30s deadline error), row paused, then resumes byte-exact.
+- Files: crates/engine-core/src/task.rs, crates/engine-core/tests/http_compat.rs, crates/engine-testserver/src/lib.rs.
+- Tests: engine-core 53+15+16+22+2 all green; workspace clippy -D warnings clean; fmt clean. Full workspace gate running.
+- Next: commit/push → Cycle 5 (auth/redirect e2e tests + sustained-429 exhaustion test).

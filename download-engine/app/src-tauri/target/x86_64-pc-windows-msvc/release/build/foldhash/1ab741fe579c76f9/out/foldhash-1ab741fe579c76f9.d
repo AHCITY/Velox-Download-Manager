@@ -1,0 +1,10 @@
+/home/z/my-project/download-engine/app/src-tauri/target/x86_64-pc-windows-msvc/release/build/foldhash/1ab741fe579c76f9/out/foldhash-1ab741fe579c76f9.d: /home/z/my-project/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/foldhash-0.2.0/src/lib.rs /home/z/my-project/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/foldhash-0.2.0/src/fast.rs /home/z/my-project/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/foldhash-0.2.0/src/quality.rs /home/z/my-project/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/foldhash-0.2.0/src/seed.rs
+
+/home/z/my-project/download-engine/app/src-tauri/target/x86_64-pc-windows-msvc/release/build/foldhash/1ab741fe579c76f9/out/libfoldhash-1ab741fe579c76f9.rlib: /home/z/my-project/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/foldhash-0.2.0/src/lib.rs /home/z/my-project/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/foldhash-0.2.0/src/fast.rs /home/z/my-project/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/foldhash-0.2.0/src/quality.rs /home/z/my-project/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/foldhash-0.2.0/src/seed.rs
+
+/home/z/my-project/download-engine/app/src-tauri/target/x86_64-pc-windows-msvc/release/build/foldhash/1ab741fe579c76f9/out/libfoldhash-1ab741fe579c76f9.rmeta: /home/z/my-project/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/foldhash-0.2.0/src/lib.rs /home/z/my-project/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/foldhash-0.2.0/src/fast.rs /home/z/my-project/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/foldhash-0.2.0/src/quality.rs /home/z/my-project/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/foldhash-0.2.0/src/seed.rs
+
+/home/z/my-project/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/foldhash-0.2.0/src/lib.rs:
+/home/z/my-project/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/foldhash-0.2.0/src/fast.rs:
+/home/z/my-project/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/foldhash-0.2.0/src/quality.rs:
+/home/z/my-project/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/foldhash-0.2.0/src/seed.rs:

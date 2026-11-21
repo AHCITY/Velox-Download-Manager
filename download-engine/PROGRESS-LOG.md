@@ -290,3 +290,5 @@
 - Tauri app: engine-media dep + merge-port discovery injected at setup.
 - Tests: workspace 171 passed / 0 failed / 1 ignored; fmt + clippy -D warnings clean. Audit: docs/AUTONOMOUS_CYCLE_INITIAL_AUDIT.md.
 - Known follow-up (next cycle): merge output still written to final path by the pipeline; temp+.part rename + MERGING startup sweep queued (P0-2).
+- **2026-11-21 18:40 [watchdog]** SKIPPED gate (only 966648KB free disk)
+- **2026-11-21 18:52 [watchdog]** SKIPPED gate (only 355848KB free disk)

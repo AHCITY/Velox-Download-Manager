@@ -45,6 +45,9 @@ pub struct Behavior {
     pub return_429_times: Arc<AtomicUsize>,
     /// First N GETs get 503.
     pub return_503_times: Arc<AtomicUsize>,
+    /// Pattern-based 503: fail these 1-based global request indexes (lets tests
+    /// open a retry window at an exact phase, e.g. the task's post-start probe).
+    pub fail_503_at_requests: Arc<std::sync::Mutex<Vec<usize>>>,
     /// Reject HEAD with 501 (GET still works).
     pub refuse_head: bool,
     /// Serve weak ETags (W/"vN").
@@ -96,6 +99,7 @@ impl Behavior {
             stall_sessions: Arc::new(AtomicUsize::new(0)),
             return_429_times: Arc::new(AtomicUsize::new(0)),
             return_503_times: Arc::new(AtomicUsize::new(0)),
+            fail_503_at_requests: Arc::new(std::sync::Mutex::new(Vec::new())),
             refuse_head: false,
             weak_etag: false,
             no_etag: false,
@@ -441,6 +445,16 @@ fn serve_request(
                 &[("Retry-After", "1")],
                 None,
             )?;
+            return Ok(true);
+        }
+        if !g.behavior.fail_503_at_requests.lock().unwrap().is_empty()
+            && g.behavior
+                .fail_503_at_requests
+                .lock()
+                .unwrap()
+                .contains(&g.stats.requests)
+        {
+            write_simple_with(stream, "503 Service Unavailable", &[], None)?;
             return Ok(true);
         }
         if g.behavior.return_503_times.load(Ordering::SeqCst) > 0 {

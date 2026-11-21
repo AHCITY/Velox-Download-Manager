@@ -1040,6 +1040,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "engine-media"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "engine-core",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "engine-state"
 version = "0.1.0"
 dependencies = [
@@ -4712,6 +4722,7 @@ dependencies = [
  "engine-bridge",
  "engine-core",
  "engine-http",
+ "engine-media",
  "engine-state",
  "serde",
  "serde_json",

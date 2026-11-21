@@ -10,9 +10,9 @@ Rules for the on-duty cycle agent:
 
 ## Queue
 
-1. [P0] Wire merge end-to-end: engine-api `download.merge` method; `velox merge <video-id> <audio-id>` CLI; discover_subprocess + set_media_merge in CLI + Tauri startup; API test. (audit P0-1)
-2. [P0] Merge temp-file lifecycle: output `<final>.merging.part` + rename; delete part on cancel/error; startup sweep for stale `merging` rows (MERGE_INTERRUPTED); single-flight guard. (audit P0-2)
-3. [P1] Stop-aware probe loop + backoff sleeps (select! on command watch); truncate-to-total at finalize; un-swallow set_len failures. (audit P1-1 + P2)
+1. [DONE 4d083f8] Wire merge end-to-end: engine-api `download.merge` method; `velox merge <video-id> <audio-id>` CLI; discover_subprocess + set_media_merge in CLI + Tauri startup; API test. (audit P0-1)
+2. [DONE 80b8b08] Merge temp-file lifecycle: output `<final>.merging.part` + rename; delete part on cancel/error; startup sweep for stale `merging` rows (MERGE_INTERRUPTED); single-flight guard. (audit P0-2)
+3. [DONE cycle4] Stop-aware probe loop + backoff sleeps (select! on command watch); truncate-to-total at finalize; un-swallow set_len failures. (audit P1-1 + P2)
 4. [P1] Auth/redirect e2e tests: cross-origin redirect fixture + auth echo; assert stripped creds + preserved Range/If-Range. (audit P1-4)
 5. [P1] Sustained-429 exhaustion test → honest failed row, resumable part, recovery after behavior clears.
 6. [P1] Extractor 403 re-resolve: persist resolved_from + format_id; on Permanent 403 re-run resolve once and resume. (audit P1-2)
