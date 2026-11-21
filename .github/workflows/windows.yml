@@ -11,8 +11,12 @@ on:
 
 jobs:
   # ---- Job 1: engine gates (every PR and push) ----
+  # The cargo workspace lives in download-engine/ — every run step executes there.
   windows:
     runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: download-engine
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -65,13 +69,17 @@ jobs:
           cargo test -p engine-storage -- --exact tests::lock_recovered_after_child_process_death
           cargo test -p engine-cli --test crash_resume
 
-  # ---- Job 2: desktop application + installer (gated: main/tags/manual) ----
-  # Builds the Tauri 2 app with the engine IN-PROCESS and produces the NSIS
-  # setup executable. Runs only after meaningful triggers, not every PR.
+  # ---- Job 2: desktop application + installer (manual dispatch only) ----
+  # The Tauri app sources (app/src-tauri) are NOT in this repository yet — the
+  # shipped installer is cross-built locally. Flip this to push/tags when app/
+  # lands in the repo.
   desktop:
     needs: windows
-    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'workflow_dispatch'
     runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: .
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable

@@ -198,3 +198,4 @@
   LGPL-ffmpeg-only policy (no bundling), and that the -offline variant is not included
   (cleaned for disk pressure earlier).
 - Script: scripts/github-release-upload.sh (token via env only).
+- **2026-11-21 16:34 [watchdog]** GREEN: fmt+clippy clean, 164 tests passed

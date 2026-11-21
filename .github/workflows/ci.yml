@@ -1,0 +1,41 @@
+# Fast Linux CI — every push/PR. The deep Windows gate lives in windows.yml.
+# All cargo steps run in download-engine/ (the workspace root).
+name: ci
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: download-engine
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: download-engine
+
+      - name: Formatting check
+        run: cargo fmt --all -- --check
+
+      - name: Clippy (workspace, all targets, warnings are errors)
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Unit + integration tests (workspace)
+        run: cargo test --workspace --no-fail-fast
+
+      - name: CLI smoke (v1 stdio)
+        run: |
+          cargo run -q -p engine-cli --bin velox -- version
+          '{"jsonrpc":"2.0","id":1,"method":"engine.info"}' | cargo run -q -p engine-cli --bin velox -- serve
