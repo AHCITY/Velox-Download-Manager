@@ -48,6 +48,15 @@ pub struct Behavior {
     /// Pattern-based 503: fail these 1-based global request indexes (lets tests
     /// open a retry window at an exact phase, e.g. the task's post-start probe).
     pub fail_503_at_requests: Arc<std::sync::Mutex<Vec<usize>>>,
+    /// Every request with 1-based index >= N gets 429 + Retry-After: 1 (sustained
+    /// rate limiting; 0 disables). Opens an exhaustion window after start().
+    pub sustained_429_from_request: Arc<AtomicUsize>,
+    /// Respond `302 Found` with this Location for the first `redirect_times`
+    /// requests (exhaustion = never stops redirecting). Interior-mutable so tests
+    /// can wire A→B→A loops after both servers know their ports. Used for
+    /// cross-origin credential-scoping and redirect-loop tests.
+    pub redirect_to: Arc<std::sync::Mutex<Option<String>>>,
+    pub redirect_times: Arc<AtomicUsize>,
     /// Reject HEAD with 501 (GET still works).
     pub refuse_head: bool,
     /// Serve weak ETags (W/"vN").
@@ -100,6 +109,9 @@ impl Behavior {
             return_429_times: Arc::new(AtomicUsize::new(0)),
             return_503_times: Arc::new(AtomicUsize::new(0)),
             fail_503_at_requests: Arc::new(std::sync::Mutex::new(Vec::new())),
+            sustained_429_from_request: Arc::new(AtomicUsize::new(0)),
+            redirect_to: Arc::new(std::sync::Mutex::new(None)),
+            redirect_times: Arc::new(AtomicUsize::new(0)),
             refuse_head: false,
             weak_etag: false,
             no_etag: false,
@@ -446,6 +458,28 @@ fn serve_request(
                 None,
             )?;
             return Ok(true);
+        }
+        // sustained rate limiting from an exact request index onward (exhaustion tests)
+        {
+            let from = g.behavior.sustained_429_from_request.load(Ordering::SeqCst);
+            if from > 0 && g.stats.requests >= from {
+                write_simple_with(
+                    stream,
+                    "429 Too Many Requests",
+                    &[("Retry-After", "1")],
+                    None,
+                )?;
+                return Ok(true);
+            }
+        }
+        // redirects: first `redirect_times` requests get a 302 to `redirect_to`
+        let redirect_loc = g.behavior.redirect_to.lock().unwrap().clone();
+        if let Some(loc) = redirect_loc {
+            if g.behavior.redirect_times.load(Ordering::SeqCst) > 0 {
+                g.behavior.redirect_times.fetch_sub(1, Ordering::SeqCst);
+                write_simple_with(stream, "302 Found", &[("Location", loc.as_str())], None)?;
+                return Ok(true);
+            }
         }
         if !g.behavior.fail_503_at_requests.lock().unwrap().is_empty()
             && g.behavior

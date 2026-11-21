@@ -51,3 +51,13 @@ Format per entry: cycle, timestamp, completed, files, tests (real counts), git, 
 - Files: crates/engine-core/src/task.rs, crates/engine-core/tests/http_compat.rs, crates/engine-testserver/src/lib.rs.
 - Tests: engine-core 53+15+16+22+2 all green; workspace clippy -D warnings clean; fmt clean. Full workspace gate running.
 - Next: commit/push → Cycle 5 (auth/redirect e2e tests + sustained-429 exhaustion test).
+
+### Cycle 5 — adversarial HTTP tests: credential scoping, redirect loops, rate-limit exhaustion (audit P1-4 + test-gap batch) (COMPLETE pending full-suite gate)
+- Completed:
+  - engine-testserver knobs: `redirect_to` (interior-mutable, wires A→B→A loops after both servers know their ports) + `redirect_times` + `sustained_429_from_request` (rate-limit from an exact request index onward).
+  - cross_origin_redirect_strips_credentials_but_keeps_range: bearer token reaches the authenticated origin, is stripped on the cross-origin hop, Range survives — closes the audit's "auth forwarding completely untested e2e" gap (a regression here leaked credentials silently).
+  - redirect_loop_fails_instead_of_spinning: A↔B infinite loop fails the probe with the typed redirect-loop error (never spins).
+  - sustained_429_exhausts_retries_honestly_and_stays_resumable: sustained 429 after start → 5 in-place retries → honest failed row with resumable part file; limiter cleared → resume completes byte-exact. Proves the "paused-by-transient-failure stays resumable" invariant end-to-end.
+- Files: crates/engine-testserver/src/lib.rs, crates/engine-core/tests/http_compat.rs.
+- Tests: engine-core 53 lib + 18 http_compat (4 new) + 16 + 22 + 2, all green; clippy -D warnings clean (one field_reassign_with_default fixed); fmt clean. Full workspace gate running.
+- Next: commit/push → Cycle 6 (installer hygiene batch + WINDOWS_COMPAT.md reconciliation).

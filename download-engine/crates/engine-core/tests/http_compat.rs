@@ -268,6 +268,126 @@ async fn pause_settles_during_probe_retries() {
 }
 
 #[tokio::test]
+async fn cross_origin_redirect_strips_credentials_but_keeps_range() {
+    let dir = tempfile::tempdir().unwrap();
+    let server_b = TestServer::start(Behavior::new(100 * KIB));
+    let mut b_a = Behavior::new(0); // never serves content itself — always redirects
+    *b_a.redirect_to.lock().unwrap() = Some(server_b.url("/file"));
+    b_a.redirect_times = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(usize::MAX));
+    let server_a = TestServer::start(b_a);
+
+    let (data, out) = (dir.path().join("data"), dir.path().join("out"));
+    let mgr = manager(&engine_cfg(&data, &out, |_| {}));
+    let dl = DownloadConfig {
+        auth: Some(engine_core::config::AuthConfig::Bearer {
+            token: "secret-token-123".into(),
+        }),
+        ..DownloadConfig::default()
+    };
+    let added = mgr.add(&server_a.url("/file"), dl).await.unwrap();
+    mgr.clone().start(added.id).await.unwrap();
+    let s = wait_state(&mgr, added.id, &["completed"], Duration::from_secs(30)).await;
+    let final_path = PathBuf::from(&s.dest_dir).join(&s.final_name);
+    assert_eq!(
+        compute_hash_blocking(&final_path, HashAlgo::Sha256).unwrap(),
+        expected_hash(100 * KIB)
+    );
+    // the bearer token reached the origin it was configured for...
+    assert!(
+        server_a.stats().saw_auth_header,
+        "bearer token missing on the authenticated server"
+    );
+    // ...but was stripped on the cross-origin hop (audit P1-4 regression guard)
+    assert!(
+        !server_b.stats().saw_auth_header,
+        "credentials leaked to the cross-origin redirect target"
+    );
+    // Range survives the hop (resume correctness across redirects)
+    assert!(
+        server_b.stats().range_requests > 0,
+        "Range header lost across the cross-origin redirect"
+    );
+    server_a.stop();
+    server_b.stop();
+}
+
+#[tokio::test]
+async fn redirect_loop_fails_instead_of_spinning() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut b_a = Behavior::new(0);
+    let a_redir = b_a.redirect_to.clone();
+    b_a.redirect_times = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(usize::MAX));
+    let server_a = TestServer::start(b_a);
+    let mut b_b = Behavior::new(0);
+    let b_redir = b_b.redirect_to.clone();
+    b_b.redirect_times = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(usize::MAX));
+    let server_b = TestServer::start(b_b);
+    // wire A → B → A: an infinite redirect loop across two origins
+    *a_redir.lock().unwrap() = Some(server_b.url("/file"));
+    *b_redir.lock().unwrap() = Some(server_a.url("/file"));
+
+    let (data, out) = (dir.path().join("data"), dir.path().join("out"));
+    let mgr = manager(&engine_cfg(&data, &out, |_| {}));
+    let err = mgr
+        .add(&server_a.url("/file"), DownloadConfig::default())
+        .await
+        .expect_err("a redirect loop must fail the probe, not spin forever");
+    assert!(
+        err.message.contains("redirect loop"),
+        "unexpected error: {err}"
+    );
+    server_a.stop();
+    server_b.stop();
+}
+
+#[tokio::test]
+async fn sustained_429_exhausts_retries_honestly_and_stays_resumable() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut b = Behavior::new(100 * KIB);
+    // requests 1 (add inspect) and 2 (task probe) succeed; from request 3 on the
+    // server rate-limits forever → the worker retries 5 attempts then fails
+    let limiter = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(3));
+    b.sustained_429_from_request = limiter.clone();
+    let server = TestServer::start(b);
+    let (data, out) = (dir.path().join("data"), dir.path().join("out"));
+    let mgr = manager(&engine_cfg(&data, &out, |_| {}));
+    let added = mgr
+        .add(&server.url("/file"), DownloadConfig::default())
+        .await
+        .unwrap();
+    mgr.clone().start(added.id).await.unwrap();
+
+    let s = wait_state(&mgr, added.id, &["failed"], Duration::from_secs(60)).await;
+    assert!(
+        s.error_message
+            .as_deref()
+            .unwrap_or_default()
+            .contains("429"),
+        "expected an honest HTTP 429 failure, got: {:?}",
+        s.error_message
+    );
+
+    // no final file, but the row stays resumable
+    let row = mgr.db().get_download(added.id).unwrap().unwrap();
+    let part = row.temp_path.as_deref().map(std::path::PathBuf::from);
+    assert!(
+        part.map(|p| p.is_file()).unwrap_or(false),
+        "part file vanished after retry exhaustion — resume impossible"
+    );
+
+    // clear the limiter → resume completes byte-exact
+    limiter.store(usize::MAX, std::sync::atomic::Ordering::SeqCst);
+    mgr.clone().start(added.id).await.unwrap();
+    let s = wait_state(&mgr, added.id, &["completed"], Duration::from_secs(30)).await;
+    let final_path = PathBuf::from(&s.dest_dir).join(&s.final_name);
+    assert_eq!(
+        compute_hash_blocking(&final_path, HashAlgo::Sha256).unwrap(),
+        expected_hash(100 * KIB)
+    );
+    server.stop();
+}
+
+#[tokio::test]
 async fn expiring_url_410_fails_permanently_without_exposing_a_file() {
     let dir = tempfile::tempdir().unwrap();
     let mut b = Behavior::new(300 * KIB);
