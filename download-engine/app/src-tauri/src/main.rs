@@ -367,9 +367,15 @@ fn extension_setup(browser: String, mode: String) -> Result<serde_json::Value, S
         .filter(|p| p.exists());
     let registered = match host {
         Some(h) => {
-            let out = std::process::Command::new(&h)
-                .arg("--register")
-                .arg(EXTENSION_ID)
+            let mut reg = std::process::Command::new(&h);
+            reg.arg("--register").arg(EXTENSION_ID);
+            #[cfg(windows)]
+            {
+                // console-subsystem sidecar: suppress the window flash (RC5), keep output
+                use std::os::windows::process::CommandExt;
+                reg.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+            }
+            let out = reg
                 .output()
                 .map_err(|e| format!("native host registration failed to run: {e}"))?;
             if out.status.success() {

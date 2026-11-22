@@ -89,6 +89,28 @@ Last updated: 2026-11-22 — **UI OVERHAUL SESSION** (complete product rebuild o
 - Docs: README finally documents the extension + installers; INSTALLER-TEST-RESULTS.md refreshed (installers ARE built+published; real-machine install + real update hop still honestly pending); STATE "Remaining" un-staled (clipboard monitor ≠ extension's own opt-in clipboard).
 - Verified clean: UI⇄engine method contract (11 methods, start/resume are engine-side aliases), event contract (DownloadState passes DB state strings through), settings.js "not implemented" rows are honest (global limit/proxy genuinely absent), headless renders of Downloads/Browser(preview note)/Settings all clean, E2E 33/33 after all frontend edits.
 
+## Phase 0-7 production-reliability round (2026-11-22)
+
+Root causes (full report: download-engine/docs/PHASE0-ROOT-CAUSES.md, RC1-RC10):
+- RC1/2: `pick_stream` progressive-only + `MediaMergeSpec.audio_url` consumed NOWHERE at runtime (merge machinery existed but manual-only).
+- RC5: no CREATE_NO_WINDOW on yt-dlp (extract.rs), ffmpeg/ffprobe (pipeline.rs), velox-browser-host --register (main.rs) → console flashes on Windows.
+- RC7: updater.js relaunched 500ms after downloadAndInstall → installer/relaunch race → same update re-offered; installer taskkill /F force-closed the app.
+- RC8: updater downloaded the CUSTOM NSIS installer that ignored Tauri /P /S /R /UPDATE flags (full wizard popped mid-"passive" update).
+- RC6 (non-cause): live latest.json verified CORRECT (0.4.0, valid sig).
+
+Fixes shipped (all tests green):
+- extract.rs: `pick_plan` — progressive fast path kept; best video-only + best audio-only pair (m4a-pref) with `merge_container` (h264+aac→mp4, vp9/opus→mkv, never transcode); ResourceInfo.media carries MediaMergeSpec {audio_url, output_ext, output_name, audio_name}.
+- manager.rs: add() threads info.media into cfg; runner spawns media job on Completed; run_media_job = resume-first audio reuse (find_same_destination, no re-probe — googlevideo URLs expire) → auto audio download → merge_streams → audio row+file removed → spec cleared. Honest failures (audio fail keeps video completed + spec; video removed mid-job cancels audio). merge_streams honors spec.output_name (clean final title).
+- CREATE_NO_WINDOW (0x08000000) on all three Windows spawn sites.
+- updater.js rewrite: strict semver guard (never offer equal/older — the false-update fix), once-per-install announce (localStorage), active-download count + confirm dialog → pause-and-await → downloadAndInstall → graceful self-exit (installer waits) → installer restarts app; postponing keeps the offer. update-version.js extracted pure + node:test suite (4/4).
+- installer-unified-template.nsi replaces the online/offline pair (both deleted): ONE Velox-Setup-x64.exe; UPDATE MODE (/P /S /UPDATE) waits for app exit (no taskkill), silent install, auto-restart; interactive upgrade = graceful WM_CLOSE close + bounded wait + prompt (never force-kill); bundled-file verification (exit code 3); LGPL notices + ffmpeg LICENSE bundled; WebView2 Evergreen STANDALONE (294MB, true offline).
+- BUILT + VERIFIED: unified installer 440,026,140 B, NSIS-3 Unicode; extracted via 7zz 26.06 — 23 files, Velox.exe + ffmpeg.exe byte-exact vs staging (old p7zip 16.02 parser fails on NSIS-3 Unicode — use 7zz).
+- B2 dev cache (GLM-Z.AI, eu-central-003): verified auth+bucket+round-trip; scripts/b2cache.py (idempotent, large-file parts, retries); cached 1.05GB (installer + all bundled exes) + tools/win64; xwin-cache upload in flight.
+
+Gates at round end: cargo fmt ✓, clippy workspace 0 issues, JS tests 4/4, E2E 33/33 (current frontend), engine-core 57/57 (incl. media-job resume + failure), engine-http adaptive suites ✓, engine-api 8/8 (incl. REAL-HTTP media-job e2e), full workspace suite running at log time.
+
+HONEST LIMITS: no real-Windows machine available → installer run/install, console-window invisibility (flag present at all 3 sites, mechanism documented), and a real updater hop are UNTESTED on Windows; sandbox recycled mid-round (toolchain rebuilt via scripts/rebuild-toolchain.sh; GitHub token + velox-updater.key were LOST with it — push and release signing need re-provisioning).
+
 ## Remaining / next candidates
 
 1. Toast matrix per notification pref; media-merge UI exercise needs yt-dlp + ffmpeg on a real machine (honest-unavailable states already in place).

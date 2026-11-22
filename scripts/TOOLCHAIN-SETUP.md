@@ -53,7 +53,7 @@ NSISDIR=/tmp/nsisx/usr/share/nsis /tmp/nsisx/usr/bin/makensis -VERSION   # v3.13
 ```bash
 /home/z/my-project/scripts/build-velox-msvc.sh          # → app/src-tauri/target/x86_64-pc-windows-msvc/release/Velox.exe
 NSISDIR=/tmp/nsisx/usr/share/nsis /tmp/nsisx/usr/bin/makensis \
-  /home/z/my-project/scripts/installer-online-template.nsi   # → /tmp/installer/Velox-Setup-x64.exe
+  /home/z/my-project/scripts/installer-unified-template.nsi  # → /tmp/installer/Velox-Setup-x64.exe (the ONE unified installer, Phase 5)
 ```
 
 OutFile path is fixed in the template (`/tmp/installer/`); create it first.

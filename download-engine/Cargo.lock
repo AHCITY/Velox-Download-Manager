@@ -222,8 +222,10 @@ dependencies = [
 name = "engine-api"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "engine-core",
  "engine-http",
+ "engine-testserver",
  "serde",
  "serde_json",
  "tempfile",

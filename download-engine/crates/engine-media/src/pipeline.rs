@@ -280,18 +280,25 @@ impl MediaPipelinePort for SubprocessPort {
         args: &[String],
         kill: watch::Receiver<bool>,
     ) -> Result<SubprocessOutcome, EngineError> {
-        let mut child = Command::new(exe)
-            .args(args)
+        let mut cmd = Command::new(exe);
+        cmd.args(args)
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
-            .kill_on_drop(true)
-            .spawn()
-            .map_err(|e| {
-                EngineError::new(
-                    ErrorKind::MergeFailed,
-                    format!("could not spawn {exe}: {e}"),
-                )
-            })?;
+            .kill_on_drop(true);
+        // Windows: ffmpeg/ffprobe are console executables — spawned from the GUI app
+        // during a merge they would flash console windows mid-download. Suppress the
+        // window; stdout/stderr stay piped (diagnostics preserved in output_tail).
+        #[cfg(windows)]
+        {
+            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+            cmd.creation_flags(CREATE_NO_WINDOW);
+        }
+        let mut child = cmd.spawn().map_err(|e| {
+            EngineError::new(
+                ErrorKind::MergeFailed,
+                format!("could not spawn {exe}: {e}"),
+            )
+        })?;
 
         let out_task = tokio::spawn(drain(child.stdout.take().expect("stdout piped")));
         let err_task = tokio::spawn(drain(child.stderr.take().expect("stderr piped")));

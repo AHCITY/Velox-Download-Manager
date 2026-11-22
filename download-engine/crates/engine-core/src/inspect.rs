@@ -36,6 +36,10 @@ pub struct ResourceInfo {
     pub suggested_name: Option<String>,
     /// Human-readable provenance note from URL resolution (e.g. "Google Drive: confirmed").
     pub resolve_note: Option<String>,
+    /// Adaptive media plan from the extractor (yt-dlp): the video half is `final_url`
+    /// itself; `media.audio_url` is the second stream and `media.output_name` the final
+    /// merged artifact. The manager turns this into a two-stream media job.
+    pub media: Option<crate::config::MediaMergeSpec>,
 }
 
 /// What the first bytes of a body look like. Deliberately conservative: the engine only

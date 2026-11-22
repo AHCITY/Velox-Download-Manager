@@ -130,6 +130,16 @@ pub struct MediaMergeSpec {
     pub audio_url: String,
     /// Extension of the final merged file (default "mp4").
     pub output_ext: Option<String>,
+    /// Explicit final artifact NAME (e.g. "Title.mp4"). When absent the name is
+    /// derived from the video row (`<video stem>.<output_ext>`); the auto media
+    /// job sets it so the merged artifact carries the original media title.
+    #[serde(default)]
+    pub output_name: Option<String>,
+    /// Explicit file NAME of the audio stream row (e.g. "Title (audio stream).m4a").
+    /// Set by the extractor when it knows the audio container; absent → naming falls
+    /// back to URL/mime-derived names.
+    #[serde(default)]
+    pub audio_name: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

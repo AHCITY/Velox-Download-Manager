@@ -23,8 +23,9 @@ What is STILL untested (honest):
 What EXISTS and is committed:
 - The complete Tauri 2 application (code, config, capabilities, icons).
 - CI desktop job (`windows.yml`) that builds the installer on `windows-latest`.
-- NSIS v0.4.0 templates (scripts/installer-online-template.nsi /
-  installer-offline-template.nsi) + packaging/signing scripts used for the releases.
+- NSIS v0.4.0 UNIFIED template (scripts/installer-unified-template.nsi — the
+  single Velox-Setup-x64.exe, Phase 5; replaces the former online/offline pair)
+  + packaging/signing scripts used for the releases.
 
 ## Test plan (execute on a Windows 10 22H2 x64 / Windows 11 x64 machine after the CI run)
 

@@ -150,13 +150,14 @@ function paintShell(root) {
         desc.textContent = pct == null ? 'Downloading and verifying the signed installer…' : `Downloading — ${pct}% of ${fmtBytes(st2.total)}`;
         ctl.innerHTML = `<span class="btn-spinner" style="border-color:var(--accent-bg);border-top-color:var(--accent)"></span>`;
       } else if (st2.status === 'restarting') {
-        desc.textContent = 'Installed — restarting…';
+        desc.textContent = 'Installing — Velox exits now and the installer brings the new version back up.';
         ctl.innerHTML = '';
       } else if (st2.status === 'checking') {
         desc.textContent = 'Checking GitHub for a newer release…';
         ctl.innerHTML = `<span class="btn-spinner" style="border-color:var(--accent-bg);border-top-color:var(--accent)"></span>`;
       } else if (st2.status === 'uptodate') {
-        desc.textContent = 'You are on the latest version.';
+        const at = st2.at ? ` Last checked ${new Date(st2.at).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })}.` : '';
+        desc.textContent = `You are on the latest version.${at}`;
         ctl.innerHTML = '<span class="tag ok">up to date</span>';
       } else if (st2.status === 'error') {
         desc.textContent = `Last check failed: ${st2.error || 'unknown error'}`;

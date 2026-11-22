@@ -14,5 +14,7 @@ tracing = { workspace = true }
 
 [dev-dependencies]
 engine-http = { path = "../engine-http" }
+engine-testserver = { path = "../engine-testserver" }
+async-trait = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true }

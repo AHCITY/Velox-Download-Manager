@@ -1,2 +1,9 @@
 skills/
 node_modules/
+.secrets/
+.cargo/
+.rustup/
+.xwin-cache/
+target/
+cache-manifest.json
+__pycache__/

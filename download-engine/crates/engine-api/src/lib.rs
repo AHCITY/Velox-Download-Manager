@@ -447,4 +447,109 @@ mod tests {
         );
         let _ = &m;
     }
+
+    /// Adaptive media e2e (Phase 2): a video row created with a media_merge spec,
+    /// REAL HTTP for both streams, auto audio half + auto merge + audio-row cleanup.
+    /// Runs here (not engine-core) because the dev-cycle engine-core⇄engine-http
+    /// forbids ReqwestBackend in engine-core's own tests.
+    #[tokio::test]
+    async fn media_job_end_to_end_auto_audio_and_merge() {
+        use engine_testserver::{Behavior, TestServer};
+        use std::path::Path;
+        use std::sync::Arc as StdArc;
+
+        struct WriteMerge;
+        #[async_trait::async_trait]
+        impl engine_core::ports::MediaMergePort for WriteMerge {
+            async fn merge(
+                &self,
+                _id: i64,
+                _video: &Path,
+                _audio: &Path,
+                output: &Path,
+                _bus: &engine_core::events::EventBus,
+                _kill: tokio::sync::watch::Receiver<bool>,
+            ) -> Result<(), engine_core::error::EngineError> {
+                std::fs::write(output, b"merged-bytes").map_err(|e| {
+                    engine_core::error::EngineError::new(
+                        engine_core::error::ErrorKind::MergeFailed,
+                        format!("write failed: {e}"),
+                    )
+                })
+            }
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = EngineConfig {
+            data_dir: dir.path().join("data"),
+            default_out_dir: dir.path().join("out"),
+            ..Default::default()
+        };
+        std::fs::create_dir_all(&cfg.default_out_dir).unwrap();
+        let backend = StdArc::new(ReqwestBackend::new(&cfg).unwrap());
+        let m = engine_core::manager::DownloadManager::new(cfg, backend).unwrap();
+        m.set_media_merge(Some(StdArc::new(WriteMerge)));
+        let mut b = Behavior::new(1 << 20);
+        b.serve_any_path = true; // video (/file) + audio (/audio) both must serve
+        let server = TestServer::start(b);
+
+        let spec = engine_core::config::MediaMergeSpec {
+            audio_url: server.url("/audio"),
+            output_ext: Some("mp4".into()),
+            output_name: Some("My Video.mp4".into()),
+            audio_name: Some("My Video (audio stream).m4a".into()),
+        };
+        let added = m
+            .add(
+                &server.url("/file"),
+                engine_core::config::DownloadConfig {
+                    media_merge: Some(spec),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        m.clone().start(added.id).await.unwrap();
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        let row = loop {
+            let r = m.db().get_download(added.id).unwrap().unwrap();
+            if r.state == "completed" && r.final_name == "My Video.mp4" {
+                break r;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "media job did not finish: {} {} | all rows: {:?}",
+                r.state,
+                r.final_name,
+                m.db()
+                    .list_downloads()
+                    .unwrap()
+                    .iter()
+                    .map(|x| (
+                        x.id,
+                        x.url.clone(),
+                        x.state.clone(),
+                        x.final_name.clone(),
+                        x.error_message.clone()
+                    ))
+                    .collect::<Vec<_>>()
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        };
+
+        let rows = m.db().list_downloads().unwrap();
+        assert!(
+            !rows.iter().any(|r| r.url == server.url("/audio")),
+            "audio row must be removed after the merge"
+        );
+        assert_eq!(
+            std::fs::read(dir.path().join("out/My Video.mp4")).unwrap(),
+            b"merged-bytes"
+        );
+        let cfg: engine_core::config::DownloadConfig =
+            serde_json::from_str(&row.config_json).unwrap();
+        assert!(cfg.media_merge.is_none(), "pending spec cleared");
+        server.stop();
+    }
 }

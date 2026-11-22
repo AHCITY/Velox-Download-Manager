@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use serde::Serialize;
 use tokio::sync::{watch, Semaphore};
-use tracing::info;
+use tracing::{info, warn};
 
 use engine_state::{states, Db, DownloadRow};
 
@@ -18,7 +18,7 @@ use crate::inspect::RangeSupport;
 use crate::naming;
 use crate::ports::{HttpPort, RequestHeaders};
 use crate::segments::SegmentTable;
-use crate::task::{compute_hash_blocking, run_task, TaskArgs, TaskCommand};
+use crate::task::{compute_hash_blocking, run_task, TaskArgs, TaskCommand, TaskOutcome};
 
 #[derive(Debug, Serialize)]
 pub struct AddedDownload {
@@ -146,6 +146,9 @@ pub struct DownloadManager {
     /// Single-flight guard for merge phases (video ids currently merging): two
     /// concurrent merges into the same row would both write the same output.
     merging: Mutex<HashSet<i64>>,
+    /// In-flight adaptive media jobs (video ids currently running their audio
+    /// download + merge orchestration). Guards single-flight per job.
+    media_jobs: Mutex<HashSet<i64>>,
 }
 
 impl DownloadManager {
@@ -178,6 +181,7 @@ impl DownloadManager {
             media_merge: Mutex::new(None),
             merge_triggers: Mutex::new(HashMap::new()),
             merging: Mutex::new(HashSet::new()),
+            media_jobs: Mutex::new(HashSet::new()),
         }))
     }
 
@@ -458,6 +462,7 @@ impl DownloadManager {
     /// Inspect a URL and register a download without starting it.
     pub async fn add(&self, url: &str, cfg: DownloadConfig) -> Result<AddedDownload, EngineError> {
         Self::validate_url(url)?;
+        let mut cfg = cfg;
         let headers = RequestHeaders::from_config(
             &cfg.headers,
             &cfg.referer,
@@ -468,6 +473,14 @@ impl DownloadManager {
         let info = self.resolve_with_retry(url, &headers).await?;
         if !crate::inspect::probe_usable(&info) {
             return Err(from_status(info.status, "inspection failed"));
+        }
+        // Adaptive media plan from the extractor (yt-dlp): thread it into the
+        // download config UNLESS the caller specified one explicitly. This is the
+        // bridge extractor → two-stream media job.
+        if cfg.media_merge.is_none() {
+            if let Some(spec) = info.media.clone() {
+                cfg.media_merge = Some(spec);
+            }
         }
         // P0 gate at registration time: a web page (HTML) or compressed transfer never
         // becomes a download row at all — the user sees the real reason immediately.
@@ -773,9 +786,160 @@ impl DownloadManager {
                 .lock()
                 .unwrap()
                 .retain(|_, v| Arc::strong_count(v) > 1);
+            // Adaptive media job (YouTube etc.): the VIDEO row completed and carries a
+            // pending media_merge spec → orchestrate the audio half + merge in the
+            // background. Everything stays in the ordinary engine paths.
+            if matches!(outcome, Some(TaskOutcome::Completed { .. })) {
+                this.maybe_spawn_media_job(id);
+            }
             let _ = outcome;
         });
         Ok(())
+    }
+
+    /// Claim + spawn the media job for a completed video row (single-flight).
+    /// No-op when the row has no pending `media_merge` spec.
+    fn maybe_spawn_media_job(self: &Arc<Self>, video_id: i64) {
+        let pending = self
+            .db
+            .get_download(video_id)
+            .ok()
+            .flatten()
+            .and_then(|row| {
+                serde_json::from_str::<crate::config::DownloadConfig>(&row.config_json)
+                    .ok()
+                    .filter(|cfg| cfg.media_merge.is_some())
+            });
+        let Some(cfg) = pending else { return };
+        // Pre-claim so a racing completion tick cannot double-run the job.
+        if !self.media_jobs.lock().unwrap().insert(video_id) {
+            return;
+        }
+        info!(video_id, audio = %cfg.media_merge.as_ref().unwrap().audio_url, "media job: starting audio half");
+        let this = self.clone();
+        tokio::spawn(async move {
+            this.run_media_job(video_id).await;
+        });
+    }
+
+    /// Two-stream media job (adaptive YouTube etc.): video row COMPLETED with a
+    /// `media_merge` spec → download the audio half through the ordinary engine,
+    /// merge via the injected MediaMergePort (`-c copy`), then remove the audio
+    /// row + file so the user ends with ONE logical download. Failure paths stay
+    /// honest: a failed audio or merge leaves visible rows in their real states.
+    async fn run_media_job(self: Arc<Self>, video_id: i64) {
+        let setup = (|| {
+            let row = self.db.get_download(video_id).ok().flatten()?;
+            let cfg: crate::config::DownloadConfig = serde_json::from_str(&row.config_json).ok()?;
+            let spec = cfg.media_merge.clone()?;
+            if row.state != states::COMPLETED {
+                return None;
+            }
+            let mut acfg = cfg.clone();
+            acfg.media_merge = None;
+            acfg.verify = None;
+            acfg.filename = spec.audio_name.clone();
+            Some((spec, acfg, row.dest_dir))
+        })();
+        let Some((spec, acfg, dest_dir)) = setup else {
+            self.media_jobs.lock().unwrap().remove(&video_id);
+            return;
+        };
+
+        // 1) audio half. Resume-first: a row for the same audio URL + destination +
+        //    explicit name is reused WITHOUT re-probing (media URLs such as
+        //    googlevideo expire; a crash-resume must not depend on a live URL).
+        //    Otherwise register a fresh row (add() re-dedupes).
+        let audio_id = {
+            let audio_name =
+                crate::naming::sanitize_filename(spec.audio_name.as_deref().unwrap_or("audio.bin"));
+            match self
+                .db
+                .find_same_destination(&spec.audio_url, &dest_dir, &audio_name)
+            {
+                Ok(Some(existing)) => existing.id,
+                _ => match self.add(&spec.audio_url, acfg).await {
+                    Ok(added) => added.existing_id.unwrap_or(added.id),
+                    Err(e) => {
+                        warn!(video_id, error = %e.message, "media job: audio half could not be registered");
+                        self.media_jobs.lock().unwrap().remove(&video_id);
+                        return;
+                    }
+                },
+            }
+        };
+
+        // Abort when the video row disappears (user removed it mid-job).
+        let video_gone = || self.db.get_download(video_id).ok().flatten().is_none();
+
+        // 2) start + wait for a terminal audio state (bounded).
+        if let Err(e) = self.clone().start(audio_id).await {
+            // "already completed" is the happy resume-after-crash path
+            if !e.message.contains("already completed") {
+                warn!(video_id, audio_id, error = %e.message, "media job: audio half could not start");
+                self.media_jobs.lock().unwrap().remove(&video_id);
+                return;
+            }
+        }
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30 * 60);
+        let audio_done = loop {
+            if video_gone() {
+                info!(
+                    video_id,
+                    "media job: video row removed mid-job — aborting audio"
+                );
+                let _ = self.cancel(audio_id).await;
+                let _ = self.remove(audio_id, true).await;
+                self.media_jobs.lock().unwrap().remove(&video_id);
+                return;
+            }
+            match self.db.get_download(audio_id).ok().flatten() {
+                Some(r) if r.state == states::COMPLETED => break true,
+                Some(r) if r.state == states::FAILED || r.state == states::CANCELLED => {
+                    warn!(video_id, audio_id, state = %r.state, "media job: audio half did not complete");
+                    break false;
+                }
+                _ => {}
+            }
+            if std::time::Instant::now() > deadline {
+                warn!(video_id, audio_id, "media job: audio half timed out");
+                break false;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        };
+        if !audio_done {
+            // video row stays COMPLETED (it IS a complete video-only file); the audio
+            // row carries the failure reason. Nothing is hidden.
+            self.media_jobs.lock().unwrap().remove(&video_id);
+            return;
+        }
+
+        // 3) merge (LGPL-gated, stream-copy, ffprobe-validated inside merge_streams).
+        let merged = self.merge_streams(video_id, audio_id).await;
+
+        // 4) cleanup: drop the audio row + file; clear the pending spec on the video
+        //    row so a later re-trigger cannot re-merge an already-merged artifact.
+        match merged {
+            Ok(()) => {
+                let _ = self.remove(audio_id, true).await;
+                if let Ok(Some(mut row)) = self.db.get_download(video_id) {
+                    if let Ok(mut cfg) =
+                        serde_json::from_str::<crate::config::DownloadConfig>(&row.config_json)
+                    {
+                        cfg.media_merge = None;
+                        if let Ok(json) = serde_json::to_string(&cfg) {
+                            row.config_json = json;
+                            let _ = self.db.update_download(&row);
+                        }
+                    }
+                }
+                info!(video_id, "media job: merged artifact finalized");
+            }
+            Err(e) => {
+                warn!(video_id, audio_id, error = %e.message, "media job: merge failed (rows keep honest states)");
+            }
+        }
+        self.media_jobs.lock().unwrap().remove(&video_id);
     }
 
     /// MediaPipeline phase (review §9, docs/FFMPEG_INTEGRATION.md §2): merge two
@@ -805,25 +969,47 @@ impl DownloadManager {
             }
         }
 
-        // Output path: video's name with the merged extension (default mp4). If it
-        // exists, pick `name(1).ext`, `name(2).ext`, … unless the row says overwrite.
+        // Output path: an explicit spec.output_name (auto media jobs set the original
+        // media title), else the video row's name with the merged extension
+        // (default mp4). If it exists, pick `name(1).ext`, `name(2).ext`, … unless the
+        // row says overwrite.
         let cfg: DownloadConfig = serde_json::from_str(&video_row.config_json).unwrap_or_default();
+        let dest_dir = std::path::Path::new(&video_row.dest_dir).to_path_buf();
         let ext = cfg
             .media_merge
             .as_ref()
             .and_then(|m| m.output_ext.clone())
             .unwrap_or_else(|| "mp4".into());
-        let stem = video_row
-            .final_name
-            .rsplit_once('.')
-            .map(|(s, _)| s.to_string())
-            .unwrap_or_else(|| video_row.final_name.clone());
-        let dest_dir = std::path::Path::new(&video_row.dest_dir).to_path_buf();
-        let mut output = dest_dir.join(format!("{stem}.{ext}"));
+        let explicit_name = cfg
+            .media_merge
+            .as_ref()
+            .and_then(|m| m.output_name.clone())
+            .filter(|n| !n.is_empty());
+        let mut output = match explicit_name {
+            Some(name) => dest_dir.join(name),
+            None => {
+                let stem = video_row
+                    .final_name
+                    .rsplit_once('.')
+                    .map(|(s, _)| s.to_string())
+                    .unwrap_or_else(|| video_row.final_name.clone());
+                dest_dir.join(format!("{stem}.{ext}"))
+            }
+        };
         if !cfg.overwrite {
             let mut n = 1;
             while output.exists() {
-                output = dest_dir.join(format!("{stem}({n}).{ext}"));
+                // (n) dedup works for both derived and explicit output names
+                let name = output
+                    .file_name()
+                    .and_then(|f| f.to_str())
+                    .unwrap_or_default()
+                    .to_string();
+                let (stem, cur_ext) = name
+                    .rsplit_once('.')
+                    .map(|(a, b)| (a.to_string(), b.to_string()))
+                    .unwrap_or((name.clone(), ext.clone()));
+                output = dest_dir.join(format!("{stem}({n}).{cur_ext}"));
                 n += 1;
             }
         }
@@ -1715,6 +1901,81 @@ mod merge_tests {
         assert_eq!(
             m.db.get_download(v).unwrap().unwrap().final_name,
             "video(1).mp4"
+        );
+    }
+
+    /// Resume path: the audio row ALREADY EXISTS (crash mid-job; media URLs such as
+    /// googlevideo expire, so resume must not re-probe). The job reuses it and
+    /// merges without touching the network — NoHttp backend proves no probe happens.
+    #[tokio::test]
+    async fn media_job_resume_reuses_existing_audio_row_and_merges() {
+        let data = tempfile::tempdir().unwrap();
+        let dest = tempfile::tempdir().unwrap();
+        let m = mgr(data.path());
+        m.set_media_merge(Some(Arc::new(FakeMerge(Mode::Ok))));
+        let spec = crate::config::MediaMergeSpec {
+            audio_url: "http://127.0.0.1:1/audio.m4a".into(), // unreachable — must NOT be probed
+            output_ext: Some("mp4".into()),
+            output_name: Some("T.mp4".into()),
+            audio_name: Some("T (audio stream).m4a".into()),
+        };
+        let cfg_json = serde_json::to_string(&DownloadConfig {
+            media_merge: Some(spec),
+            ..Default::default()
+        })
+        .unwrap();
+        std::fs::write(dest.path().join("video.bin"), b"v").unwrap();
+        std::fs::write(dest.path().join("T (audio stream).m4a"), b"a").unwrap();
+        let v =
+            m.db.insert_download(&completed_row(dest.path(), "video.bin", &cfg_json))
+                .unwrap();
+        let mut arow = completed_row(dest.path(), "T (audio stream).m4a", "{}");
+        arow.url = "http://127.0.0.1:1/audio.m4a".into(); // must match the spec's audio_url
+        let a = m.db.insert_download(&arow).unwrap();
+        m.clone().run_media_job(v).await;
+
+        let row = m.db.get_download(v).unwrap().unwrap();
+        assert_eq!(row.state, states::COMPLETED);
+        assert_eq!(row.final_name, "T.mp4");
+        let out = dest.path().join("T.mp4");
+        assert_eq!(std::fs::read(&out).unwrap(), b"merged-bytes");
+        // audio row + file cleaned up after a successful merge
+        assert!(m.db.get_download(a).unwrap().is_none());
+        assert!(!dest.path().join("T (audio stream).m4a").exists());
+        let cfg: DownloadConfig = serde_json::from_str(&row.config_json).unwrap();
+        assert!(cfg.media_merge.is_none(), "spec cleared after merge");
+    }
+
+    /// Honest failure: the audio URL cannot even be registered → the video row
+    /// stays COMPLETED (it IS a complete video-only file) and the pending spec is
+    /// KEPT so a manual retry/re-merge remains possible. No rows are hidden.
+    #[tokio::test]
+    async fn media_job_audio_failure_keeps_video_completed_and_spec() {
+        let data = tempfile::tempdir().unwrap();
+        let dest = tempfile::tempdir().unwrap();
+        let m = mgr(data.path());
+        let spec = crate::config::MediaMergeSpec {
+            audio_url: "http://127.0.0.1:1/audio.bin".into(), // unreachable
+            output_ext: Some("mp4".into()),
+            output_name: Some("T.mp4".into()),
+            audio_name: Some("T (audio stream).m4a".into()),
+        };
+        let cfg_json = serde_json::to_string(&DownloadConfig {
+            media_merge: Some(spec),
+            ..Default::default()
+        })
+        .unwrap();
+        let v =
+            m.db.insert_download(&completed_row(dest.path(), "video.bin", &cfg_json))
+                .unwrap();
+        m.clone().run_media_job(v).await;
+        let row = m.db.get_download(v).unwrap().unwrap();
+        assert_eq!(row.state, states::COMPLETED);
+        let cfg: DownloadConfig = serde_json::from_str(&row.config_json).unwrap();
+        assert!(cfg.media_merge.is_some(), "spec kept for manual retry");
+        assert!(
+            m.db.list_downloads().unwrap().len() == 1,
+            "no phantom audio row on registration failure"
         );
     }
 

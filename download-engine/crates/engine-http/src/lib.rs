@@ -431,6 +431,7 @@ impl HttpPort for ReqwestBackend {
             sniffed,
             suggested_name: None,
             resolve_note: None,
+            media: None,
         })
     }
 
