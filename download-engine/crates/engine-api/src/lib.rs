@@ -1,9 +1,10 @@
 //! Velox versioned JSON-RPC 2.0 API (v1) over line-delimited stdio (ADR-0004).
 //!
 //! Wire format: one JSON object per line. Methods: engine.info, download.create,
-//! download.start, download.pause, download.resume, download.cancel, download.remove,
-//! download.list, download.status, download.verify. Standard JSON-RPC error codes;
-//! engine failures carry code -32000 with a "<KIND>: message" text.
+//! download.start, download.pause, download.resume, download.cancel, download.remove
+//! (record removal, any state; delete_file=true also deletes the artifact),
+//! download.list, download.status, download.verify, download.merge. Standard JSON-RPC
+//! error codes; engine failures carry code -32000 with a "<KIND>: message" text.
 
 use std::sync::Arc;
 
@@ -195,12 +196,31 @@ pub async fn handle_line(manager: &Arc<DownloadManager>, line: &str) -> Option<S
                 .map(|_| json!({"ok": true}))
                 .map_err(engine_err)
         }
-        "download.cancel" | "download.remove" => {
+        "download.cancel" => {
             let Some(id_) = params.get("id").and_then(parse_id) else {
                 return Some(bad_params_json(id, "missing id"));
             };
             manager
                 .cancel(id_)
+                .await
+                .map(|_| json!({"ok": true}))
+                .map_err(engine_err)
+        }
+        // download.remove is RECORD removal (any state, incl. completed): with
+        // delete_file=true the downloaded file is deleted too. Previously aliased
+        // to cancel, which refused completed rows — UIs could not manage finished
+        // downloads whose files were deleted or unwanted (UI overhaul 2026-11-22).
+        "download.remove" => {
+            let Some(id_) = params.get("id").and_then(parse_id) else {
+                return Some(bad_params_json(id, "missing id"));
+            };
+            let delete_file = params
+                .get("delete_file")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            manager
+                .clone()
+                .remove(id_, delete_file)
                 .await
                 .map(|_| json!({"ok": true}))
                 .map_err(engine_err)
@@ -373,6 +393,39 @@ mod tests {
             m.list().unwrap().is_empty(),
             "inspect must not register anything"
         );
+    }
+
+    #[tokio::test]
+    async fn remove_routes_to_record_removal_not_cancel() {
+        // routing distinction: cancel(unknown) is a silent Ok (remove_partial
+        // no-ops), remove(unknown) is an honest INVALID_CONFIG — proves the two
+        // methods no longer share one handler
+        let m = manager();
+        let r = handle_line(
+            &m,
+            r#"{"jsonrpc":"2.0","id":21,"method":"download.cancel","params":{"id":4242}}"#,
+        )
+        .await
+        .unwrap();
+        assert!(r.contains("\"ok\":true"), "cancel keeps its semantics: {r}");
+        let r = handle_line(
+            &m,
+            r#"{"jsonrpc":"2.0","id":22,"method":"download.remove","params":{"id":4242}}"#,
+        )
+        .await
+        .unwrap();
+        assert!(
+            r.contains("unknown download id"),
+            "remove is record removal: {r}"
+        );
+        // delete_file param is accepted (unknown id still errors first)
+        let r = handle_line(
+            &m,
+            r#"{"jsonrpc":"2.0","id":23,"method":"download.remove","params":{"id":4242,"delete_file":true}}"#,
+        )
+        .await
+        .unwrap();
+        assert!(r.contains("unknown download id"), "{r}");
     }
 
     #[tokio::test]

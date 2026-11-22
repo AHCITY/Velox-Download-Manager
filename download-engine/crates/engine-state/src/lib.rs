@@ -303,6 +303,8 @@ impl Db {
 
     pub fn delete_download(&self, id: i64) -> Result<(), StateError> {
         let conn = self.conn.lock().unwrap();
+        conn.execute("DELETE FROM segments WHERE download_id=?", params![id])?;
+        conn.execute("DELETE FROM errors WHERE download_id=?", params![id])?;
         conn.execute("DELETE FROM downloads WHERE id=?", params![id])?;
         Ok(())
     }

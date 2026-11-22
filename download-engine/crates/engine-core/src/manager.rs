@@ -72,6 +72,8 @@ pub struct StatusView {
     /// disk (deleted/moved externally). The row stays honest: state is not rewritten;
     /// the UI can surface "file missing" instead of a phantom entry.
     pub file_missing: bool,
+    /// Per-download speed cap from the stored DownloadConfig (UI: Network screen).
+    pub bandwidth_limit_bps: Option<u64>,
 }
 
 #[derive(Debug, Serialize)]
@@ -993,6 +995,53 @@ impl DownloadManager {
     /// A COMPLETED download is protected: its file has been finalized to the user's
     /// destination, so removing the row would orphan the file (no record, file still
     /// on disk). Callers must use an explicit "remove completed" semantic instead.
+    /// Explicit removal that may target ANY state, including COMPLETED (unlike
+    /// remove_partial, which protects completed rows). With `delete_file`, the
+    /// final artifact is deleted BEFORE the record so a failed fs operation leaves
+    /// the row in place to retry. The file is deleted first, record second, and a
+    /// `removed` state event lets UIs drop the row immediately.
+    pub async fn remove(&self, id: i64, delete_file: bool) -> Result<(), EngineError> {
+        // never delete state under a live task (same guardrail as cancel, audit B1)
+        if let Some(entry) = self.running_snapshot(id) {
+            let _ = entry.cmd.send(TaskCommand::Cancel);
+            if !wait_until_settled(self, id, Duration::from_secs(60)).await {
+                return Err(EngineError::new(
+                    ErrorKind::Io,
+                    "remove timed out; task still settling",
+                ));
+            }
+        }
+        let row = self
+            .db
+            .get_download(id)
+            .map_err(db_err)?
+            .ok_or_else(|| EngineError::new(ErrorKind::InvalidConfig, "unknown download id"))?;
+        if delete_file && row.state == states::COMPLETED {
+            let p = std::path::Path::new(&row.dest_dir).join(&row.final_name);
+            match std::fs::remove_file(&p) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => {
+                    return Err(EngineError::new(
+                        ErrorKind::Io,
+                        format!("could not delete {}: {e}", p.display()),
+                    ))
+                }
+            }
+        }
+        self.db.delete_download(id).map_err(db_err)?;
+        if let Some(t) = row.temp_path {
+            std::fs::remove_file(&t).ok(); // may already be renamed/absent
+        }
+        self.events
+            .send(crate::events::Event::DownloadState {
+                id,
+                state: "removed".to_string(),
+            })
+            .ok();
+        Ok(())
+    }
+
     pub fn remove_partial(&self, id: i64) -> Result<(), EngineError> {
         let row = self.db.get_download(id).map_err(db_err)?;
         if let Some(r) = &row {
@@ -1096,6 +1145,9 @@ impl DownloadManager {
                 && !std::path::Path::new(&row.dest_dir)
                     .join(&row.final_name)
                     .exists(),
+            bandwidth_limit_bps: serde_json::from_str::<serde_json::Value>(&row.config_json)
+                .ok()
+                .and_then(|c| c.get("bandwidth_limit_bps").and_then(|v| v.as_u64())),
         }
     }
 

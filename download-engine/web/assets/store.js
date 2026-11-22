@@ -1,0 +1,411 @@
+// Velox store — the single source of UI truth. The engine DB is authoritative;
+// this store mirrors it, patches itself from live events, and re-syncs after
+// reconnects. Screens subscribe to slices; progress events patch rows in place
+// so a moving download never rerenders the whole app.
+import { engine, subscribeEvents, loadSettings, saveSettings, EVENT_NAMES } from './api.js';
+
+export const RUNNING_STATES = ['downloading', 'queued', 'created', 'retrying', 'resolving', 'merging'];
+export const LISTENABLE_STATES = ['all', 'downloading', 'queued', 'completed', 'failed', 'paused', 'resolving', 'merging', 'cancelled'];
+
+export const CATEGORIES = {
+  video: ['mp4', 'mkv', 'webm', 'avi', 'mov', 'flv', 'wmv', 'm4v', 'ts', 'm3u8'],
+  audio: ['mp3', 'm4a', 'flac', 'wav', 'ogg', 'opus', 'aac', 'wma'],
+  image: ['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg', 'bmp', 'ico', 'avif'],
+  archive: ['zip', 'rar', '7z', 'tar', 'gz', 'bz2', 'xz', 'zst', 'iso'],
+  document: ['pdf', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx', 'txt', 'md', 'epub', 'csv'],
+  software: ['exe', 'msi', 'dmg', 'deb', 'rpm', 'appimage', 'apk', 'pkg'],
+  code: ['js', 'ts', 'py', 'rs', 'go', 'c', 'cpp', 'java', 'html', 'css', 'json', 'xml', 'yaml', 'sh'],
+};
+
+export function categoryOf(name) {
+  const ext = String(name || '').split('.').pop().toLowerCase();
+  for (const [cat, exts] of Object.entries(CATEGORIES)) {
+    if (exts.includes(ext)) return cat;
+  }
+  return 'other';
+}
+
+/* ---------- formatting ---------- */
+export function fmtBytes(n) {
+  if (n == null || isNaN(n)) return '—';
+  if (n < 1024) return `${n} B`;
+  const u = ['KiB', 'MiB', 'GiB', 'TiB'];
+  let v = n, i = -1;
+  do { v /= 1024; i++; } while (v >= 1024 && i < u.length - 1);
+  return `${v >= 100 ? v.toFixed(0) : v.toFixed(1)} ${u[i]}`;
+}
+export const fmtSpeed = (bps) => (bps && bps >= 1 ? `${fmtBytes(bps)}/s` : '—');
+export function fmtEta(received, total, bps) {
+  if (!total || !bps || bps < 1 || received >= total) return null;
+  const s = Math.round((total - received) / bps);
+  if (s < 60) return `${s}s left`;
+  if (s < 3600) return `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, '0')}s left`;
+  if (s < 86400) return `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m left`;
+  return `${Math.floor(s / 86400)}d ${Math.floor((s % 86400) / 3600)}h left`;
+}
+export function fmtTime(iso) {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  if (isNaN(d)) return iso;
+  return d.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+}
+export function pct(r) {
+  if (!r.total_size) return r.received > 0 ? null : 0;
+  return Math.min(100, (100 * r.received) / r.total_size);
+}
+
+/* ---------- settings (persisted) ---------- */
+export const DEFAULT_PREFS = {
+  notifyCompleted: true,
+  notifyFailed: true,
+  notifyStarted: false,
+  confirmFileDelete: true,
+  confirmRemove: false,
+  density: 'comfortable',        // comfortable | compact
+  animations: true,
+  sidebarExpanded: true,
+  autoClearCompleted: false,
+  openFolderOnComplete: false,
+  defaultCategory: 'auto',
+};
+
+export const store = {
+  rows: new Map(),            // id -> StatusView (engine-authoritative)
+  bps: new Map(),             // id -> last observed speed (from progress events)
+  engine: null,
+  prefs: { ...DEFAULT_PREFS },
+  selection: new Set(),
+  filter: { state: 'all', query: '', category: 'all' },
+  sort: { key: 'created_at', dir: 'desc' },
+  activity: [],               // recent meaningful events, newest first
+  toasts: [],                 // {id, kind, title, msg, actions}
+  resolving: new Map(),       // url -> {state: 'resolving'|'resolved'|'failed', note}
+  net: { aggBps: 0, active: 0, conns: 0, samples: [], peak: 0 },
+  queues: [],                 // [{id, name, itemIds, maxConcurrent, active}]
+  ready: false,
+  connected: false,
+};
+
+/* ---------- pub/sub ---------- */
+const subs = new Set();
+export function subscribe(fn) { subs.add(fn); return () => subs.delete(fn); }
+let notifyQueued = false;
+function notify() {
+  if (notifyQueued) return;
+  notifyQueued = true;
+  // setTimeout, not rAF: background/headless webviews throttle rAF to zero, which
+  // silently froze all live updates; a 0-timer coalesces per tick and always runs
+  setTimeout(() => { notifyQueued = false; subs.forEach((f) => f()); }, 0);
+}
+
+/* ---------- settings ---------- */
+export async function initPrefs() {
+  store.prefs = await loadSettings(DEFAULT_PREFS);
+}
+let saveTimer = null;
+export function setPrefs(patch) {
+  store.prefs = { ...store.prefs, ...patch };
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(() => saveSettings(store.prefs), 250);
+  notify();
+}
+export async function loadQueues() {
+  const s = await loadSettings({});
+  store.queues = Array.isArray(s.queues) ? s.queues : [];
+}
+export function saveQueues() {
+  saveSettings({ ...store.prefs, queues: store.queues });
+}
+
+/* ---------- activity feed ---------- */
+export function pushActivity(ts, html) {
+  store.activity.unshift({ ts, html, at: Date.now() });
+  if (store.activity.length > 200) store.activity.pop();
+  notify();
+}
+const nowTs = () => new Date().toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+
+/* ---------- toasts ---------- */
+let toastSeq = 0;
+export function toast(kind, title, msg, actions = [], ttl = 6000) {
+  const id = ++toastSeq;
+  store.toasts.push({ id, kind, title, msg, actions });
+  notify();
+  setTimeout(() => dismissToast(id), ttl);
+}
+export function dismissToast(id) {
+  const i = store.toasts.findIndex((t) => t.id === id);
+  if (i >= 0) {
+    const el = document.querySelector(`[data-toast="${id}"]`);
+    if (el) { el.classList.add('out'); setTimeout(() => el.remove(), 240); }
+    store.toasts.splice(i, 1);
+    notify();
+  }
+}
+
+/* ---------- data refresh ---------- */
+export async function refreshAll() {
+  try {
+    const rows = await engine.list();
+    const ids = new Set();
+    for (const r of rows) {
+      ids.add(r.id);
+      const prev = store.rows.get(r.id);
+      store.rows.set(r.id, r);
+      if (prev && r.bps == null) r.bps = store.bps.get(r.id) ?? prev.bps ?? null;
+    }
+    for (const id of [...store.rows.keys()]) if (!ids.has(id)) { store.rows.delete(id); store.bps.delete(id); store.selection.delete(id); }
+    if (!store.engine) {
+      store.engine = await engine.info();
+    }
+    store.connected = true;
+    store.ready = true;
+    notify();
+  } catch (e) {
+    store.connected = false;
+    notify();
+  }
+}
+
+export async function refreshOne(id) {
+  try {
+    const fresh = await engine.status(id);
+    if (fresh && fresh.id != null) { store.rows.set(id, fresh); store.bps.delete(id); }
+    else { store.rows.delete(id); }
+  } catch {
+    const cur = store.rows.get(id);
+    if (cur && !RUNNING_STATES.includes(cur.state)) store.rows.delete(id);
+  }
+  notify();
+}
+
+/* ---------- selectors ---------- */
+export function visibleRows() {
+  const { state, query, category } = store.filter;
+  let rows = [...store.rows.values()];
+  if (state === 'downloading') rows = rows.filter((r) => RUNNING_STATES.includes(r.state));
+  else if (state !== 'all') rows = rows.filter((r) => r.state === state);
+  if (category !== 'all') rows = rows.filter((r) => categoryOf(r.final_name) === category);
+  if (query) {
+    const q = query.toLowerCase();
+    rows = rows.filter((r) =>
+      (r.final_name || '').toLowerCase().includes(q) ||
+      (r.url || '').toLowerCase().includes(q) ||
+      (r.dest_dir || '').toLowerCase().includes(q));
+  }
+  const { key, dir } = store.sort;
+  const mul = dir === 'asc' ? 1 : -1;
+  rows.sort((a, b) => {
+    let va = a[key], vb = b[key];
+    if (key === 'final_name') { va = (va || '').toLowerCase(); vb = (vb || '').toLowerCase(); }
+    if (va == null) va = key === 'total_size' ? -1 : '';
+    if (vb == null) vb = key === 'total_size' ? -1 : '';
+    if (va < vb) return -1 * mul;
+    if (va > vb) return 1 * mul;
+    return (b.id - a.id) * mul;
+  });
+  return rows;
+}
+
+export function counts() {
+  const c = { all: store.rows.size, downloading: 0, queued: 0, completed: 0, failed: 0, paused: 0, resolving: 0, merging: 0, cancelled: 0 };
+  for (const r of store.rows.values()) {
+    const s = r.state;
+    if (s === 'downloading' || s === 'created' || s === 'retrying') c.downloading++;
+    else if (c[s] != null) c[s]++;
+  }
+  return c;
+}
+
+export function netSnapshot() {
+  let agg = 0, conns = 0, active = 0;
+  for (const r of store.rows.values()) {
+    if (r.state === 'downloading') {
+      active++;
+      conns += r.connections_active || 0;
+      agg += store.bps.get(r.id) || 0;
+    }
+  }
+  return { agg, conns, active };
+}
+
+/* ---------- event ingestion ---------- */
+const netTimer = setInterval(() => {
+  const { agg, conns, active } = netSnapshot();
+  store.net.aggBps = agg;
+  store.net.conns = conns;
+  store.net.active = active;
+  store.net.samples.push({ t: Date.now(), bps: agg });
+  if (store.net.samples.length > 180) store.net.samples.shift();
+  store.net.peak = Math.max(store.net.peak, agg);
+}, 1000);
+
+export function stopNetTimer() { clearInterval(netTimer); }
+
+let evUnsub = null;
+export function startEvents() {
+  if (evUnsub) evUnsub();
+  evUnsub = subscribeEvents(async (name, d) => {
+    if (name === '__open' || name === '__hello') {
+      store.connected = true;
+      await refreshAll();
+      notify();
+      return;
+    }
+    if (name === '__resync') { await refreshAll(); return; }
+    if (name === '__error') { store.connected = false; notify(); return; }
+
+    const row = d.id != null ? store.rows.get(d.id) : null;
+
+    switch (name) {
+      case 'progress': {
+        if (!row) return;
+        if (!RUNNING_STATES.includes(row.state)) return; // stale coalesced progress never resurrects a settled row
+        row.received = d.received;
+        if (d.total != null) row.total_size = d.total;
+        if (d.segments != null) row.connections_active = d.segments;
+        store.bps.set(d.id, d.bps || 0);
+        row.bps = d.bps || 0;
+        if (row.state === 'queued' || row.state === 'created' || row.state === 'resolving') row.state = 'downloading';
+        break;
+      }
+      case 'completed': {
+        store.bps.delete(d.id);
+        if (row) { row.state = 'completed'; }
+        await refreshOne(d.id);
+        pushActivity(nowTs(), `<b>${esc(shortName(row?.final_name || `#${d.id}`))}</b> completed`);
+        if (store.prefs.notifyCompleted) {
+          toast('ok', 'Download completed', row?.final_name || `#${d.id}`, [
+            { label: 'Open folder', act: () => window.__veloxActions?.reveal?.(d.id) },
+          ]);
+        }
+        if (store.prefs.openFolderOnComplete) window.__veloxActions?.reveal?.(d.id);
+        queueTick();
+        break;
+      }
+      case 'failed': {
+        store.bps.delete(d.id);
+        await refreshOne(d.id);
+        const msg = d.message || 'download failed';
+        pushActivity(nowTs(), `<b>${esc(shortName(row?.final_name || `#${d.id}`))}</b> failed — ${esc(msg)}`);
+        if (store.prefs.notifyFailed) {
+          toast('err', 'Download failed', `${row?.final_name || ''} ${msg}`.trim(), [
+            { label: 'Retry', act: () => window.__veloxActions?.retry?.(d.id) },
+            { label: 'Details', act: () => window.__veloxActions?.details?.(d.id) },
+          ], 9000);
+        }
+        queueTick();
+        break;
+      }
+      case 'verified': {
+        await refreshOne(d.id);
+        pushActivity(nowTs(), `Verification ${d.ok ? 'passed' : 'FAILED'} for <b>#${d.id}</b> (${esc(d.algo || '')})`);
+        toast(d.ok ? 'ok' : 'err', d.ok ? 'Verification passed' : 'Verification failed', `${row?.final_name || '#'+d.id} · ${d.algo || ''}`);
+        break;
+      }
+      case 'retrying': {
+        if (row) row.state = 'retrying';
+        pushActivity(nowTs(), `Retrying <b>${esc(shortName(row?.final_name || `#${d.id}`))}</b> — ${esc(d.reason || 'transient error')}`);
+        break;
+      }
+      case 'resolving': {
+        store.resolving.set(d.url, { state: 'resolving', note: '' });
+        pushActivity(nowTs(), `Resolving media page…`);
+        break;
+      }
+      case 'resolved': {
+        store.resolving.set(d.url, { state: 'resolved', note: d.note || '' });
+        pushActivity(nowTs(), `Media URL resolved — starting download`);
+        setTimeout(() => { store.resolving.delete(d.url); }, 4000);
+        break;
+      }
+      case 'merging': {
+        if (row) row.state = 'merging';
+        pushActivity(nowTs(), `Merging streams for <b>${esc(shortName(row?.final_name || `#${d.id}`))}</b>`);
+        break;
+      }
+      case 'merged': {
+        await refreshOne(d.id);
+        pushActivity(nowTs(), `Merge finished for <b>${esc(shortName(row?.final_name || `#${d.id}`))}</b>`);
+        toast('ok', 'Merge complete', row?.final_name || `#${d.id}`);
+        break;
+      }
+      case 'removed': {
+        store.rows.delete(d.id);
+        store.bps.delete(d.id);
+        store.selection.delete(d.id);
+        break;
+      }
+      case 'paused': case 'cancelled': case 'queued': case 'downloading': {
+        if (row && row.state !== name) { row.state = name === 'downloading' && row.state === 'paused' ? 'paused' : name; }
+        if (name === 'paused' || name === 'cancelled') store.bps.delete(d.id);
+        await refreshOne(d.id);
+        break;
+      }
+      default: break;
+    }
+    notify();
+  });
+  return () => { if (evUnsub) evUnsub(); evUnsub = null; };
+}
+
+function esc(s) {
+  return String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+function shortName(name) {
+  return String(name || '').length > 44 ? String(name).slice(0, 44) + '…' : name;
+}
+
+/* ---------- queue orchestrator ----------
+   REAL orchestration through engine APIs (start/pause), driven by events —
+   not timers that fake a scheduler. Honest limit: while the app is closed,
+   nothing advances the queue (the engine has no scheduler contract yet). */
+let queueBusy = false;
+async function queueTick() {
+  if (queueBusy) return;
+  queueBusy = true;
+  try {
+    const activeQueues = store.queues.filter((q) => q.active);
+    for (const q of activeQueues) {
+      const items = q.itemIds.map((id) => store.rows.get(id)).filter(Boolean);
+      const running = items.filter((r) => r.state === 'downloading' || r.state === 'retrying' || r.state === 'merging' || r.state === 'resolving').length;
+      let slots = Math.max(0, (q.maxConcurrent || 2) - running);
+      for (const r of items) {
+        if (slots <= 0) break;
+        if (r.state === 'queued' || r.state === 'paused' || r.state === 'created') {
+          try { await engine.start(r.id); slots--; } catch { /* row may have finished already */ }
+        }
+      }
+    }
+  } finally {
+    queueBusy = false;
+  }
+}
+export function startQueueItem(qid) {
+  const q = store.queues.find((x) => x.id === qid);
+  if (!q) return;
+  q.active = true;
+  saveQueues();
+  queueTick();
+  notify();
+}
+export function pauseQueue(qid) {
+  const q = store.queues.find((x) => x.id === qid);
+  if (!q) return;
+  q.active = false;
+  saveQueues();
+  for (const id of q.itemIds) {
+    const r = store.rows.get(id);
+    if (r && (r.state === 'downloading' || r.state === 'retrying')) engine.pause(id).catch(() => {});
+  }
+  notify();
+}
+export async function bootstrap() {
+  await initPrefs();
+  await loadQueues();
+  await refreshAll();
+  startEvents();
+  queueTick();
+  // safety net for missed events (e.g. webview throttling in background)
+  setInterval(() => { if (document.visibilityState === 'visible' && store.connected) refreshAll(); }, 15000);
+}

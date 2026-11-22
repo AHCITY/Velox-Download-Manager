@@ -19,6 +19,8 @@ use tauri_plugin_single_instance::init as single_instance;
 struct AppState {
     manager: Arc<DownloadManager>,
     downloads_root: PathBuf,
+    /// Persisted UI preferences (JSON; written by settings_set).
+    settings_path: PathBuf,
     /// Set by the first CloseRequested; makes repeated close requests safe.
     shutting_down: AtomicBool,
 }
@@ -68,8 +70,26 @@ fn open_path(state: State<'_, AppState>, path: String, reveal: bool) -> Result<(
         .map_err(|_| "file or folder no longer exists".to_string())?;
     let root = std::fs::canonicalize(&state.downloads_root)
         .map_err(|e| format!("download directory is unavailable: {e}"))?;
-    if !resolved.starts_with(&root) {
-        return Err("path is outside the configured download directory".into());
+    let in_root = resolved.starts_with(&root);
+    if !in_root {
+        // trust anchor is the engine database, not the webview: a path is openable
+        // when it is the recorded artifact (dest_dir/final_name) or its containing
+        // directory of a download the ENGINE created — custom destinations included
+        let recorded = state
+            .manager
+            .db()
+            .list_downloads()
+            .unwrap_or_default()
+            .iter()
+            .any(|row| {
+                let dest = std::path::Path::new(&row.dest_dir);
+                let file = dest.join(&row.final_name);
+                std::fs::canonicalize(&file).map(|c| c == resolved).unwrap_or(false)
+                    || std::fs::canonicalize(dest).map(|c| c == resolved).unwrap_or(false)
+            });
+        if !recorded {
+            return Err("path is outside the configured download directories".into());
+        }
     }
     #[cfg(target_os = "windows")]
     {
@@ -93,6 +113,21 @@ fn open_path(state: State<'_, AppState>, path: String, reveal: bool) -> Result<(
             .map_err(|e| e.to_string())?;
     }
     Ok(())
+}
+
+/// UI preferences: read the persisted JSON (empty string when absent — first run).
+#[tauri::command]
+fn settings_get(state: State<'_, AppState>) -> Result<String, String> {
+    std::fs::read_to_string(&state.settings_path).or(Ok(String::new()))
+}
+
+/// UI preferences: persist the JSON payload (bounded — settings are small).
+#[tauri::command]
+fn settings_set(state: State<'_, AppState>, json: String) -> Result<(), String> {
+    if json.len() > 256 * 1024 {
+        return Err("settings payload too large".into());
+    }
+    std::fs::write(&state.settings_path, json).map_err(|e| e.to_string())
 }
 
 /// Forward engine events to the webview. The engine already broadcasts through
@@ -164,9 +199,11 @@ fn main() {
                 ),
             }
 
+            let settings_path = data_dir.join("ui-settings.json");
             app.manage(AppState {
                 manager: manager.clone(),
                 downloads_root: downloads_root.clone(),
+                settings_path,
                 shutting_down: AtomicBool::new(false),
             });
 
@@ -215,7 +252,13 @@ fn main() {
                 });
             }
         })
-        .invoke_handler(tauri::generate_handler![rpc, default_download_dir, open_path])
+        .invoke_handler(tauri::generate_handler![
+        rpc,
+        default_download_dir,
+        open_path,
+        settings_get,
+        settings_set
+    ])
         .run(tauri::generate_context!())
         .expect("error while running Velox");
 }
