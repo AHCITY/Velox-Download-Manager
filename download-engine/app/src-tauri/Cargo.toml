@@ -1,6 +1,6 @@
 [package]
 name = "velox-app"
-version = "0.3.1"
+version = "0.4.0"
 description = "Velox desktop download manager"
 edition = "2021"
 rust-version = "1.77"
@@ -31,6 +31,9 @@ tauri-plugin-process = "2"
 tauri-plugin-dialog = "2"
 # Browser-extension loopback bridge (main.rs): OS RNG for the bearer token
 getrandom = "0.2"
+# browser detection + native-host registration probe (Windows registry)
+[target.'cfg(windows)'.dependencies]
+winreg = "0.52"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # tokio is used DIRECTLY by main.rs (time::timeout in the shutdown sequence,

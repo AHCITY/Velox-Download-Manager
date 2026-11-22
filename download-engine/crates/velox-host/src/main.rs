@@ -423,7 +423,7 @@ fn host_exe_path() -> Option<PathBuf> {
 fn register_windows(manifest: &str, ext_ids: &[String]) -> Result<(), String> {
     use winreg::enums::HKEY_CURRENT_USER;
     use winreg::RegKey;
-    let base = std::env::var("LOCALAPPDATA").map_err(|_| "LOCALAPPDATA not set".into())?;
+    let base = std::env::var("LOCALAPPDATA").map_err(|_| String::from("LOCALAPPDATA not set"))?;
     let dir = PathBuf::from(base).join("Velox");
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let manifest_path = dir.join("native-host.json");

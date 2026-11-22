@@ -6,7 +6,7 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use engine_bridge::wire_event;
 use engine_core::config::EngineConfig;
@@ -14,6 +14,18 @@ use engine_core::manager::DownloadManager;
 use engine_http::ReqwestBackend;
 use tauri::{AppHandle, Emitter, Manager, State, WindowEvent};
 use tauri_plugin_single_instance::init as single_instance;
+
+/// Monotonic ms timestamp of the last AUTHENTICATED bridge request. The
+/// frontend uses it to show "extension connected" honestly (a live host makes
+/// whitelisted calls; silence means not connected). 0 = never seen.
+static BRIDGE_LAST_MS: AtomicU64 = AtomicU64::new(0);
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
 
 /// Managed engine handle shared by all commands.
 struct AppState {
@@ -130,6 +142,399 @@ fn settings_set(state: State<'_, AppState>, json: String) -> Result<(), String> 
     std::fs::write(&state.settings_path, json).map_err(|e| e.to_string())
 }
 
+/* ================= browser-extension installer (in-app setup) =================
+ * The desktop app drives the FULL browser integration setup: it stages the
+ * bundled extension into a stable per-user location, registers the native
+ * messaging host for the selected browser(s), and opens that browser's
+ * extensions page. Chromium does not permit fully silent unpacked installs
+ * (its security model; every mainstream downloader uses the same guided
+ * flow), so "install" = everything automatable + the exact two clicks the
+ * user must do, with live verification once the extension connects.
+ * ==================================================================== */
+const EXTENSION_ID: &str = "hpaxoarvxcmmqijm";
+
+#[derive(serde::Serialize)]
+struct BrowserInfo {
+    id: String,
+    name: String,
+    family: String, // chromium | firefox
+    exe: String,    // empty when not found
+    extensions_page: String,
+}
+
+fn exe_dir() -> Option<PathBuf> {
+    std::env::current_exe().ok()?.parent().map(PathBuf::from)
+}
+
+/// The packaged extension ships BESIDE the app exe (NSIS layout). Dev builds
+/// fall back to the workspace folder.
+fn extension_source_dir() -> Option<PathBuf> {
+    if let Some(d) = exe_dir() {
+        let c = d.join("extension");
+        if c.join("manifest.json").exists() {
+            return Some(c);
+        }
+    }
+    let dev = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../extension");
+    dev.join("manifest.json").exists().then_some(dev)
+}
+
+/// Stable per-user install location for the extension (survives updates).
+fn extension_install_dir() -> PathBuf {
+    #[cfg(windows)]
+    {
+        let base = std::env::var("LOCALAPPDATA").unwrap_or_else(|_| ".".into());
+        PathBuf::from(base).join("Velox").join("extension")
+    }
+    #[cfg(not(windows))]
+    {
+        let base = std::env::var("XDG_DATA_HOME")
+            .map(PathBuf::from)
+            .or_else(|_| std::env::var("HOME").map(|h| PathBuf::from(h).join(".local/share")))
+            .unwrap_or_else(|_| PathBuf::from("."));
+        base.join("io.velox.downloadmanager").join("extension")
+    }
+}
+
+fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> Result<(), String> {
+    std::fs::create_dir_all(dst).map_err(|e| e.to_string())?;
+    for entry in std::fs::read_dir(src).map_err(|e| e.to_string())? {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let ty = entry.file_type().map_err(|e| e.to_string())?;
+        let target = dst.join(entry.file_name());
+        if ty.is_dir() {
+            copy_dir_recursive(&entry.path(), &target)?;
+        } else {
+            std::fs::copy(entry.path(), &target).map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(())
+}
+
+/// Filesystem + (Windows) registry discovery of installed browsers.
+fn detect_browsers() -> Vec<BrowserInfo> {
+    #[allow(unused_mut)]
+    let mut out = Vec::new();
+    #[cfg(windows)]
+    {
+        use winreg::enums::{HKEY_LOCAL_MACHINE, KEY_READ};
+        let reg_exe = |sub: &str| -> Option<PathBuf> {
+            let hk = winreg::RegKey::predef(HKEY_LOCAL_MACHINE);
+            hk.open_subkey_with_flags(sub, KEY_READ)
+                .ok()?
+                .get_value::<String, _>("")
+                .ok()
+                .map(PathBuf::from)
+        };
+        let fs_exe = |candidates: &[&str]| -> Option<PathBuf> {
+            candidates.iter().map(PathBuf::from).find(|p| p.exists())
+        };
+        let resolve = |app_paths: &str, candidates: &[&str]| -> String {
+            reg_exe(app_paths)
+                .or_else(|| fs_exe(candidates))
+                .map(|p| p.display().to_string())
+                .unwrap_or_default()
+        };
+        let pf = std::env::var("ProgramFiles").unwrap_or_default();
+        let pf86 = std::env::var("ProgramFiles(x86)").unwrap_or_default();
+        let lad = std::env::var("LOCALAPPDATA").unwrap_or_default();
+        let _ = (&pf, &pf86, &lad);
+        out.push(BrowserInfo {
+            id: "chrome".into(),
+            name: "Google Chrome".into(),
+            family: "chromium".into(),
+            exe: resolve(
+                r"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\chrome.exe",
+                &[
+                    &format!("{}\\Google\\Chrome\\Application\\chrome.exe", pf86),
+                    &format!("{}\\Google\\Chrome\\Application\\chrome.exe", pf),
+                    &format!("{}\\Google\\Chrome\\Application\\chrome.exe", lad),
+                ],
+            ),
+            extensions_page: "chrome://extensions".into(),
+        });
+        out.push(BrowserInfo {
+            id: "edge".into(),
+            name: "Microsoft Edge".into(),
+            family: "chromium".into(),
+            exe: resolve(
+                r"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\msedge.exe",
+                &[&format!("{}\\Microsoft\\Edge\\Application\\msedge.exe", pf86)],
+            ),
+            extensions_page: "edge://extensions".into(),
+        });
+        out.push(BrowserInfo {
+            id: "brave".into(),
+            name: "Brave".into(),
+            family: "chromium".into(),
+            exe: resolve(
+                r"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\brave.exe",
+                &[
+                    &format!("{}\\BraveSoftware\\Brave-Browser\\Application\\brave.exe", pf86),
+                    &format!("{}\\BraveSoftware\\Brave-Browser\\Application\\brave.exe", lad),
+                ],
+            ),
+            extensions_page: "brave://extensions".into(),
+        });
+        out.push(BrowserInfo {
+            id: "opera".into(),
+            name: "Opera".into(),
+            family: "chromium".into(),
+            exe: fs_exe(&[
+                &format!("{}\\Programs\\Opera\\opera.exe", lad),
+                &format!("{}\\Programs\\Opera GX\\opera.exe", lad),
+            ])
+            .map(|p| p.display().to_string())
+            .unwrap_or_default(),
+            extensions_page: "opera://extensions".into(),
+        });
+        out.push(BrowserInfo {
+            id: "firefox".into(),
+            name: "Firefox".into(),
+            family: "firefox".into(),
+            exe: resolve(
+                r"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\firefox.exe",
+                &[&format!("{}\\Mozilla Firefox\\firefox.exe", pf)],
+            ),
+            extensions_page: "about:debugging#/runtime/this-firefox".into(),
+        });
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        for (id, name, bin, page) in [
+            ("chrome", "Google Chrome", "google-chrome", "chrome://extensions"),
+            ("edge", "Microsoft Edge", "microsoft-edge", "chrome://extensions"),
+            ("brave", "Brave", "brave-browser", "brave://extensions"),
+            ("opera", "Opera", "opera", "opera://extensions"),
+            ("firefox", "Firefox", "firefox", "about:debugging"),
+        ] {
+            let path = PathBuf::from("/usr/bin").join(bin);
+            if path.exists() {
+                out.push(BrowserInfo {
+                    id: id.into(),
+                    name: name.into(),
+                    family: if id == "firefox" { "firefox".into() } else { "chromium".into() },
+                    exe: path.display().to_string(),
+                    extensions_page: page.into(),
+                });
+            }
+        }
+    }
+    out
+}
+
+#[tauri::command]
+fn browser_detect() -> Vec<BrowserInfo> {
+    detect_browsers()
+}
+
+/// One-click setup for ONE browser. `mode`:
+///   "guide" — stage + register + open the browser's extensions page (persistent)
+///   "quick" — additionally launch the browser with --load-extension for an
+///             IMMEDIATE in-session load (Chromium drops it on full restart;
+///             the guided steps make it permanent).
+#[tauri::command]
+fn extension_setup(browser: String, mode: String) -> Result<serde_json::Value, String> {
+    let browsers = detect_browsers();
+    let info = browsers
+        .iter()
+        .find(|b| b.id == browser)
+        .ok_or_else(|| format!("browser '{browser}' not detected"))?;
+    if info.exe.is_empty() {
+        return Err(format!("{} is not installed (or could not be located)", info.name));
+    }
+    if info.family != "chromium" {
+        return Err("Firefox cannot be automated: it forbids programmatic extension installs. Use about:debugging → Load Temporary Add-on and pick the staged extension folder shown in the Browser screen.".into());
+    }
+    let src = extension_source_dir().ok_or("bundled extension assets missing (installation layout)")?;
+
+    // 1) stage into the stable per-user location
+    let dst = extension_install_dir();
+    if dst.exists() {
+        std::fs::remove_dir_all(&dst).map_err(|e| e.to_string())?;
+    }
+    copy_dir_recursive(&src, &dst)?;
+    if !dst.join("manifest.json").exists() {
+        return Err("staged extension is incomplete (manifest.json missing)".into());
+    }
+
+    // 2) register the native messaging host (sidecar beside the app exe)
+    let mut notes: Vec<String> = Vec::new();
+    let host = exe_dir()
+        .map(|d| {
+            d.join(if cfg!(windows) { "velox-browser-host.exe" } else { "velox-browser-host" })
+        })
+        .filter(|p| p.exists());
+    let registered = match host {
+        Some(h) => {
+            let out = std::process::Command::new(&h)
+                .arg("--register")
+                .arg(EXTENSION_ID)
+                .output()
+                .map_err(|e| format!("native host registration failed to run: {e}"))?;
+            if out.status.success() {
+                notes.push(String::from_utf8_lossy(&out.stdout).trim().to_string());
+                true
+            } else {
+                notes.push(format!(
+                    "native host registration failed: {}",
+                    String::from_utf8_lossy(&out.stderr).trim()
+                ));
+                false
+            }
+        }
+        None => {
+            notes.push("velox-browser-host sidecar not found beside Velox.exe — extension can load but will report 'Velox is not running'".into());
+            false
+        }
+    };
+
+    // 3) open the browser: extensions page (guide) or session load (quick)
+    let launched = if mode == "quick" {
+        std::process::Command::new(&info.exe)
+            .arg(format!("--load-extension={}", dst.display()))
+            .arg(&info.extensions_page)
+            .spawn()
+            .is_ok()
+    } else {
+        std::process::Command::new(&info.exe)
+            .arg(&info.extensions_page)
+            .spawn()
+            .is_ok()
+    };
+    if mode == "quick" && launched {
+        notes.push("temporary load: if this browser was already running, the flag is ignored — fully quit it first, or use the guided steps".into());
+    }
+
+    Ok(serde_json::json!({
+        "ok": true,
+        "browser": info.name,
+        "extension_dir": dst.display().to_string(),
+        "registered": registered,
+        "launched": launched,
+        "mode": mode,
+        "extension_id": EXTENSION_ID,
+        "notes": notes,
+    }))
+}
+
+#[tauri::command]
+fn extension_status() -> serde_json::Value {
+    // bridge liveness: parse bridge.json and TCP-connect to its port
+    let data_dir_bridge = std::path::Path::new(&crate_data_dir())
+        .join("data")
+        .join("bridge.json");
+    let mut bridge_listening = false;
+    let mut port: Option<u16> = None;
+    if let Ok(raw) = std::fs::read_to_string(&data_dir_bridge) {
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&raw) {
+            port = v["port"].as_u64().map(|p| p as u16);
+        }
+    }
+    if let Some(p) = port {
+        bridge_listening = std::net::TcpStream::connect_timeout(
+            &std::net::SocketAddr::from(([127, 0, 0, 1], p)),
+            std::time::Duration::from_millis(400),
+        )
+        .is_ok();
+    }
+
+    let last = BRIDGE_LAST_MS.load(Ordering::Relaxed);
+    let last_secs = if last == 0 {
+        None
+    } else {
+        Some(now_ms().saturating_sub(last) / 1000)
+    };
+    let connected = matches!(last_secs, Some(s) if s < 120);
+
+    // host registration probe (Windows registry / unix manifest dirs)
+    #[allow(unused_mut)]
+    let mut host_registered = false;
+    #[cfg(windows)]
+    {
+        use winreg::enums::{HKEY_CURRENT_USER, KEY_READ};
+        let hk = winreg::RegKey::predef(HKEY_CURRENT_USER);
+        for b in ["Google\\Chrome", "Microsoft\\Edge", "BraveSoftware\\Brave-Browser"] {
+            let key = format!("Software\\{b}\\NativeMessagingHosts\\io.velox.downloadmanager");
+            if hk.open_subkey_with_flags(&key, KEY_READ).is_ok() {
+                host_registered = true;
+                break;
+            }
+        }
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        let home = std::env::var("HOME").unwrap_or_default();
+        for b in [
+            ".config/google-chrome/NativeMessagingHosts",
+            ".config/microsoft-edge/NativeMessagingHosts",
+            ".config/BraveSoftware/Brave-Browser/NativeMessagingHosts",
+        ] {
+            if std::path::Path::new(&home).join(b).join("io.velox.downloadmanager.json").exists() {
+                host_registered = true;
+                break;
+            }
+        }
+    }
+
+    let ext_dir = extension_install_dir();
+    // bundled-extractor probe: beside-exe wins, PATH fallback reported as "path"
+    let ytdlp = exe_dir()
+        .map(|d| d.join(if cfg!(windows) { "yt-dlp.exe" } else { "yt-dlp" }))
+        .filter(|p| p.exists())
+        .map(|_| "bundled")
+        .or_else(|| find_on_path(if cfg!(windows) { "yt-dlp.exe" } else { "yt-dlp" }).map(|_| "path"))
+        .unwrap_or("missing");
+
+    serde_json::json!({
+        "bridge_listening": bridge_listening,
+        "extension_connected": connected,
+        "last_bridge_secs_ago": last_secs,
+        "host_registered": host_registered,
+        "ext_installed": ext_dir.join("manifest.json").exists(),
+        "ext_dir": ext_dir.display().to_string(),
+        "extension_id": EXTENSION_ID,
+        "host_exe_present": exe_dir()
+            .map(|d| d.join(if cfg!(windows) { "velox-browser-host.exe" } else { "velox-browser-host" }).exists())
+            .unwrap_or(false),
+        "ytdlp": ytdlp,
+        "browsers": detect_browsers(),
+    })
+}
+
+fn find_on_path(name: &str) -> Option<PathBuf> {
+    let sep = if cfg!(windows) { ';' } else { ':' };
+    std::env::var_os("PATH")
+        .map(|p| p.to_string_lossy().to_string())?
+        .split(sep)
+        .map(PathBuf::from)
+        .map(|d| d.join(name))
+        .find(|p| p.exists())
+}
+
+/// Where the per-user app data lives (mirrors the Tauri resolver; used by
+/// extension_status to probe the bridge file without a State handle).
+fn crate_data_dir() -> PathBuf {
+    #[cfg(windows)]
+    {
+        PathBuf::from(std::env::var("APPDATA").unwrap_or_else(|_| ".".into()))
+            .join("io.velox.downloadmanager")
+    }
+    #[cfg(target_os = "macos")]
+    {
+        PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| ".".into()))
+            .join("Library/Application Support/io.velox.downloadmanager")
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        std::env::var("XDG_DATA_HOME")
+            .map(PathBuf::from)
+            .or_else(|_| std::env::var("HOME").map(|h| PathBuf::from(h).join(".local/share")))
+            .unwrap_or_else(|_| PathBuf::from("."))
+            .join("io.velox.downloadmanager")
+    }
+}
+
 /// Forward engine events to the webview. The engine already broadcasts through
 /// its event hub; this pump is the only bridge between the engine and the UI —
 /// no polling, no invented progress.
@@ -240,6 +645,7 @@ async fn spawn_browser_bridge(
                 if !auth_ok || content_length == 0 || content_length > BRIDGE_BODY_CAP {
                     return; // silent drop: not our client / bad request
                 }
+                BRIDGE_LAST_MS.store(now_ms(), Ordering::Relaxed);
                 let mut body = vec![0u8; content_length];
                 if stream.read_exact(&mut body).await.is_err() {
                     return;
@@ -302,13 +708,34 @@ fn main() {
             std::fs::create_dir_all(&data_dir).map_err(|e| e.to_string())?;
             std::fs::create_dir_all(&downloads_root).map_err(|e| e.to_string())?;
 
+            // Bundled media tooling (offline setup ships yt-dlp/ffmpeg beside the
+            // exe): prepend the install dir to PATH so the bundled binaries win
+            // over whatever happens to be on PATH. The extractor config then uses
+            // the absolute path when present.
+            let exe_dir = std::env::current_exe().ok().and_then(|e| e.parent().map(PathBuf::from));
+            if let Some(d) = &exe_dir {
+                let bundled = d.join(if cfg!(windows) { "yt-dlp.exe" } else { "yt-dlp" }).exists()
+                    || d.join(if cfg!(windows) { "ffmpeg.exe" } else { "ffmpeg" }).exists();
+                if bundled {
+                    let sep = if cfg!(windows) { ';' } else { ':' };
+                    let old_path = std::env::var("PATH").unwrap_or_default();
+                    std::env::set_var("PATH", format!("{}{sep}{}", d.display(), old_path));
+                }
+            }
+            let extractor = exe_dir
+                .as_ref()
+                .map(|d| d.join(if cfg!(windows) { "yt-dlp.exe" } else { "yt-dlp" }))
+                .filter(|p| p.exists())
+                .unwrap_or_else(|| PathBuf::from("yt-dlp"));
+
             let cfg = EngineConfig {
                 data_dir: data_dir.clone(),
                 default_out_dir: downloads_root.clone(),
-                // media-page URLs (YouTube) resolve via the optional yt-dlp extractor
-                // found on PATH; absent it fails with clear guidance instead of
-                // downloading a watch page (see docs/EXTRACTORS.md)
-                extractor_path: Some(std::path::PathBuf::from("yt-dlp")),
+                // media-page URLs (YouTube) resolve via the optional yt-dlp extractor:
+                // the BUNDLED binary beside the exe wins, else PATH lookup; absent
+                // both it fails with clear guidance instead of downloading a watch
+                // page (see docs/EXTRACTORS.md)
+                extractor_path: Some(extractor),
                 ..EngineConfig::default()
             };
             let backend = Arc::new(ReqwestBackend::new(&cfg).map_err(|e| e.to_string())?);
@@ -393,7 +820,10 @@ fn main() {
         default_download_dir,
         open_path,
         settings_get,
-        settings_set
+        settings_set,
+        browser_detect,
+        extension_setup,
+        extension_status
     ])
         .run(tauri::generate_context!())
         .expect("error while running Velox");

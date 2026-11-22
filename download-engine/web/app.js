@@ -7,7 +7,7 @@
 // (no URL-input-first toolbar).
 import { icon } from './assets/icons.js';
 import {
-  store, bootstrap, counts, subscribe, refreshAll, visibleRows, fmtSpeed, notify,
+  store, bootstrap, counts, subscribe, refreshAll, visibleRows, fmtSpeed, notify, toast,
 } from './assets/store.js';
 import {
   $, el, esc, renderToasts, detailsDrawer, paintDetails, actions, contextMenu,
@@ -186,6 +186,67 @@ window.__veloxOpenDetails = (id) => {
   drawer.classList.add('show');
 };
 
+/* ---------- first-launch browser setup ----------
+ * Browser-ecosystem turn: on the FIRST desktop launch, offer the one-click
+ * extension install (Browser screen owns the full flow). Never shown again
+ * once dismissed; the screen stays available under Browser.
+ * ------------------------------------------------ */
+async function maybeBrowserSetupDialog() {
+  const { isDesktop, extensionStatus, extensionSetup } = await import('./assets/api.js');
+  if (!isDesktop) return;
+  if (store.prefs.browserSetupSeen) return;
+  const status = await extensionStatus();
+  if (status?.extension_connected || status?.ext_installed) {
+    store.prefs.browserSetupSeen = true;
+    const { saveSettings } = await import('./assets/api.js');
+    saveSettings(store.prefs);
+    return; // already set up — no nag
+  }
+  const { openDialog } = await import('./assets/ui.js');
+  const { el } = await import('./assets/ui.js');
+  const browsers = (status?.browsers || []).filter((b) => b.family === 'chromium' && b.exe);
+  const rows = browsers.map((b) => `
+    <div class="setting-row" style="gap:10px">
+      <div class="s-txt"><div class="s-name">${esc(b.name)}</div><div class="s-desc">stages the extension + registers the native host, then opens the extensions page</div></div>
+      <div class="s-ctl"><button class="btn primary" data-b="${esc(b.id)}">${icon('download', 13)} Install</button></div>
+    </div>`).join('');
+  const { dlg, close } = openDialog(`
+    <div class="dialog" style="max-width:460px">
+      <div class="dialog-head"><h3>Connect your browser to Velox</h3></div>
+      <div class="dialog-body">
+        <p style="color:var(--t2);font-size:13px;line-height:1.55;margin-bottom:10px">Install the official Velox extension to send downloads straight from the web (right-click → <b>Download with Velox</b>). Chromium shows its standard two-click confirmation — nothing is installed silently.</p>
+        ${rows || '<p style="color:var(--t3);font-size:12px">No Chromium browsers detected — you can set this up later in the Browser screen.</p>'}
+        <p style="color:var(--t3);font-size:11.5px;margin-top:10px">Firefox is not supported yet. You can always reach this from the <b>Browser</b> screen.</p>
+      </div>
+      <div class="dialog-foot">
+        <button class="btn" data-later>Set up later</button>
+      </div>
+    </div>`);
+  const markSeen = async () => { store.prefs.browserSetupSeen = true; await saveSettingsSafely(); };
+  async function saveSettingsSafely() {
+    const { saveSettings } = await import('./assets/api.js');
+    try { await saveSettings(store.prefs); } catch { /* non-fatal */ }
+  }
+  dlg.querySelectorAll('[data-b]').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      btn.disabled = true;
+      try {
+        const r = await extensionSetup(btn.dataset.b, 'guide');
+        toast(r.registered ? 'ok' : 'warn', 'Browser setup',
+          r.registered ? `Extension staged and host registered — finish in ${r.browser}: Developer mode → Load unpacked → paste the copied folder path.` : 'Extension staged, but host registration failed — see the Browser screen.');
+        await markSeen();
+        close();
+        location.hash = '#browser';
+        go('browser');
+      } catch (e) {
+        toast('err', 'Browser setup', String(e).replace(/^.*error: */, ''));
+        btn.disabled = false;
+      }
+    });
+  });
+  dlg.querySelector('[data-later]')?.addEventListener('click', async () => { await markSeen(); close(); });
+}
+
 /* ---------- boot ---------- */
 async function boot() {
   buildSidebar();
@@ -194,6 +255,7 @@ async function boot() {
   renderToasts($('#toasts'));
   await bootstrap();
   import('./assets/updater.js').then((m) => m.initUpdater());
+  maybeBrowserSetupDialog();
   document.body.dataset.anim = store.prefs.animations ? 'on' : 'off';
   if (!store.prefs.sidebarExpanded) sideEl.classList.add('compact');
   document.addEventListener('velox:sidebar', (e) => sideEl.classList.toggle('compact', !e.detail));

@@ -70,6 +70,16 @@ Last updated: 2026-11-22 — **UI OVERHAUL SESSION** (complete product rebuild o
 - NOT implemented (designed only): browser-assisted transfers (§4 of comparison), tray/taskbar/notifications (§5).
 - GOTCHAS: (1) app crate can NOT build natively on Linux (no GTK) — always build it via scripts/build-velox-msvc.sh (xwin); (2) engine target/debug regrows fast — wipe when disk full, rebuild is ~1 min; (3) NO release publishing this turn (spec §13 forbids without authorization) — Velox.exe with the bridge saved at /tmp/Velox-exe-with-bridge.exe (host-local, not a deliverable).
 
+## v0.4.0 turn (2026-11-22) — in-app extension installer + offline setup
+
+- App drives browser setup: browser_detect / extension_setup / extension_status commands (main.rs); bridge last-activity timestamp drives "extension connected".
+- Chromium allows NO silent unpacked install — app stages extension to %LOCALAPPDATA%\Velox\extension, registers the NM host (velox-browser-host --register), opens chrome://-extensions page; Quick start = --load-extension session load. Firefox honestly unsupported.
+- Browser screen rewritten (was "not implemented"); first-launch dialog gated by prefs.browserSetupSeen.
+- Installers: NSIS v0.4.0 templates bundle extension+host both variants; offline adds yt-dlp.exe + LGPL ffmpeg/ffprobe (BtbN win64-lgpl). makensis from debs: NSISDIR=/tmp/nsisroot/usr/share/nsis /tmp/nsisroot/usr/bin/makensis (sandbox recycle wipes apt).
+- GOTCHA: shell cwd RESETS to /home/z/my-project between commands — always absolute paths or cd first (caused the "Velox.exe missing" scare).
+- GOTCHA: cargo xwin needed for ANY msvc cross-target build (plain cargo build --target msvc lacks link.exe).
+- Released v0.4.0 (user-authorized): online 6.0MB + offline 147.5MB + portable exe + latest.json (signed) + SHA256SUMS.
+
 ## Remaining / next candidates
 
 1. Toast matrix per notification pref; media-merge UI exercise needs yt-dlp + ffmpeg on a real machine (honest-unavailable states already in place).

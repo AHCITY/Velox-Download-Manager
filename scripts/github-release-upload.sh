@@ -6,14 +6,15 @@ set -euo pipefail
 
 REPO="AHCITY/Velox-Download-Manager"
 DIR="${1:?artifact dir required}"
-TAG="v0.1.0"
+TAG="v0.4.0"
 COMMITISH="$(git -C /home/z/my-project rev-parse HEAD)"
 SETUP="$DIR/Velox-Setup-x64.exe"
 PORTABLE="$DIR/Velox.exe"
+OFFLINE="$DIR/Velox-Setup-x64-offline.exe"
 SUMS="$DIR/SHA256SUMS.txt"
 GUIDE="$DIR/INSTALL-AND-VERIFY.md"
 
-for f in "$SETUP" "$PORTABLE" "$SUMS" "$GUIDE"; do
+for f in "$SETUP" "$OFFLINE" "$PORTABLE" "$SUMS" "$GUIDE"; do
   [ -f "$f" ] || { echo "MISSING: $f"; exit 1; }
 done
 
@@ -29,29 +30,45 @@ if [ -z "$REL_ID" ]; then
   export COMMITISH
   PAYLOAD=$(python3 - "$TAG" <<PY
 import json, sys, pathlib
-body = """Windows build of the Velox download engine (cross-compiled 2026-11-21).
+body = """Velox 0.4.0 — Browser Ecosystem release.
+
+## Highlights
+- **Official browser extension** (Chrome/Edge/Brave, MV3): right-click "Download with Velox",
+  toolbar popup with live speed/active count/recent downloads, consent-first download
+  interception, optional clipboard suggestions. The installer stages it, registers the
+  native messaging host, and on first launch the app offers one-click setup per browser.
+- **Native messaging host** (velox-browser-host) + token-protected loopback bridge in the
+  app; the engine stays the single source of truth.
+- **Download intelligence**: per-download smoothed/average/peak speed + honest ETA states
+  in the details panel.
+- **Offline setup**: Velox-Setup-x64-offline.exe bundles everything incl. WebView2 runtime
+  bootstrapper, yt-dlp and LGPL ffmpeg/ffprobe for YouTube/media downloads — no network
+  needed for the app's own tooling.
 
 ## Contents
-- Velox-Setup-x64.exe — NSIS installer (per-user install, Start-menu shortcut)
-- Velox.exe — portable single-binary CLI engine (no install needed)
-- SHA256SUMS.txt — SHA-256 checksums for the binaries
+- Velox-Setup-x64.exe — online installer (per-user, WebView2 bootstrapped if missing)
+- Velox-Setup-x64-offline.exe — full offline installer with yt-dlp + ffmpeg/ffprobe
+- Velox.exe — portable single-binary engine (no install needed)
+- SHA256SUMS.txt — SHA-256 checksums
 - INSTALL-AND-VERIFY.md — install + post-install verification steps
+- latest.json — in-app updater manifest
+
+## Chromium note
+Chromium's security model does not permit fully silent extension installs; the in-app
+installer automates staging + host registration and opens the extensions page for the
+standard two-click confirmation. Firefox is honestly reported as not supported yet.
 
 ## Verify before running (Windows)
-certutil -hashfile Velox-Setup-x64.exe SHA256
-Expected: a848e27246f43976c2014d9ab54c3784c1fcd7495bf2c2235a94fda168df5aa4
+certutil -hashfile Velox-Setup-x64.exe SHA256  (compare with SHA256SUMS.txt)
 
-## Notes
-- ffmpeg is NOT bundled: the MediaPipeline merge stage is optional and uses a
-  user-provided LGPL ffmpeg build (--enable-gpl builds are refused by the
-  engine). See docs/FFMPEG_INTEGRATION.md in the repo.
-- The -offline installer variant is not included in this release.
-- Engine test status at build time: workspace suite green (164 tests), fmt+clippy clean.
+Engine test status at build time: workspace suite green (193+ tests), extension host
+stdio suite 5/5, UI E2E 33/33, fmt+clippy clean.
 """
+
 print(json.dumps({
     "tag_name": sys.argv[1],
     "target_commitish": __import__("os").environ["COMMITISH"],
-    "name": "Velox Download Manager — Windows installer (2026-11-21)",
+    "name": "Velox 0.4.0 — Browser Ecosystem",
     "body": body,
     "draft": False,
     "prerelease": False,
@@ -81,6 +98,7 @@ upload() {
 }
 
 upload "$SETUP"    "Velox-Setup-x64.exe"  "application/vnd.microsoft.portable-executable"
+upload "$OFFLINE"  "Velox-Setup-x64-offline.exe" "application/vnd.microsoft.portable-executable"
 upload "$PORTABLE" "Velox.exe"            "application/vnd.microsoft.portable-executable"
 upload "$SUMS"     "SHA256SUMS.txt"       "text/plain"
 upload "$GUIDE"    "INSTALL-AND-VERIFY.md" "text/markdown"

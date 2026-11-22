@@ -66,6 +66,20 @@ export const engine = {
 
 /* ---------- desktop-only helpers ---------- */
 
+/* Browser-ecosystem installer (browser-ecosystem turn): detection, one-click
+ * setup for a selected Chromium browser, live integration status. */
+export async function browserDetect() {
+  try { return await window.__TAURI__.core.invoke('browser_detect'); }
+  catch { return []; }
+}
+export async function extensionSetup(browserId, mode = 'guide') {
+  return window.__TAURI__.core.invoke('extension_setup', { browser: browserId, mode });
+}
+export async function extensionStatus() {
+  try { return await window.__TAURI__.core.invoke('extension_status'); }
+  catch { return null; }
+}
+
 export async function defaultDownloadDir() {
   if (!TAURI) return null;
   try { return await window.__TAURI__.core.invoke('default_download_dir'); }

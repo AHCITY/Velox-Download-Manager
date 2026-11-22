@@ -6,7 +6,7 @@ ManifestDPIAware true
 RequestExecutionLevel user
 
 !define PRODUCT_NAME "Velox"
-!define PRODUCT_VERSION "0.2.0"
+!define PRODUCT_VERSION "0.4.0"
 !define IDENTIFIER "io.velox.downloadmanager"
 !define UNINST_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\${IDENTIFIER}"
 !define WEBVIEW2_KEY_L "SOFTWARE\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}"
@@ -18,10 +18,10 @@ Name "${PRODUCT_NAME} ${PRODUCT_VERSION}"
 OutFile "/tmp/installer/Velox-Setup-x64-offline.exe"
 InstallDir "$LOCALAPPDATA\Programs\Velox"
 InstallDirRegKey HKCU "${UNINST_KEY}" "InstallDir"
-VIProductVersion "0.2.0.0"
+VIProductVersion "0.4.0.0"
 VIAddVersionKey ProductName "${PRODUCT_NAME}"
-VIAddVersionKey FileVersion "0.2.0.0"
-VIAddVersionKey ProductVersion "0.2.0.0"
+VIAddVersionKey FileVersion "0.4.0.0"
+VIAddVersionKey ProductVersion "0.4.0.0"
 VIAddVersionKey CompanyName "Velox Project"
 VIAddVersionKey FileDescription "Velox installer"
 VIAddVersionKey LegalCopyright "MIT License"
@@ -51,6 +51,30 @@ Section "-Bootstrap files" SecFiles
   SetOutPath "$INSTDIR"
   !insertmacro CLOSEVELOX
   File "/oname=Velox.exe" "/tmp/installer/Velox.exe"
+
+  ; --- browser ecosystem: extension assets + native messaging host ---
+  File "/oname=velox-browser-host.exe" "/tmp/installer/velox-browser-host.exe"
+  SetOutPath "$INSTDIR\extension"
+  File "/oname=manifest.json" "/tmp/installer/extension/manifest.json"
+  File "/oname=background.js" "/tmp/installer/extension/background.js"
+  File "/oname=popup.html" "/tmp/installer/extension/popup.html"
+  File "/oname=popup.css" "/tmp/installer/extension/popup.css"
+  File "/oname=popup.js" "/tmp/installer/extension/popup.js"
+  File "/oname=README.md" "/tmp/installer/extension/README.md"
+  SetOutPath "$INSTDIR\extension\icons"
+  File "/oname=16.png" "/tmp/installer/extension/icons/16.png"
+  File "/oname=32.png" "/tmp/installer/extension/icons/32.png"
+  File "/oname=48.png" "/tmp/installer/extension/icons/48.png"
+  File "/oname=128.png" "/tmp/installer/extension/icons/128.png"
+  SetOutPath "$INSTDIR"
+  DetailPrint "Registering the Velox native messaging host (Chrome/Edge/Brave)..."
+  nsExec::ExecToLog '"$INSTDIR\velox-browser-host.exe" --register hpaxoarvxcmmqijm'
+  Pop $0
+
+  ; --- offline media tooling: bundled yt-dlp + LGPL ffmpeg (YouTube etc.) ---
+  File "/oname=yt-dlp.exe" "/tmp/installer/yt-dlp.exe"
+  File "/oname=ffmpeg.exe" "/tmp/installer/ffmpeg.exe"
+  File "/oname=ffprobe.exe" "/tmp/installer/ffprobe.exe"
   File "/oname=WebView2Setup.exe" "/tmp/installer/MicrosoftEdgeWebview2Setup.exe"
 
   DetailPrint "Checking WebView2 runtime..."
@@ -90,6 +114,14 @@ SectionEnd
 Section "un.Uninstall"
   !insertmacro CLOSEVELOX
   Delete "$INSTDIR\Velox.exe"
+  Delete "$INSTDIR\yt-dlp.exe"
+  Delete "$INSTDIR\ffmpeg.exe"
+  Delete "$INSTDIR\ffprobe.exe"
+  Delete "$INSTDIR\velox-browser-host.exe"
+  RMDir /r "$INSTDIR\extension"
+  DeleteRegKey HKCU "Software\Google\Chrome\NativeMessagingHosts\io.velox.downloadmanager"
+  DeleteRegKey HKCU "Software\Microsoft\Edge\NativeMessagingHosts\io.velox.downloadmanager"
+  DeleteRegKey HKCU "Software\BraveSoftware\Brave-Browser\NativeMessagingHosts\io.velox.downloadmanager"
   Delete "$INSTDIR\WebView2Setup.exe"
   Delete "$INSTDIR\Uninstall Velox.exe"
   RMDir "$INSTDIR"
