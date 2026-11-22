@@ -534,8 +534,26 @@ mod tests {
         // the lockfile PERSISTS by design (ownership is the OS lock): what matters is
         // that the LOCK is released
         let _ = lock_path;
-        // after release, reacquire works
-        let lock3 = DownloadLock::acquire(&part, &locks_dir).expect("reacquire after drop");
+        // after release, reacquire works. Bounded retry: the release itself is
+        // synchronous with close(2), but a CONCURRENT test's Command::spawn fork
+        // briefly copies this process's fd table — the forked child references the
+        // same open file description until exec (CLOEXEC closes it), so an
+        // immediate reacquire can observe a transient Held on loaded runners
+        // (observed on GitHub CI, never locally). Retrying for 2 s still asserts
+        // the real contract — the lock is claimable after drop — while tolerating
+        // that fork-window artifact.
+        let mut lock3 = None;
+        for _ in 0..200 {
+            match DownloadLock::acquire(&part, &locks_dir) {
+                Ok(l) => {
+                    lock3 = Some(l);
+                    break;
+                }
+                Err(LockError::Held(_)) => std::thread::sleep(Duration::from_millis(10)),
+                Err(e) => panic!("unexpected lock error on reacquire: {e:?}"),
+            }
+        }
+        let lock3 = lock3.expect("reacquire after drop failed within 2s — lock was never released");
         drop(lock3);
     }
 
