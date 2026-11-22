@@ -33,14 +33,24 @@ Last updated: 2026-11-22 — **UI OVERHAUL SESSION** (complete product rebuild o
   - **Recorded gotcha**: rAF is throttled to zero in background/headless webviews — `store.notify` uses `setTimeout(0)`.
   - Commit `9cffc19` pushed + remote verified. Windows build launched after it; installer refresh + publish + round-trip follow.
 
+## Auto-updater (added 2026-11-22, v0.3.0)
+
+- **Mechanism**: official `tauri-plugin-updater` 2.14.1 + `tauri-plugin-process` (relaunch), registered in `app/src-tauri/src/main.rs`. Endpoints: `releases/latest/download/latest.json`. Passive NSIS install mode. Permissions in `capabilities/main.json`: `updater:default`, `process:default`.
+- **Signing**: `.secrets/velox-updater.key` (+ `.pub`) — **if lost, existing installs can never receive updates again**. Build/packaging must pass the RAW base64 (last line of the key file) via `TAURI_SIGNING_PRIVATE_KEY` (paths are NOT accepted; the "untrusted comment" line breaks decoding).
+- **CRITICAL**: the plugin cross-checks the signature's trusted-comment `version:` against latest.json's announced version (`require_signed_version`) — ALWAYS sign with `tauri signer sign --app-version "$VERSION"` (done in `scripts/package-update-release.sh`).
+- **Release flow**: bump version in `tauri.conf.json` + app `Cargo.toml` + NSIS template → `build-velox-msvc.sh` → copy NEW exe to `/tmp/installer/Velox.exe` (the NSIS template embeds THAT path, not target/) → `makensis` → `package-update-release.sh <installer> <staging>` (signs + generates latest.json + SHA256SUMS) → write INSTALL-AND-VERIFY.md → `github-release-refresh.sh <staging> v<version>` (creates the release if missing).
+- **GOTCHA**: changing `web/` does NOT re-embed assets on rebuild — `touch app/src-tauri/src/main.rs` before `build-velox-msvc.sh`, or the exe ships the OLD frontend (this bit us once; v0.3.0 published binaries are the fixed ones).
+- **Verification**: `/tmp/msv` crate replicates `verify_signature` 1:1 (main+global sig + version cross-check); used to validate the published artifacts. Frontend flow E2E-tested with a mock `__TAURI__` (check → toast+badge → progress → relaunch).
+- `docs/UPDATES.md` documents the whole flow.
+
 ## Remaining / next candidates
 
 1. Toast matrix per notification pref; media-merge UI exercise needs yt-dlp + ffmpeg on a real machine (honest-unavailable states already in place).
 2. Engine-side queue scheduler contract (queues currently orchestrate only while the app is open — stated honestly in the UI).
 3. Browser extension + clipboard monitor (no backend today — honest screens).
-4. Real-Windows installer test (INSTALLER-TEST-RESULTS.md still says untested).
+4. Real-Windows installer test (INSTALLER-TEST-RESULTS.md still says untested) — including a real in-app update 0.2.0→0.3.0 on a Windows box.
 5. Long-path `\\?\` helper; GET-206 tolerance; extractor cookie jar (engine queue tasks 9/7).
 
 ## Recovery after sandbox reset (checked once, then ask the user)
 
-Not in Git: `.secrets/github-token`, `.cargo/`, `.rustup/`, `.xwin-cache/`, `/tmp/*` (llvm debs, nsisx makensis, installer staging, e2e servers). Rebuild per `scripts/TOOLCHAIN-SETUP.md` (+ `rustup target add x86_64-pc-windows-msvc` + `cargo install cargo-xwin --version 0.23.1 --locked` + clang-19 debs + nsis 3.13 debs). After `rm -rf download-engine/target` the suite needs a ~10 min rebuild.
+Not in Git: `.secrets/github-token`, **`.secrets/velox-updater.key` (+ `.pub`)**, `.cargo/`, `.rustup/`, `.xwin-cache/`, `/tmp/*` (llvm debs, nsisx makensis, installer staging, e2e servers, `/tmp/msv` verify crate). Rebuild per `scripts/TOOLCHAIN-SETUP.md` (+ `rustup target add x86_64-pc-windows-msvc` + `cargo install cargo-xwin --version 0.23.1 --locked` + clang-19 debs + nsis 3.13 debs + `npm i -g @tauri-apps/cli`). After `rm -rf download-engine/target` the suite needs a ~10 min rebuild. The updater key is the single most critical secret — losing it means shipping a NEW pubkey with the next release and updating `tauri.conf.json`.

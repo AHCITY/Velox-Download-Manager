@@ -3,6 +3,9 @@
 // Engine-fixed values are shown read-only with their actual values.
 import { icon } from '../icons.js';
 import { store, setPrefs, refreshAll, counts, toast } from '../store.js';
+import { checkNow, installUpdate, currentAppVersion } from '../updater.js';
+import { fmtBytes } from '../store.js';
+import { isDesktop } from '../api.js';
 import { el, esc } from '../ui.js';
 
 let built = false;
@@ -10,6 +13,7 @@ let section = 'general';
 
 const SECTIONS = [
   ['general', 'General', 'settings'],
+  ['updates', 'Updates', 'refresh'],
   ['downloads', 'Downloads', 'download'],
   ['network', 'Network', 'network'],
   ['browser', 'Browser', 'globe'],
@@ -112,6 +116,56 @@ function paintShell(root) {
       el(`<div class="setting-row"><div class="s-txt"><div class="s-name">Keyboard shortcuts</div><div class="s-desc">
         <span class="kbd">Ctrl N</span> add download &nbsp; <span class="kbd">Ctrl F</span> search &nbsp; <span class="kbd">Ctrl A</span> select all &nbsp; <span class="kbd">Space</span> pause/resume selection &nbsp; <span class="kbd">Del</span> remove selection &nbsp; <span class="kbd">Esc</span> close dialog</div></div></div>`),
     );
+  } else if (section === 'updates') {
+    const st = store.update || { status: 'idle' };
+    const rows = [];
+    const ver = currentAppVersion();
+    rows.push(el(`<div class="setting-row"><div class="s-txt"><div class="s-name">Installed version</div><div class="s-desc">Velox desktop app (the updater compares this against the latest signed release on GitHub).</div></div>
+      <div class="s-ctl"><span class="tag acc" id="seAppVer">…</span></div></div>`));
+    const updRow = el(`<div class="setting-row"><div class="s-txt"><div class="s-name">Update status</div><div class="s-desc" id="seUpdDesc"></div></div>
+      <div class="s-ctl" id="seUpdCtl"></div></div>`);
+    rows.push(updRow);
+    rows.push(el(`<div class="setting-row"><div class="s-txt"><div class="s-name">Check for updates</div><div class="s-desc">Checks GitHub for a newer signed release. Runs silently at startup, every 6 hours, and when the window regains focus.</div></div>
+      <div class="s-ctl"><button class="btn sm" id="seCheckNow">${icon('refresh', 12)} Check now</button></div></div>`));
+    rows.forEach((r) => card.append(r));
+
+    const paint = () => {
+      const st2 = store.update || { status: 'idle' };
+      const ctl = updRow.querySelector('#seUpdCtl');
+      const desc = updRow.querySelector('#seUpdDesc');
+      const verEl = card.querySelector('#seAppVer');
+      if (verEl && ver) ver.then((v) => { if (v) verEl.textContent = 'v' + v; });
+      if (st2.status === 'available') {
+        desc.innerHTML = `<b>Velox ${esc(st2.version)}</b> is available.` + (st2.notes ? ` <span style="color:var(--t3)">${esc(String(st2.notes).slice(0, 160))}</span>` : '');
+        ctl.innerHTML = `<button class="btn primary sm" id="seInstall">${icon('download', 12)} Install ${esc(st2.version)}</button>`;
+        ctl.querySelector('#seInstall').onclick = () => { installUpdate(); paint(); };
+      } else if (st2.status === 'installing') {
+        const pct = st2.total ? Math.min(100, Math.round((100 * st2.got) / st2.total)) : null;
+        desc.textContent = pct == null ? 'Downloading and verifying the signed installer…' : `Downloading — ${pct}% of ${fmtBytes(st2.total)}`;
+        ctl.innerHTML = `<span class="btn-spinner" style="border-color:var(--accent-bg);border-top-color:var(--accent)"></span>`;
+      } else if (st2.status === 'restarting') {
+        desc.textContent = 'Installed — restarting…';
+        ctl.innerHTML = '';
+      } else if (st2.status === 'checking') {
+        desc.textContent = 'Checking GitHub for a newer release…';
+        ctl.innerHTML = `<span class="btn-spinner" style="border-color:var(--accent-bg);border-top-color:var(--accent)"></span>`;
+      } else if (st2.status === 'uptodate') {
+        desc.textContent = 'You are on the latest version.';
+        ctl.innerHTML = '<span class="tag ok">up to date</span>';
+      } else if (st2.status === 'error') {
+        desc.textContent = `Last check failed: ${st2.error || 'unknown error'}`;
+        ctl.innerHTML = '<span class="tag err">error</span>';
+      } else if (st2.status === 'unavailable') {
+        desc.textContent = 'Auto-update requires the desktop app. In the browser preview, download the installer from GitHub manually.';
+        ctl.innerHTML = '<span class="tag">desktop only</span>';
+      } else {
+        desc.textContent = 'No check has run yet in this session.';
+        ctl.innerHTML = '<span class="tag">idle</span>';
+      }
+    };
+    paint();
+    card.querySelector('#seCheckNow').onclick = () => { checkNow(true).then(() => paint()); };
+    card.addEventListener('velox:update', paint);
   } else if (section === 'advanced') {
     const c = counts();
     card.append(

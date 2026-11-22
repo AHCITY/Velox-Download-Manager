@@ -154,6 +154,10 @@ fn spawn_event_pump(app: AppHandle, manager: Arc<DownloadManager>) {
 
 fn main() {
     tauri::Builder::default()
+        // Auto-update (v0.3.0): signed artifacts on GitHub releases; the frontend
+        // drives check/downloadAndInstall/relaunch through the plugin globals.
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         .plugin(single_instance(|app, _args, _cwd| {
             // second launch: surface the existing window instead of starting a
             // second engine (which would fight over the SQLite database and the

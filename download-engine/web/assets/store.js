@@ -82,6 +82,7 @@ export const store = {
   resolving: new Map(),       // url -> {state: 'resolving'|'resolved'|'failed', note}
   net: { aggBps: 0, active: 0, conns: 0, samples: [], peak: 0 },
   queues: [],                 // [{id, name, itemIds, maxConcurrent, active}]
+  update: { status: 'idle' }, // auto-update state (updater.js)
   ready: false,
   connected: false,
 };
@@ -89,14 +90,14 @@ export const store = {
 /* ---------- pub/sub ---------- */
 const subs = new Set();
 export function subscribe(fn) { subs.add(fn); return () => subs.delete(fn); }
-let notifyQueued = false;
-function notify() {
-  if (notifyQueued) return;
-  notifyQueued = true;
+export function notify() {
   // setTimeout, not rAF: background/headless webviews throttle rAF to zero, which
   // silently froze all live updates; a 0-timer coalesces per tick and always runs
+  if (notifyQueued) return;
+  notifyQueued = true;
   setTimeout(() => { notifyQueued = false; subs.forEach((f) => f()); }, 0);
 }
+let notifyQueued = false;
 
 /* ---------- settings ---------- */
 export async function initPrefs() {

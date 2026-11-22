@@ -42,6 +42,7 @@ function buildSidebar() {
         ${k === 'downloads' ? '<span class="nav-badge" data-badge="active"></span>' : ''}
         ${k === 'history' ? '<span class="nav-badge" data-badge="history"></span>' : ''}
         ${k === 'vault' ? '<span class="nav-badge" data-badge="vault"></span>' : ''}
+        ${k === 'settings' ? '<span class="nav-badge upd" data-badge="update" style="display:none;background:var(--accent);color:#06121f" title="Update available">↑</span>' : ''}
       </button>`);
       b.onclick = () => go(k);
       nav.appendChild(b);
@@ -124,6 +125,8 @@ function paintBadges() {
     v.textContent = c.completed ? String(c.completed) : '';
     v.style.display = c.completed ? '' : 'none';
   }
+  const up = sideEl.querySelector('[data-badge="update"]');
+  if (up) up.style.display = store.update?.status === 'available' ? '' : 'none';
   let sum = 0;
   for (const r of store.rows.values()) if (r.state === 'downloading') sum += store.bps.get(r.id) || 0;
   const agg = $('#tbAgg'), live = $('#tbLive');
@@ -186,6 +189,7 @@ async function boot() {
   drawer = detailsDrawer();
   renderToasts($('#toasts'));
   await bootstrap();
+  import('./assets/updater.js').then((m) => m.initUpdater());
   document.body.dataset.anim = store.prefs.animations ? 'on' : 'off';
   if (!store.prefs.sidebarExpanded) sideEl.classList.add('compact');
   document.addEventListener('velox:sidebar', (e) => sideEl.classList.toggle('compact', !e.detail));

@@ -29,7 +29,14 @@ H=(-H "Authorization: Bearer $GITHUB_TOKEN" -H "Accept: application/vnd.github+j
 API="https://api.github.com/repos/$REPO"
 
 REL_ID=$(curl -s -m 30 "${H[@]}" "$API/releases/tags/$TAG" \
-  | python3 -c "import json,sys; print(json.load(sys.stdin).get('id') or sys.exit('no release $TAG'))")
+  | python3 -c "import json,sys; print(json.load(sys.stdin).get('id') or '')")
+if [ -z "$REL_ID" ]; then
+  echo "== release $TAG missing -> creating"
+  REL_ID=$(curl -s -m 60 -X POST "${H[@]}" -H "Content-Type: application/json" \
+    -d "{\"tag_name\":\"$TAG\",\"name\":\"Velox $TAG\",\"body\":\"Auto-created by github-release-refresh.sh\"}" \
+    "$API/releases" \
+    | python3 -c "import json,sys; print(json.load(sys.stdin).get('id') or sys.exit('release creation failed'))")
+fi
 echo "== release id=$REL_ID tag=$TAG -> refresh at commit $SHORT"
 
 # delete every existing asset (full refresh — no stale binaries under the same name)
@@ -84,6 +91,13 @@ upload "$DIR/Velox-Setup-x64.exe" "Velox-Setup-x64.exe" "application/vnd.microso
 upload "$DIR/Velox.exe"           "Velox.exe"           "application/vnd.microsoft.portable-executable"
 upload "$DIR/SHA256SUMS.txt"      "SHA256SUMS.txt"      "text/plain"
 upload "$DIR/INSTALL-AND-VERIFY.md" "INSTALL-AND-VERIFY.md" "text/markdown"
+# in-app updater artifacts (v0.3.0+): signed installer + update manifest
+if [ -f "$DIR/Velox-Setup-x64.exe.sig" ]; then
+  upload "$DIR/Velox-Setup-x64.exe.sig" "Velox-Setup-x64.exe.sig" "text/plain"
+fi
+if [ -f "$DIR/latest.json" ]; then
+  upload "$DIR/latest.json" "latest.json" "application/json"
+fi
 
 echo "== release URL:"
 curl -s -m 30 "${H[@]}" "$API/releases/$REL_ID" | python3 -c "import json,sys; print(json.load(sys.stdin)['html_url'])"
