@@ -43,6 +43,22 @@ Last updated: 2026-11-22 — **UI OVERHAUL SESSION** (complete product rebuild o
 - **Verification**: `/tmp/msv` crate replicates `verify_signature` 1:1 (main+global sig + version cross-check); used to validate the published artifacts. Frontend flow E2E-tested with a mock `__TAURI__` (check → toast+badge → progress → relaunch).
 - `docs/UPDATES.md` documents the whole flow.
 
+## UX Overhaul 2.0 (v0.3.1, 2026-11-22) — done + gotchas
+
+- Implemented + pushed (commit da81f07). Downloads-first shell, unified filter list, search bug fixed
+  (missing `notify()`), full-width rows, Settings with real default-dir picker (tauri-plugin-dialog,
+  `dialog:default` capability — only backend change), network screen absorbed Home content.
+- E2E: `scripts/e2e-ui.sh` — 33 checks vs the REAL engine (`velox serve-http`, random ports, self-contained
+  slow fixture). 33/33 on 4 of last 5 runs. GOTCHAS (all bit us): (1) the slow-server reads
+  `/tmp/vlx-e2e/files/slow.bin` — it now self-creates the fixture; (2) the makensis template embeds
+  `/tmp/installer/Velox.exe` — COPY THE FRESH EXE THERE BEFORE makensis (bit us: v0.3.1 first package had a stale exe);
+  (3) tauri-build does not re-embed changed web/ assets unless `main.rs` is touched (see updater section);
+  (4) engine `download.cancel` REMOVES the partial record (row leaves the list — UI asserts that, not a chip);
+  (5) dead-URL create/inspect takes ~31s (3x10s connect retries) before the honest CONNECT error — slow, not hung;
+  (6) E2E port guard: pkill stale servers before starting (a leftover server hijacking the fixed port caused
+  phantom failures); ports are now randomized per run.
+- Release v0.3.1 published + verified (endpoint 0.3.1, minisign main+global VALID, version-bound, hash round-trip).
+
 ## Remaining / next candidates
 
 1. Toast matrix per notification pref; media-merge UI exercise needs yt-dlp + ffmpeg on a real machine (honest-unavailable states already in place).
