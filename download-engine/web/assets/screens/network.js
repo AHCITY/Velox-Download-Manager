@@ -3,6 +3,7 @@
 // engine does not expose are stated honestly rather than faked.
 import { icon } from '../icons.js';
 import { store, fmtBytes, fmtSpeed, netSnapshot } from '../store.js';
+// recent engine events surface here since Home was retired (UX 2.0)
 import { el, esc } from '../ui.js';
 
 let built = false;
@@ -53,6 +54,10 @@ function buildShell() {
         <div class="note acc">${icon('info', 14)}<div>The engine enforces per-download limits with a token bucket set at creation time. Changing a running download's limit is not yet available; pause and re-add with a new limit if you need one.</div></div>
       </div>
     </div>
+    <div class="card" style="padding:6px 14px;margin-top:14px">
+      <div class="screen-head" style="margin:8px 0 4px"><h1 style="font-size:13.5px">Recent engine events</h1></div>
+      <div class="act-feed" id="nwFeed"></div>
+    </div>
   </div>`);
   return shell;
 }
@@ -91,6 +96,14 @@ function paintShell(root) {
   root.querySelector('#nwLimits').textContent = limits.length
     ? limits.map((r) => `${r.final_name}: ≤ ${fmtSpeed(r.bandwidth_limit_bps)}`).join(' · ')
     : 'none set';
+
+  const feed = root.querySelector('#nwFeed');
+  if (feed) {
+    const items = store.activity.slice(0, 14);
+    feed.innerHTML = items.length
+      ? items.map((a) => `<div class="act-item"><span class="ts">${esc(a.ts)}</span><span class="tx">${a.html}</span></div>`).join('')
+      : '<div class="act-item"><span class="tx">Engine events appear here as downloads run.</span></div>';
+  }
 }
 
 function drawChart(canvas) {

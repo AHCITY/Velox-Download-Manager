@@ -1,4 +1,14 @@
-# UI Overhaul — Implementation Map (internal, 2026-11-22)
+# UI Overhaul — Implementation Map (internal, 2026-11-22; UX 2.0 update same day)
+
+## UX 2.0 (v0.3.1) — what changed
+- **Downloads-first**: default route + only primary nav destination. Home/Vault/Devices screens REMOVED (routes + files). Sidebar groups: Downloads / Manage (Queues, Browser, Network, History) / Application (Settings).
+- **Toolbar**: prominent `+ Add Download` (primary), search, aggregate speed, activity bell, app menu. The old URL-input-first toolbar is gone; Ctrl+V pastes a URL into the dialog.
+- **Search bug FIXED** (app.js: the toolbar handler mutated `store.filter.query` without `notify()` → no re-render while on Downloads; now notifies).
+- **Unified Downloads list**: filters All/Downloading/Queued/Paused/Completed/Failed via `FILTER_STATES` (store.js); full-width hairline rows (no per-row cards) with aligned size/speed/ETA columns, domain line, full-row progress; context menu includes real queue assignment; multi-select + shift-range + bulk bar; empty states incl. search-no-match.
+- **Settings**: real default-directory row (native picker via tauri-plugin-dialog; pref `defaultDir` → Add dialog destination), default connections + overwrite defaults wired into the Add dialog; dead `autoClearCompleted` pref removed; honest "not available" rows kept for engine-absent features.
+- **Network**: absorbed Home's live network content + recent engine events feed.
+- **Backend addition (minimal)**: `tauri-plugin-dialog` registered + `dialog:default` capability — the only Rust-side change in UX 2.0.
+- **E2E**: `scripts/e2e-ui.sh` (33 checks against the REAL engine via `velox serve-http`; search regression covered). Known E2E gotchas recorded in STATE.md.
 
 ## Architecture facts (audited)
 - The Tauri desktop app serves `download-engine/web/` as its frontend (`tauri.conf.json: frontendDist: "../../web"`). The web dir IS the product UI. Single `index.html` (532 lines) — the thing being replaced.

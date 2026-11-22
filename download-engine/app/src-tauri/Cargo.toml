@@ -1,6 +1,6 @@
 [package]
 name = "velox-app"
-version = "0.3.0"
+version = "0.3.1"
 description = "Velox desktop download manager"
 edition = "2021"
 rust-version = "1.77"
@@ -26,6 +26,9 @@ tauri-plugin-single-instance = "2"
 # (docs/UPDATES.md documents the release/signing flow)
 tauri-plugin-updater = "2"
 tauri-plugin-process = "2"
+# Native folder picker for Settings → General → Default download directory
+# (spec §8 requires the appropriate native picker; browser preview degrades honestly)
+tauri-plugin-dialog = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # tokio is used DIRECTLY by main.rs (time::timeout in the shutdown sequence,

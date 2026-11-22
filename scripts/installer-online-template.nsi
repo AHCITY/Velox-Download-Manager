@@ -11,7 +11,7 @@ ManifestDPIAware true
 RequestExecutionLevel user
 
 !define PRODUCT_NAME "Velox"
-!define PRODUCT_VERSION "0.3.0"
+!define PRODUCT_VERSION "0.3.1"
 !define IDENTIFIER "io.velox.downloadmanager"
 !define UNINST_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\${IDENTIFIER}"
 !define WEBVIEW2_KEY_L "SOFTWARE\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}"

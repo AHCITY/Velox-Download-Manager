@@ -3,11 +3,39 @@
 import http.server, socketserver, os, time, sys
 
 SIZE = 60 * 1024 * 1024
-CHUNK = 2 * 1024 * 1024
+CHUNK = 512 * 1024
 DELAY = 1.0
+
+# self-contained fixture: guarantee the backing file exists (older sessions
+# pre-created it at /tmp/vlx-e2e/files; the sandbox recycle wiped it, which made
+# every request die right after the headers and broke the slow-download E2E)
+FIXTURE = "/tmp/vlx-e2e/files/slow.bin"
+os.makedirs(os.path.dirname(FIXTURE), exist_ok=True)
+if not os.path.exists(FIXTURE) or os.path.getsize(FIXTURE) != SIZE:
+    with open(FIXTURE, "wb") as f:
+        f.write(b"\x00" * SIZE)
+
+HITS = {}
 
 class H(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
+        # /switch.bin: probe request (1st) succeeds; the real GET (2nd+) is 410 GONE
+        # (a permanent HTTP error — the engine fails the row fast, no retries).
+        if self.path == "/switch.bin":
+            n = HITS.get(self.path, 0) + 1
+            HITS[self.path] = n
+            if n == 1:
+                self.send_response(200)
+                self.send_header("Content-Type", "application/octet-stream")
+                self.send_header("Content-Length", str(4 * 1024 * 1024))
+                self.send_header("Accept-Ranges", "bytes")
+                self.end_headers()
+                self.wfile.write(b"x" * 1024)
+                return
+            self.send_response(410)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
         if self.path != "/slow.bin":
             self.send_error(404)
             return

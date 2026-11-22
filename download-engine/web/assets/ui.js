@@ -245,15 +245,16 @@ export function paintRow(node, r, { selectable = true, compact = false } = {}) {
   const bps = running ? (store.bps.get(r.id) || r.bps || 0) : 0;
   const eta = running ? fmtEta(r.received, r.total_size, bps) : null;
   const missing = r.file_missing === true;
+  const dim = (v) => `<span class="dim">—</span>`;
 
-  const metaBits = [];
-  if (r.total_size != null) metaBits.push(`<span><b>${fmtBytes(r.received)}</b> / ${fmtBytes(r.total_size)}</span>`);
-  else if (r.received) metaBits.push(`<span><b>${fmtBytes(r.received)}</b></span>`);
-  if (running && bps) metaBits.push(`<span><b>${fmtSpeed(bps)}</b></span>`);
-  if (eta) metaBits.push(`<span>${eta}</span>`);
-  if (running && r.connections_active) metaBits.push(`<span><b>${r.connections_active}</b> connections</span>`);
-  metaBits.push(`<span>${esc(fmtTime(r.created_at))}</span>`);
-  if (r.bandwidth_limit_bps) metaBits.push(`<span title="per-download speed limit">≤ ${fmtSpeed(r.bandwidth_limit_bps)}</span>`);
+  // right-aligned numeric columns (professional list, mono digits)
+  const sizeHtml = r.total_size != null
+    ? (r.received && r.received < r.total_size && !done
+        ? `<b>${fmtBytes(r.received)}</b> <span class="of">/ ${fmtBytes(r.total_size)}</span>`
+        : fmtBytes(r.total_size))
+    : (r.received ? fmtBytes(r.received) : dim());
+  const speedHtml = running && bps ? `<b>${fmtSpeed(bps)}</b>` : (r.bandwidth_limit_bps ? `<span class="of" title="speed limit">≤ ${fmtSpeed(r.bandwidth_limit_bps)}</span>` : dim());
+  const etaHtml = eta ? eta.replace(' left', '') : dim();
 
   const btns = [];
   const mini = (act, ic, title, danger = false) => `<button class="mini-btn ${danger ? 'danger' : ''}" data-act="${act}" title="${title}" aria-label="${title}">${icon(ic, 14)}</button>`;
@@ -263,8 +264,16 @@ export function paintRow(node, r, { selectable = true, compact = false } = {}) {
   if (done || failed || cancelled) btns.push(mini('open', 'external', 'Open file'));
   if (done || failed || cancelled) btns.push(mini('reveal', 'folderOpen', 'Open containing folder'));
   btns.push(mini('menu', 'more', 'More actions'));
-
   function resuming(r2) { return paused || queued; }
+
+  // secondary line: domain (when useful) + destination + live connection count
+  let domain = '';
+  try { domain = new URL(r.url).host || ''; } catch { /* keep empty */ }
+  const metaBits = [];
+  if (domain) metaBits.push(esc(domain));
+  if (running && r.connections_active) metaBits.push(`<b>${r.connections_active}</b> connections`);
+  metaBits.push(esc(fmtTime(r.created_at)));
+  const domLine = `<div class="row-dom">${metaBits.join('<span class="dotsep">·</span>')}<span class="dst" title="${esc(r.dest_dir)}">${esc(r.dest_dir)}</span></div>`;
 
   const checkHtml = selectable ? `<div class="row-check"><input type="checkbox" data-check aria-label="Select" ${store.selection.has(r.id) ? 'checked' : ''}></div>` : '<div></div>';
 
@@ -277,19 +286,22 @@ export function paintRow(node, r, { selectable = true, compact = false } = {}) {
         ${missing ? `<span class="missing">${icon('alertTriangle', 11)} file missing</span>` : ''}
         ${statusChip(r)}
       </div>
+      ${compact ? '' : domLine}
       ${failed && (r.error_message || r.error_code) ? `<div class="row-err" title="${esc(r.error_code || '')}: ${esc(r.error_message || '')}">${esc(r.error_message || r.error_code)}</div>`
         : merging ? `<div class="row-media">${icon('merge', 12)} merging streams into the final file…</div>`
         : resolving ? `<div class="row-media">${icon('loader', 12)} resolving media page…</div>`
         : ''}
+      <div class="progress-line"><div class="track"><div class="fill ${done ? 'done' : failed ? 'fail' : paused ? 'paused' : merging ? 'merge' : ''}" style="width:${done ? 100 : p == null ? (r.received ? 6 : 0) : p}%"></div></div></div>
+    </div>
+    <div class="row-stats">
+      <div class="rs-size">${sizeHtml}</div>
+      <div class="rs-speed">${speedHtml}</div>
+      <div class="rs-eta">${etaHtml}</div>
     </div>
     <div class="row-side">
-      <div class="row-actions">${btns.join('')}</div>
       <div class="pct">${done ? '100%' : p == null ? (r.received ? '…' : '0%') : `${p.toFixed(0)}%`}</div>
+      <div class="row-actions">${btns.join('')}</div>
     </div>
-    <div class="progress-line">
-      <div class="track"><div class="fill ${done ? 'done' : failed ? 'fail' : paused ? 'paused' : merging ? 'merge' : ''}" style="width:${done ? 100 : p == null ? (r.received ? 6 : 0) : p}%"></div></div>
-    </div>
-    <div class="row-meta">${metaBits.join('')}</div>
   `;
   node.classList.toggle('dim', done || cancelled);
   node.classList.toggle('selected', store.selection.has(r.id));
@@ -297,9 +309,17 @@ export function paintRow(node, r, { selectable = true, compact = false } = {}) {
 
   // wiring
   const check = node.querySelector('[data-check]');
-  if (check) check.onchange = () => {
-    if (check.checked) store.selection.add(r.id); else store.selection.delete(r.id);
-    node.classList.toggle('selected', check.checked);
+  if (check) check.onchange = (e) => {
+    if (e.shiftKey && store.lastCheckedId != null) {
+      // range select: from last checked to this one within the visible order
+      const vis = visibleRows().map((x) => x.id);
+      const i1 = vis.indexOf(store.lastCheckedId), i2 = vis.indexOf(r.id);
+      if (i1 >= 0 && i2 >= 0) {
+        for (const id of vis.slice(Math.min(i1, i2), Math.max(i1, i2) + 1)) store.selection.add(id);
+      }
+    } else if (check.checked) store.selection.add(r.id); else store.selection.delete(r.id);
+    store.lastCheckedId = check.checked ? r.id : null;
+    node.classList.toggle('selected', store.selection.has(r.id));
     node.dispatchEvent(new CustomEvent('selchange', { bubbles: true }));
   };
   node.querySelectorAll('[data-act]').forEach((b) => {
@@ -337,6 +357,22 @@ export function rowMenu(x, y, r) {
   items.push({ label: 'Open containing folder', icon: 'folderOpen', disabled: !done && st !== 'failed' && st !== 'cancelled', act: () => actions.reveal(r.id) });
   items.push({ label: 'Copy download URL', icon: 'copy', act: () => actions.copyUrl(r.id) });
   items.push({ label: 'View details', icon: 'eye', k: 'Enter', act: () => window.__veloxOpenDetails?.(r.id) });
+  // real queue assignment (queues persist; membership drives the orchestrator)
+  if (store.queues.length) {
+    const inQ = store.queues.filter((q) => q.itemIds.includes(r.id));
+    const open = store.queues.filter((q) => !q.itemIds.includes(r.id));
+    if (open.length) {
+      items.push('-');
+      for (const q of open.slice(0, 4)) {
+        items.push({ label: `Add to queue: ${q.name}`, icon: 'queue', act: () => { q.itemIds.push(r.id); import('./store.js').then((m) => m.saveQueues()); } });
+      }
+    }
+    if (inQ.length) {
+      for (const q of inQ.slice(0, 3)) {
+        items.push({ label: `Remove from queue: ${q.name}`, icon: 'minus', act: () => { q.itemIds = q.itemIds.filter((x) => x !== r.id); import('./store.js').then((m) => m.saveQueues()); } });
+      }
+    }
+  }
   items.push('-');
   items.push({ label: 'Verify file', icon: 'shieldCheck', disabled: !done, act: () => actions.verify(r.id) });
   items.push({ label: 'Re-download', icon: 'refresh', act: () => actions.redownload(r.id) });

@@ -6,6 +6,17 @@ import { engine, subscribeEvents, loadSettings, saveSettings, EVENT_NAMES } from
 
 export const RUNNING_STATES = ['downloading', 'queued', 'created', 'retrying', 'resolving', 'merging'];
 export const LISTENABLE_STATES = ['all', 'downloading', 'queued', 'completed', 'failed', 'paused', 'resolving', 'merging', 'cancelled'];
+// Downloads screen filter segments: each maps to a set of engine states.
+// "downloading" deliberately includes resolving/merging — they ARE active work.
+// cancelled rows live under All only (their chip says so).
+export const FILTER_STATES = {
+  all: null,
+  downloading: ['downloading', 'retrying', 'resolving', 'merging'],
+  queued: ['queued', 'created'],
+  paused: ['paused'],
+  completed: ['completed'],
+  failed: ['failed'],
+};
 
 export const CATEGORIES = {
   video: ['mp4', 'mkv', 'webm', 'avi', 'mov', 'flv', 'wmv', 'm4v', 'ts', 'm3u8'],
@@ -64,10 +75,12 @@ export const DEFAULT_PREFS = {
   density: 'comfortable',        // comfortable | compact
   animations: true,
   sidebarExpanded: true,
-  autoClearCompleted: false,
   openFolderOnComplete: false,
-  defaultCategory: 'auto',
+  defaultDir: '',               // default destination for NEW downloads (Settings → General)
+  defaultConnections: '',       // '' = engine default; else int per download
+  defaultOverwrite: false,      // pre-check "overwrite existing file" in the Add dialog
 };
+export const DEFAULT_DIR_PREF = 'defaultDir';
 
 export const store = {
   rows: new Map(),            // id -> StatusView (engine-authoritative)
@@ -184,8 +197,8 @@ export async function refreshOne(id) {
 export function visibleRows() {
   const { state, query, category } = store.filter;
   let rows = [...store.rows.values()];
-  if (state === 'downloading') rows = rows.filter((r) => RUNNING_STATES.includes(r.state));
-  else if (state !== 'all') rows = rows.filter((r) => r.state === state);
+  const group = FILTER_STATES[state];
+  if (group) rows = rows.filter((r) => group.includes(r.state));
   if (category !== 'all') rows = rows.filter((r) => categoryOf(r.final_name) === category);
   if (query) {
     const q = query.toLowerCase();

@@ -5,7 +5,7 @@ import { icon } from '../icons.js';
 import { store, setPrefs, refreshAll, counts, toast } from '../store.js';
 import { checkNow, installUpdate, currentAppVersion } from '../updater.js';
 import { fmtBytes } from '../store.js';
-import { isDesktop } from '../api.js';
+import { isDesktop, defaultDownloadDir, pickDirectory } from '../api.js';
 import { el, esc } from '../ui.js';
 
 let built = false;
@@ -72,15 +72,19 @@ function paintShell(root) {
       toggleRow('confirmFileDelete', 'Confirm before deleting files', 'Ask before permanently deleting a downloaded file from disk.', P.confirmFileDelete, (v) => setPrefs({ confirmFileDelete: v })),
       toggleRow('confirmRemove', 'Confirm before removing list entries', 'Ask before removing a download from the list (files are kept).', P.confirmRemove, (v) => setPrefs({ confirmRemove: v })),
       toggleRow('openFolderOnComplete', 'Open folder on completion', 'Reveals the containing folder as soon as a download finishes.', P.openFolderOnComplete, (v) => setPrefs({ openFolderOnComplete: v })),
-      el(`<div class="setting-row"><div class="s-txt"><div class="s-name">Default download directory</div><div class="s-desc">Fixed by the engine at startup (desktop app policy: the OS Downloads folder).</div></div>
-        <div class="s-ctl"><span class="tag" style="max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(store.engine?.default_out_dir || '')}">${esc(store.engine?.default_out_dir || '—')}</span></div></div>`),
+      defaultDirRow(),
     );
   } else if (section === 'downloads') {
     card.append(
-      el(`<div class="setting-row"><div class="s-txt"><div class="s-name">Row density</div><div class="s-desc">Compact rows show more downloads per screen.</div></div>
+      el(`<div class="setting-row"><div class="s-txt"><div class="s-name">Row density</div><div class="s-desc">Compact rows show more downloads per screen. Applies to the Downloads list.</div></div>
         <div class="s-ctl"><select id="seDensity"><option value="comfortable" ${P.density === 'comfortable' ? 'selected' : ''}>Comfortable</option><option value="compact" ${P.density === 'compact' ? 'selected' : ''}>Compact</option></select></div></div>`),
-      toggleRow('autoClearCompleted', 'Hide completed from Home after a while', 'Completed entries slide out of the Home active list shortly after finishing (they stay in Downloads/History).', P.autoClearCompleted, (v) => setPrefs({ autoClearCompleted: v })),
-      el(`<div class="setting-row"><div class="s-txt"><div class="s-name">Maximum concurrent downloads</div><div class="s-desc">Engine configuration — how many downloads run in parallel.</div></div>
+      el(`<div class="setting-row"><div class="s-txt"><div class="s-name">Default connections per download</div><div class="s-desc">Pre-selected in the Add Download dialog. The engine clamps this to its per-host ceiling.</div></div>
+        <div class="s-ctl"><select id="seDefConns">
+          <option value="" ${!P.defaultConnections ? 'selected' : ''}>Engine default</option>
+          ${[1, 2, 4, 8, 16].map((n) => `<option value="${n}" ${String(P.defaultConnections) === String(n) ? 'selected' : ''}>${n}</option>`).join('')}
+        </select></div></div>`),
+      toggleRow('defaultOverwrite', 'Overwrite existing files by default', 'Pre-checks "Overwrite existing file" in the Add dialog. Otherwise numbered names (file(1).ext) are chosen.', P.defaultOverwrite, (v) => setPrefs({ defaultOverwrite: v })),
+      el(`<div class="setting-row"><div class="s-txt"><div class="s-name">Maximum concurrent downloads</div><div class="s-desc">Engine configuration — how many downloads run in parallel (fixed at startup).</div></div>
         <div class="s-ctl"><span class="tag acc">${store.engine?.max_concurrent_downloads ?? '—'}</span></div></div>`),
       el(`<div class="setting-row"><div class="s-txt"><div class="s-name">Connections per host</div><div class="s-desc">Engine ceiling for one host; per-download connection counts are clamped by it.</div></div>
         <div class="s-ctl"><span class="tag acc">${store.engine?.max_connections_per_host ?? '—'}</span></div></div>`),
@@ -89,6 +93,8 @@ function paintShell(root) {
     );
     const dens = card.querySelector('#seDensity');
     if (dens) dens.onchange = (e) => setPrefs({ density: e.target.value });
+    const conns = card.querySelector('#seDefConns');
+    if (conns) conns.onchange = (e) => setPrefs({ defaultConnections: e.target.value });
   } else if (section === 'network') {
     card.append(
       el(`<div class="setting-row"><div class="s-txt"><div class="s-name">Global bandwidth limit</div><div class="s-desc">A global token bucket is not implemented in the engine. Per-download limits are enforced and can be set in the Add dialog.</div></div>
@@ -114,7 +120,7 @@ function paintShell(root) {
       toggleRow('animations', 'Interface animations', 'Subtle transitions on dialogs, rows and screen changes.', P.animations, (v) => { setPrefs({ animations: v }); document.body.dataset.anim = v ? 'on' : 'off'; }),
       toggleRow('sidebarExpanded', 'Expanded sidebar', 'Show section labels; turn off for a compact icon rail.', P.sidebarExpanded, (v) => { setPrefs({ sidebarExpanded: v }); document.dispatchEvent(new CustomEvent('velox:sidebar', { detail: v })); }),
       el(`<div class="setting-row"><div class="s-txt"><div class="s-name">Keyboard shortcuts</div><div class="s-desc">
-        <span class="kbd">Ctrl N</span> add download &nbsp; <span class="kbd">Ctrl F</span> search &nbsp; <span class="kbd">Ctrl A</span> select all &nbsp; <span class="kbd">Space</span> pause/resume selection &nbsp; <span class="kbd">Del</span> remove selection &nbsp; <span class="kbd">Esc</span> close dialog</div></div></div>`),
+        <span class="kbd">Ctrl N</span> add download &nbsp; <span class="kbd">Ctrl V</span> paste URL &nbsp; <span class="kbd">Ctrl F</span> search &nbsp; <span class="kbd">Ctrl A</span> select all &nbsp; <span class="kbd">Space</span> pause/resume selection &nbsp; <span class="kbd">Del</span> remove selection &nbsp; <span class="kbd">Esc</span> close dialog</div></div></div>`),
     );
   } else if (section === 'updates') {
     const st = store.update || { status: 'idle' };
@@ -186,5 +192,30 @@ function paintShell(root) {
       navigator.clipboard.writeText(log).then(() => toast('ok', 'Event log copied', ''), () => {});
     };
   }
+}
+// Default download directory: a REAL native folder picker on desktop; the
+// choice becomes the pre-filled destination for NEW downloads (Add dialog)
+// and persists across restarts. The engine's startup dir remains the fallback.
+function defaultDirRow() {
+  const eff = store.prefs.defaultDir || store.engine?.default_out_dir || '';
+  const row = el(`<div class="setting-row"><div class="s-txt"><div class="s-name">Default download directory</div>
+      <div class="s-desc">Pre-filled destination for new downloads. New downloads land here unless you change the folder in the Add dialog.</div>
+      <div class="s-desc" style="font-family:var(--mono);font-size:11px;margin-top:4px;word-break:break-all" id="seDirVal"></div></div>
+      <div class="s-ctl"><button class="btn sm" id="sePickDir">${icon('folderOpen', 13)} Choose…</button></div></div>`);
+  const val = row.querySelector('#seDirVal');
+  const paint = (d) => { val.textContent = d || '—'; val.title = d || ''; };
+  paint(eff);
+  row.querySelector('#sePickDir').onclick = async () => {
+    const chosen = await pickDirectory(store.prefs.defaultDir || store.engine?.default_out_dir || '');
+    if (!chosen) return; // cancelled
+    setPrefs({ defaultDir: chosen });
+    paint(chosen);
+    toast('ok', 'Default directory updated', chosen);
+  };
+  if (isDesktop && !store.prefs.defaultDir) {
+    // desktop first run: show the OS dir the engine would use
+    defaultDownloadDir().then((d) => { if (d && !store.prefs.defaultDir) paint(d); });
+  }
+  return row;
 }
 export { renderSettings as render };

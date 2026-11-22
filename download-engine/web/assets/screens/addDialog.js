@@ -8,7 +8,9 @@ import { openDialog, esc, reportError, actions } from '../ui.js';
 let lastDest = null;
 
 export function openAddDialog(prefillUrl = '') {
-  const dest = lastDest || store.engine?.default_out_dir || '';
+  // destination precedence: this session's last choice → the persisted default
+  // directory (Settings → General) → the engine's startup dir
+  const dest = lastDest || store.prefs?.defaultDir || store.engine?.default_out_dir || '';
   const { dlg, close } = openDialog(`
     <div class="dialog" style="max-width:560px" id="addDlg">
       <div class="dialog-head">
@@ -42,10 +44,8 @@ export function openAddDialog(prefillUrl = '') {
           <div class="field">
             <label for="adConns">Connections</label>
             <select id="adConns">
-              <option value="">Engine default</option>
-              <option value="1">1 (single stream)</option>
-              <option value="2">2</option><option value="4">4</option>
-              <option value="8">8</option><option value="16">16</option>
+              <option value="" ${!store.prefs?.defaultConnections ? 'selected' : ''}>Engine default</option>
+              ${[1, 2, 4, 8, 16].map((n) => `<option value="${n}" ${String(store.prefs?.defaultConnections) === String(n) ? 'selected' : ''}>${n === 1 ? '1 (single stream)' : n}</option>`).join('')}
             </select>
           </div>
           <div class="field">
@@ -78,7 +78,7 @@ export function openAddDialog(prefillUrl = '') {
               <div class="hint">Sent to the first request's origin only; RFC 6265 store updates follow redirects</div>
             </div>
             <div class="field" style="display:flex;align-items:center;gap:12px">
-              <label class="toggle"><input type="checkbox" id="adOverwrite"><span class="tk"></span></label>
+              <label class="toggle"><input type="checkbox" id="adOverwrite" ${store.prefs?.defaultOverwrite ? 'checked' : ''}><span class="tk"></span></label>
               <div><div style="font-weight:600;font-size:12.5px">Overwrite existing file</div>
               <div class="hint">Otherwise a numbered name (file(1).ext) is chosen</div></div>
             </div>

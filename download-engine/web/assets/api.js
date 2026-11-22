@@ -78,6 +78,23 @@ export async function openFile(path) {
   await window.__TAURI__.core.invoke('open_path', { path, reveal: false });
 }
 
+/**
+ * Native directory picker (desktop, tauri-plugin-dialog). Resolves to the
+ * chosen absolute path, or null when cancelled / unavailable (browser preview).
+ */
+export async function pickDirectory(startPath) {
+  if (!TAURI) return null;
+  try {
+    const picked = await window.__TAURI__.dialog.open({
+      directory: true,
+      multiple: false,
+      defaultPath: startPath || undefined,
+      title: 'Choose default download directory',
+    });
+    return typeof picked === 'string' && picked ? picked : null;
+  } catch { return null; }
+}
+
 /** Reveal the containing folder. */
 export async function revealFolder(path) {
   if (!TAURI) throw new EngineError('UNAVAILABLE', 'Opening folders requires the desktop app — path copied instead');
