@@ -19,9 +19,22 @@ intelligence, extra protocols, UI).
 
 The Windows desktop app lives in `app/src-tauri/`: the engine runs IN-PROCESS behind
 Tauri commands; the same `web/` frontend switches transport automatically (Tauri IPC in
-the app, HTTP/SSE in the browser preview). Build on Windows with
-`cargo tauri build` (see RELEASE-AND-UPDATE-GUIDE.md); CI produces `Velox-Setup-x64.exe`
-on every push to main.
+the app, HTTP/SSE in the browser preview). Release installers (online ~6 MB and a
+fully offline ~148 MB variant bundling yt-dlp + LGPL ffmpeg/ffprobe) are built with
+`cargo xwin` + NSIS v0.4.0 templates and published on GitHub Releases together with
+the signed `latest.json` updater manifest.
+
+## Browser extension (Chrome / Edge / Brave / Opera)
+
+Velox ships a plain-JS MV3 extension (`extension/`) with a stable pinned key ID and a
+native messaging host (`crates/velox-host`). On first launch the app offers one-click
+setup per detected browser: it stages the extension to
+`%LOCALAPPDATA%\Velox\extension`, registers the native host, and opens the browser's
+extensions page — the standard two-click Chromium confirmation remains (no silent
+installs exist; nothing is faked). Quick start loads it immediately for the session.
+The extension provides a right-click "Download with Velox" menu, a live toolbar popup,
+consent-first download interception and an opt-in clipboard suggestion. Firefox is
+honestly reported as not supported yet.
 
 ## Desktop preview (API v2 + web UI)
 

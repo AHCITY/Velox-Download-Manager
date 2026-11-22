@@ -1,18 +1,30 @@
 # INSTALLER-TEST-RESULTS
 
-Date: 2026-11-20.
+Date: 2026-11-22 (refresh; original 2026-11-20).
 
 ## Status
 
-**The installer was not built in this workspace and no installation test was executed.**
-Building `Velox-Setup-x64.exe` requires the Windows MSVC toolchain + NSIS (Tauri bundler);
-this Linux sandbox cannot produce it (`ring` needs clang-cl for cross-compile; webkit2gtk
-and apt are unavailable for a native build). No artifact is fabricated.
+**Installers ARE built and published from this workspace** (the 2026-11-20 note is
+superseded — the cargo-xwin + clang-cl cross toolchain and NSIS are now provisioned
+here; see scripts/TOOLCHAIN-SETUP.md):
+
+- v0.3.1: `Velox-Setup-x64.exe` published, updater-manifest verified.
+- v0.4.0 (2026-11-22): online `Velox-Setup-x64.exe` (6.0 MB) AND offline
+  `Velox-Setup-x64-offline.exe` (147.5 MB, bundles WebView2 bootstrapper, yt-dlp,
+  LGPL ffmpeg/ffprobe, extension + native host with install-time NM registration).
+  Published as the "latest" release with signed `latest.json`; public asset URLs
+  verified HTTP 200.
+
+What is STILL untested (honest):
+- A real Windows-machine install/uninstall pass (per-user install, WebView2
+  bootstrap path, Start-menu shortcuts, native-host registration end-to-end).
+- A real in-app update hop (e.g. 0.3.1 → 0.4.0 via the updater on Windows).
 
 What EXISTS and is committed:
-- The complete Tauri 2 application (code, config, capabilities, icons) ready to build.
-- The CI desktop job that builds and uploads the installer on `windows-latest`.
-- The exact local build commands (RELEASE-AND-UPDATE-GUIDE.md).
+- The complete Tauri 2 application (code, config, capabilities, icons).
+- CI desktop job (`windows.yml`) that builds the installer on `windows-latest`.
+- NSIS v0.4.0 templates (scripts/installer-online-template.nsi /
+  installer-offline-template.nsi) + packaging/signing scripts used for the releases.
 
 ## Test plan (execute on a Windows 10 22H2 x64 / Windows 11 x64 machine after the CI run)
 

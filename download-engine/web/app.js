@@ -100,15 +100,20 @@ function go(r) {
 }
 
 let renderToken = 0;
+let activeMod = null; // module of the currently rendered screen
 async function render() {
   const token = ++renderToken;
   sideEl.querySelectorAll('.nav-item').forEach((b) => b.classList.toggle('active', b.dataset.route === route));
+  // QOL: a screen that exports stop* hooks gets them called on nav-away, so
+  // live-poll timers (Browser screen's 3s status poll) never outlive the screen
+  activeMod?.stopBrowserStatusTimer?.();
   const r = ROUTES[route];
   const mod = await r.mod();
   if (token !== renderToken) return; // a newer navigation won the race
   const target = $('#view');
   target.replaceChildren(el('<div></div>'));
   mod.render(target.firstElementChild);
+  activeMod = mod;
 }
 
 function paintBadges() {
@@ -198,7 +203,6 @@ async function maybeBrowserSetupDialog() {
   const status = await extensionStatus();
   if (status?.extension_connected || status?.ext_installed) {
     store.prefs.browserSetupSeen = true;
-    const { saveSettings } = await import('./assets/api.js');
     saveSettings(store.prefs);
     return; // already set up — no nag
   }
@@ -222,11 +226,11 @@ async function maybeBrowserSetupDialog() {
         <button class="btn" data-later>Set up later</button>
       </div>
     </div>`);
-  const markSeen = async () => { store.prefs.browserSetupSeen = true; await saveSettingsSafely(); };
-  async function saveSettingsSafely() {
-    const { saveSettings } = await import('./assets/api.js');
+  const { saveSettings } = await import('./assets/api.js');
+  const markSeen = async () => {
+    store.prefs.browserSetupSeen = true;
     try { await saveSettings(store.prefs); } catch { /* non-fatal */ }
-  }
+  };
   dlg.querySelectorAll('[data-b]').forEach((btn) => {
     btn.addEventListener('click', async () => {
       btn.disabled = true;
@@ -263,6 +267,15 @@ async function boot() {
   // downloads-first: unknown/absent hash lands on the unified list
   const initial = (location.hash || '#downloads').slice(1);
   go(ROUTES[initial] ? initial : 'downloads');
+
+  // QOL fix (found during workspace audit): the hash was read only at boot, so
+  // browser back/forward and pasted deep links (#settings) never re-rendered —
+  // every screen switch also writes the hash, making it the single source of
+  // truth for navigation now.
+  window.addEventListener('hashchange', () => {
+    const r = (location.hash || '#downloads').slice(1);
+    if (ROUTES[r] && r !== route) go(r);
+  });
 
   subscribe(() => {
     paintBadges();

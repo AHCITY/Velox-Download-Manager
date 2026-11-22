@@ -80,12 +80,21 @@ Last updated: 2026-11-22 — **UI OVERHAUL SESSION** (complete product rebuild o
 - GOTCHA: cargo xwin needed for ANY msvc cross-target build (plain cargo build --target msvc lacks link.exe).
 - Released v0.4.0 (user-authorized): online 6.0MB + offline 147.5MB + portable exe + latest.json (signed) + SHA256SUMS.
 
+## Maintenance turn (2026-11-22, user away) — checks + small fixes
+
+- FULL workspace gates: fmt clean, 26 suites / **193 tests ALL CLEAN** (`--no-fail-fast`; earlier fail-fast pass had hidden the rest behind one flake).
+- FIXED flaky `crash_resume::kill_before_first_checkpoint` (full-workspace run): a fast download can COMPLETE before the kill lands under parallel load; `check_manifest_consistency` now skips completed manifests (segments are cleared on completion by design; final byte-exactness is hash-checked elsewhere). Kill windows widened (test 3: 2→4 MiB, test D: 2→8 MiB). 6 pre-fix runs couldn't reproduce standalone — fix is by-construction correct.
+- FOUND+FIXED UI bug: `location.hash` was read only at boot — no `hashchange` listener, so browser back/forward and pasted deep links (#settings) never re-rendered. Now the hash is the single navigation source of truth (verified live in headless browser: hash nav re-renders without reload).
+- QOL: Browser screen's 3s status-poll timer now stops on nav-away (screens can export stop* hooks, called by the router); first-launch dialog dynamic-import dedupe.
+- Docs: README finally documents the extension + installers; INSTALLER-TEST-RESULTS.md refreshed (installers ARE built+published; real-machine install + real update hop still honestly pending); STATE "Remaining" un-staled (clipboard monitor ≠ extension's own opt-in clipboard).
+- Verified clean: UI⇄engine method contract (11 methods, start/resume are engine-side aliases), event contract (DownloadState passes DB state strings through), settings.js "not implemented" rows are honest (global limit/proxy genuinely absent), headless renders of Downloads/Browser(preview note)/Settings all clean, E2E 33/33 after all frontend edits.
+
 ## Remaining / next candidates
 
 1. Toast matrix per notification pref; media-merge UI exercise needs yt-dlp + ffmpeg on a real machine (honest-unavailable states already in place).
 2. Engine-side queue scheduler contract (queues currently orchestrate only while the app is open — stated honestly in the UI).
-3. Browser extension + clipboard monitor (no backend today — honest screens).
-4. Real-Windows installer test (INSTALLER-TEST-RESULTS.md still says untested) — including a real in-app update 0.2.0→0.3.0 on a Windows box.
+3. Clipboard monitor as a DESKTOP feature (the extension has its own opt-in clipboard suggestion; a standalone app-side monitor does not exist — honest screens).
+4. Real-Windows installer test (INSTALLER-TEST-RESULTS.md refreshed 2026-11-22: installers ARE built+published; real-machine install pass + real in-app update hop still pending).
 5. Long-path `\\?\` helper; GET-206 tolerance; extractor cookie jar (engine queue tasks 9/7).
 
 ## Recovery after sandbox reset (checked once, then ask the user)

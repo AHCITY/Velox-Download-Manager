@@ -56,6 +56,10 @@ fn db(home: &Path) -> Db {
 }
 
 /// Invariant 1+2: manifest positions are a durable lower bound of what is on disk.
+/// Applies to IN-FLIGHT manifests only: on completion the part file is renamed and
+/// segment rows are cleared by design (final byte-exactness is verified separately
+/// via the SHA-256 checks). Under heavy parallel load a short download can finish
+/// before the kill lands — treating a completed row as a violation was a flake.
 fn check_manifest_consistency(home: &Path) {
     let d = db(home);
     let row = d
@@ -64,6 +68,9 @@ fn check_manifest_consistency(home: &Path) {
         .into_iter()
         .next()
         .expect("row");
+    if row.state == "completed" {
+        return;
+    }
     let file_len = std::fs::metadata(row.temp_path.as_deref().unwrap_or(""))
         .map(|m| m.len())
         .unwrap_or(0);
@@ -73,10 +80,6 @@ fn check_manifest_consistency(home: &Path) {
     for s in &segs {
         assert!(s.pos >= 0);
         let claimed = s.start_off + s.pos;
-        if row.state == "completed" {
-            // after completion the file is renamed; nothing more to check here
-            continue;
-        }
         assert!(
             claimed <= file_len as i64,
             "manifest claims bytes {}..{} but the part file has only {file_len} bytes \
@@ -251,7 +254,7 @@ async fn kill_before_first_checkpoint_resume_restarts_cleanly() {
     let dir = tempfile::tempdir().unwrap();
     let (home, out) = (dir.path().join("home"), dir.path().join("out"));
     std::fs::create_dir_all(&out).unwrap();
-    let mut b = Behavior::new(2 * MIB);
+    let mut b = Behavior::new(4 * MIB);
     b.slow_bps = 4 * MIB as u64;
     let server = TestServer::start(b);
 
@@ -287,7 +290,7 @@ async fn kill_before_first_checkpoint_resume_restarts_cleanly() {
     assert!(final_path.exists());
     assert_eq!(
         compute_hash_blocking(&final_path, HashAlgo::Sha256).unwrap(),
-        expected_hash(2 * MIB)
+        expected_hash(4 * MIB)
     );
     server.stop();
 }
@@ -300,7 +303,7 @@ async fn rename_orphan_final_file_is_never_adopted_without_evidence() {
     let dir = tempfile::tempdir().unwrap();
     let (home, out) = (dir.path().join("home"), dir.path().join("out"));
     std::fs::create_dir_all(&out).unwrap();
-    let mut b = Behavior::new(2 * MIB);
+    let mut b = Behavior::new(8 * MIB);
     b.slow_bps = 4 * MIB as u64;
     let server = TestServer::start(b);
 
@@ -350,7 +353,7 @@ async fn rename_orphan_final_file_is_never_adopted_without_evidence() {
         .expect("fresh file");
     assert_eq!(
         compute_hash_blocking(fresh, HashAlgo::Sha256).unwrap(),
-        expected_hash(2 * MIB),
+        expected_hash(8 * MIB),
         "the re-downloaded file must be byte-exact"
     );
     server.stop();
