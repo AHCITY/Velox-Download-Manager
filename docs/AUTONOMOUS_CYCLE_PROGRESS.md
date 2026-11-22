@@ -80,3 +80,13 @@ Environment state at pause:
 - app/src-tauri/target deleted for disk; next installer refresh = full ~5 min rebuild.
 - GitHub token: gitignored /home/z/my-project/.secrets/github-token (0600), auto-loaded by scripts.
 - Disk budget: ~1.2G free — clean download-engine/target before big test runs.
+
+### Cycle 6 — installer hygiene + WINDOWS_COMPAT.md reconciliation (audit P1-5/P1-6) (COMPLETE)
+- Installer template: header now truthfully describes the ONLINE bootstrapper variant (it claimed OFFLINE) + documents that PRODUCT_VERSION tracks the velox-app crate version; WebView2 detection treats pv="0.0.0.0" (broken runtime) as missing — compile-validated with makensis 3.13.
+- WINDOWS_COMPAT.md: plan items 1-4 and 6 marked DONE with file:line evidence (LockFileEx locks, Windows errno table, FlushFileBuffers dir durability, CI green); long-path dest_dir honestly remains open.
+- Commit 9757163 pushed + remote verified.
+### Cycle 7 — expired-URL re-resolve (audit P1-2) (COMPLETE)
+- A 403 against a RESOLVED url (expired media stream) now clears row.resolved_url and re-probes the original page once (re-running classification/yt-dlp resolve), bounded to one re-resolve per task run; persistent 403 still fails honestly. Probe target is now per-iteration (row.resolved_url else row.url).
+- Environment: sandbox restore had wiped the Rust toolchain + xwin SDK cache + token file — all rebuilt/restored (rust 1.100.0 stable, cargo-xwin 0.23.1, clang-19 debs per TOOLCHAIN-SETUP.md).
+- Tests: workspace suite 180 passed / 0 failed (2 new: 403-re-resolve completes byte-exact; sustained-403 fails after exactly one re-resolve); clippy -D warnings + fmt clean. The unused_assignments lint caught a real scope bug (re_resolid was per-iteration → bound didn't hold) before commit.
+- Commit 9770253 pushed + remote verified.
