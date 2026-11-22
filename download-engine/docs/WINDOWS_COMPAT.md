@@ -60,3 +60,20 @@ runs green. Linux behavior is unaffected by every item marked "safe" below.
   race that made unlink-on-drop unsafe; no more `.part-N.lock` residue next to
   finished downloads.
 - Windows launcher equivalent ships: `scripts/velox-preview.ps1`.
+
+## Status reconciliation (2026-11-22, autonomous cycle 6)
+
+Evidence-based update against the plan above; every claim cites the shipped code.
+
+| Plan item | Status | Evidence |
+|---|---|---|
+| 1. CI first | **DONE** — windows.yml runs fmt/clippy/build/full suite + crash gate; GREEN since `80dfe9e` | `.github/workflows/windows.yml`, GitHub runs |
+| 2. Lock recovery via LockFileEx | **DONE** — cross-process OS locks replaced the pid heuristic entirely; stale locks die with the process | `engine-storage/src/lib.rs:279-283` (design comment), `:437-444` (`LockFileEx(LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY)` with non-null OVERLAPPED), inode/file-index-verified unlink on release |
+| 3. errno table | **DONE** — Windows 112/39 → DiskFull, 13 → Permission; paused-with-reason instead of generic Io | `engine-core/src/error.rs:185-188` |
+| 4. Directory durability | **DONE** — best-effort `FlushFileBuffers` on the dir handle after rename (GENERIC_WRITE handle; failure logged, not fatal) | `engine-storage/src/lib.rs:159-177` |
+| 5. Long paths | **OPEN** — no `\\?\` verbatim prefixing yet; 240-byte filename cap bounds the name but not `dest_dir` | `engine-core/src/naming.rs:61` |
+| 6. Crash suite on Windows CI | **DONE** for the SIGKILL crash-resume gate (4 scenarios incl. lock recovery); full suite = the standard windows job | `crates/engine-cli/tests/crash_resume.rs`, CI logs |
+
+Honest remaining gaps: long-path `dest_dir` only (plan 5); no real-Windows manual
+installation test has ever been executed (INSTALLER-TEST-RESULTS.md says the same —
+the installer's WebView2 bootstrap path is compile-validated, not runtime-tested).

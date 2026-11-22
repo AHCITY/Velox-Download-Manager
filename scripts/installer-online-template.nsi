@@ -1,7 +1,11 @@
-; Velox 0.2.0 — per-user NSIS installer, OFFLINE variant (WebView2 Evergreen standalone bundled).
-; Recreated 2026-11-21 from scripts/installer-template source after rollback.
-; Primary (online bootstrapper) variant: same file minus the bundled File line,
-; with the NSISdl download flow (see scripts/installer-online-template.nsi).
+; Velox — per-user NSIS installer, ONLINE bootstrapper variant: the WebView2
+; Evergreen BOOTSTRAPPER is downloaded from Microsoft at install time and deleted
+; afterwards (no runtime is bundled — see docs/FFMPEG_INTEGRATION.md for why the
+; installer stays free of third-party binaries).
+; Recreated 2026-11-21 from scripts/installer-template source after sandbox rollback.
+; PRODUCT_VERSION tracks the velox-app crate version (app/src-tauri/Cargo.toml) so
+; the binary, uninstall entry and installer metadata agree; the ENGINE crates stay
+; at their own 0.1.x versioning (workspace Cargo.toml).
 Unicode true
 ManifestDPIAware true
 RequestExecutionLevel user
@@ -54,12 +58,20 @@ Section "-Bootstrap files" SecFiles
   File "/oname=Velox.exe" "/tmp/installer/Velox.exe"
 
   DetailPrint "Checking WebView2 runtime..."
+  ; pv="" means not installed; pv="0.0.0.0" means a BROKEN install — both must
+  ; trigger the bootstrap, otherwise Velox launches into a dead WebView (audit P1-5)
   ReadRegStr $0 HKLM "${WEBVIEW2_KEY_W}" "pv"
-  StrCmp $0 "" 0 runtime_ok
+  StrCmp $0 "" wv2_check_l
+  StrCmp $0 "0.0.0.0" wv2_check_l runtime_ok
+wv2_check_l:
   ReadRegStr $0 HKLM "${WEBVIEW2_KEY_L}" "pv"
-  StrCmp $0 "" 0 runtime_ok
+  StrCmp $0 "" wv2_check_u
+  StrCmp $0 "0.0.0.0" wv2_check_u runtime_ok
+wv2_check_u:
   ReadRegStr $0 HKCU "${WEBVIEW2_KEY_L}" "pv"
-  StrCmp $0 "" 0 runtime_ok
+  StrCmp $0 "" wv2_missing
+  StrCmp $0 "0.0.0.0" wv2_missing runtime_ok
+wv2_missing:
   DetailPrint "WebView2 runtime not found - downloading Microsoft Evergreen bootstrapper..."
   NSISdl::download /TIMEOUT=30000 "https://go.microsoft.com/fwlink/?linkid=2124703" "$INSTDIR\WebView2Setup.exe"
   Pop $1
