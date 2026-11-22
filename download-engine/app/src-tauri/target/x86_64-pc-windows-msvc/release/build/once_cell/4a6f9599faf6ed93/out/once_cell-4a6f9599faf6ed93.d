@@ -1,0 +1,9 @@
+/home/z/my-project/download-engine/app/src-tauri/target/x86_64-pc-windows-msvc/release/build/once_cell/4a6f9599faf6ed93/out/once_cell-4a6f9599faf6ed93.d: /home/z/my-project/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/once_cell-1.21.4/src/lib.rs /home/z/my-project/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/once_cell-1.21.4/src/imp_std.rs /home/z/my-project/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/once_cell-1.21.4/src/race.rs
+
+/home/z/my-project/download-engine/app/src-tauri/target/x86_64-pc-windows-msvc/release/build/once_cell/4a6f9599faf6ed93/out/libonce_cell-4a6f9599faf6ed93.rlib: /home/z/my-project/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/once_cell-1.21.4/src/lib.rs /home/z/my-project/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/once_cell-1.21.4/src/imp_std.rs /home/z/my-project/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/once_cell-1.21.4/src/race.rs
+
+/home/z/my-project/download-engine/app/src-tauri/target/x86_64-pc-windows-msvc/release/build/once_cell/4a6f9599faf6ed93/out/libonce_cell-4a6f9599faf6ed93.rmeta: /home/z/my-project/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/once_cell-1.21.4/src/lib.rs /home/z/my-project/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/once_cell-1.21.4/src/imp_std.rs /home/z/my-project/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/once_cell-1.21.4/src/race.rs
+
+/home/z/my-project/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/once_cell-1.21.4/src/lib.rs:
+/home/z/my-project/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/once_cell-1.21.4/src/imp_std.rs:
+/home/z/my-project/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/once_cell-1.21.4/src/race.rs:
