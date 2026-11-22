@@ -388,6 +388,60 @@ async fn sustained_429_exhausts_retries_honestly_and_stays_resumable() {
 }
 
 #[tokio::test]
+async fn expired_resolved_url_403_re_resolves_once_and_completes() {
+    // request 1 = add() inspect (ok). Request 2 = the task's probe of the
+    // RESOLVED url → 403, the expired-media-URL signature (googlevideo links die
+    // after hours). The engine must clear the resolved url, re-probe the original
+    // page (request 3, re-running classification/resolve) and complete byte-exact.
+    let dir = tempfile::tempdir().unwrap();
+    let b = Behavior::new(100 * KIB);
+    *b.fail_status_at_requests.lock().unwrap() = std::collections::HashMap::from([(2, 403u16)]);
+    let server = TestServer::start(b);
+    let (data, out) = (dir.path().join("data"), dir.path().join("out"));
+    let mgr = manager(&engine_cfg(&data, &out, |_| {}));
+    let added = mgr
+        .add(&server.url("/file"), DownloadConfig::default())
+        .await
+        .unwrap();
+    mgr.clone().start(added.id).await.unwrap();
+    let s = wait_state(&mgr, added.id, &["completed"], Duration::from_secs(30)).await;
+    let final_path = PathBuf::from(&s.dest_dir).join(&s.final_name);
+    assert_eq!(
+        compute_hash_blocking(&final_path, HashAlgo::Sha256).unwrap(),
+        expected_hash(100 * KIB)
+    );
+    server.stop();
+}
+
+#[tokio::test]
+async fn sustained_403_on_resolved_url_fails_after_one_re_resolve() {
+    // 403 on the resolved url AND on the re-resolved page: exactly one bounded
+    // re-resolve, then an honest failed row (never a loop, never silent success).
+    let dir = tempfile::tempdir().unwrap();
+    let b = Behavior::new(100 * KIB);
+    *b.fail_status_at_requests.lock().unwrap() =
+        std::collections::HashMap::from([(2, 403u16), (3, 403u16)]);
+    let server = TestServer::start(b);
+    let (data, out) = (dir.path().join("data"), dir.path().join("out"));
+    let mgr = manager(&engine_cfg(&data, &out, |_| {}));
+    let added = mgr
+        .add(&server.url("/file"), DownloadConfig::default())
+        .await
+        .unwrap();
+    mgr.clone().start(added.id).await.unwrap();
+    let s = wait_state(&mgr, added.id, &["failed"], Duration::from_secs(30)).await;
+    assert!(
+        s.error_message
+            .as_deref()
+            .unwrap_or_default()
+            .contains("403"),
+        "expected the honest 403 failure, got: {:?}",
+        s.error_message
+    );
+    server.stop();
+}
+
+#[tokio::test]
 async fn expiring_url_410_fails_permanently_without_exposing_a_file() {
     let dir = tempfile::tempdir().unwrap();
     let mut b = Behavior::new(300 * KIB);

@@ -193,6 +193,8 @@ pub async fn run_task(args: TaskArgs, mgr_cmd: watch::Receiver<TaskCommand>) -> 
     let retry = args.engine.retry.clone();
     let mut restarts = 0u32;
     let mut pending_new_info: Option<ResourceInfo> = None;
+    // at most one expired-URL re-resolve per task run (bounded retry, task-scoped)
+    let mut re_resolved = false;
 
     'restart: loop {
         // ---------- manifest row ----------
@@ -233,9 +235,16 @@ pub async fn run_task(args: TaskArgs, mgr_cmd: watch::Receiver<TaskCommand>) -> 
         // (the probe previously ignored the command watch entirely)
         let mut stop = mgr_cmd.clone();
         let mut probe_attempts = 0u32;
+        // expired resolved URL (audit P1-2): media stream URLs (googlevideo etc.)
+        // expire after hours — a 403 against a RESOLVED url means the extractor
+        // must re-resolve the ORIGINAL page once, not that the download is dead.
+        // Clearing row.resolved_url makes the next iteration probe row.url, which
+        // re-runs classification and (for media pages) the yt-dlp resolve.
+        // Bounded: `re_resolved` lives at run-task scope, one re-resolve max.
         let info = loop {
+            let probe_target = row.resolved_url.clone().unwrap_or_else(|| row.url.clone());
             let res = tokio::select! {
-                r = args.http.resolve(&args.url, &probe_headers) => r,
+                r = args.http.resolve(&probe_target, &probe_headers) => r,
                 _ = stop.changed() => {
                     let c = *stop.borrow_and_update();
                     if c.is_stop() {
@@ -260,6 +269,14 @@ pub async fn run_task(args: TaskArgs, mgr_cmd: watch::Receiver<TaskCommand>) -> 
                                 }
                             }
                         }
+                    } else if !re_resolved
+                        && row.resolved_url.is_some()
+                        && matches!(e.kind, ErrorKind::Http(403))
+                    {
+                        re_resolved = true;
+                        row.resolved_url = None;
+                        args.db.update_download(&row).ok();
+                        continue 'restart;
                     } else {
                         return finish_failed(&args, &mut row, e).await;
                     }
@@ -277,6 +294,14 @@ pub async fn run_task(args: TaskArgs, mgr_cmd: watch::Receiver<TaskCommand>) -> 
                                 }
                             }
                         }
+                    } else if !re_resolved
+                        && row.resolved_url.is_some()
+                        && matches!(e.kind, ErrorKind::Http(403))
+                    {
+                        re_resolved = true;
+                        row.resolved_url = None;
+                        args.db.update_download(&row).ok();
+                        continue 'restart;
                     } else {
                         return finish_failed(&args, &mut row, e).await;
                     }

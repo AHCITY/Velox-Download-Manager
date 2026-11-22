@@ -48,6 +48,10 @@ pub struct Behavior {
     /// Pattern-based 503: fail these 1-based global request indexes (lets tests
     /// open a retry window at an exact phase, e.g. the task's post-start probe).
     pub fail_503_at_requests: Arc<std::sync::Mutex<Vec<usize>>>,
+    /// Status-generic variant: respond with this exact status at these 1-based
+    /// request indexes (e.g. expired-URL 403 windows). Takes precedence over
+    /// `fail_503_at_requests`.
+    pub fail_status_at_requests: Arc<std::sync::Mutex<std::collections::HashMap<usize, u16>>>,
     /// Every request with 1-based index >= N gets 429 + Retry-After: 1 (sustained
     /// rate limiting; 0 disables). Opens an exhaustion window after start().
     pub sustained_429_from_request: Arc<AtomicUsize>,
@@ -109,6 +113,9 @@ impl Behavior {
             return_429_times: Arc::new(AtomicUsize::new(0)),
             return_503_times: Arc::new(AtomicUsize::new(0)),
             fail_503_at_requests: Arc::new(std::sync::Mutex::new(Vec::new())),
+            fail_status_at_requests: Arc::new(std::sync::Mutex::new(
+                std::collections::HashMap::new(),
+            )),
             sustained_429_from_request: Arc::new(AtomicUsize::new(0)),
             redirect_to: Arc::new(std::sync::Mutex::new(None)),
             redirect_times: Arc::new(AtomicUsize::new(0)),
@@ -478,6 +485,19 @@ fn serve_request(
             if g.behavior.redirect_times.load(Ordering::SeqCst) > 0 {
                 g.behavior.redirect_times.fetch_sub(1, Ordering::SeqCst);
                 write_simple_with(stream, "302 Found", &[("Location", loc.as_str())], None)?;
+                return Ok(true);
+            }
+        }
+        {
+            let map = g.behavior.fail_status_at_requests.lock().unwrap();
+            if let Some(&st) = map.get(&g.stats.requests) {
+                let line = match st {
+                    403 => "403 Forbidden",
+                    410 => "410 Gone",
+                    416 => "416 Range Not Satisfiable",
+                    _ => "500 Internal Server Error",
+                };
+                write_simple_with(stream, line, &[], None)?;
                 return Ok(true);
             }
         }
