@@ -19,3 +19,4 @@ upload/
 # Runtime noise
 nohup.out
 db/
+download-engine/app/src-tauri/target/
