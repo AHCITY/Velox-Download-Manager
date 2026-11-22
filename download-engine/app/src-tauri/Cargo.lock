@@ -4974,6 +4974,7 @@ dependencies = [
  "engine-http",
  "engine-media",
  "engine-state",
+ "getrandom 0.2.17",
  "serde",
  "serde_json",
  "tauri",

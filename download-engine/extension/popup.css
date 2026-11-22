@@ -1,0 +1,72 @@
+/* Velox popup — compact companion UI, dark, same identity as the desktop app. */
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  width: 330px;
+  background: #0b0e13;
+  color: #e9eef5;
+  font: 13px/1.45 "Segoe UI", system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 10px 14px; border-bottom: 1px solid #1e2632;
+}
+.brand { display: flex; align-items: center; gap: 8px; }
+.logo {
+  width: 22px; height: 22px; border-radius: 6px; display: flex; align-items: center; justify-content: center;
+  background: rgba(77,159,255,.13); color: #4d9fff; font-weight: 800; font-size: 12px;
+}
+.name { font-weight: 700; letter-spacing: .2px; }
+.conn { display: flex; align-items: center; gap: 6px; font-size: 11px; color: #9aa7b8; }
+.dot { width: 7px; height: 7px; border-radius: 50%; background: #64707f; }
+.conn.ok .dot { background: #3ecf8e; }
+.conn.err .dot { background: #f4695e; }
+
+.add { padding: 12px 14px 4px; }
+.row { display: flex; gap: 8px; }
+#url {
+  flex: 1; min-width: 0; height: 32px; padding: 0 10px;
+  background: #1c232e; border: 1px solid #2a3543; border-radius: 8px; color: #e9eef5; outline: none;
+}
+#url:focus { border-color: #4d9fff; }
+#add {
+  height: 32px; padding: 0 14px; border-radius: 8px; border: none; cursor: pointer;
+  background: #4d9fff; color: #06121f; font-weight: 700;
+}
+#add:disabled { opacity: .55; cursor: default; }
+.fe { color: #f4695e; font-size: 11.5px; padding: 6px 2px 0; }
+.clip-row { padding: 8px 2px 2px; }
+.toggle { display: flex; align-items: center; gap: 7px; font-size: 11.5px; color: #9aa7b8; cursor: pointer; }
+.toggle input { accent-color: #4d9fff; }
+.perm { color: #64707f; }
+
+.stats { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; padding: 10px 14px; }
+.stat { background: #10141b; border: 1px solid #1e2632; border-radius: 8px; padding: 8px 10px; }
+.stat .v { font-weight: 700; font-size: 13px; }
+.stat .l { color: #64707f; font-size: 10.5px; margin-top: 1px; }
+
+.recent { padding: 2px 14px 8px; }
+.head { color: #64707f; font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 1px; margin: 6px 0 6px; }
+.list { display: flex; flex-direction: column; gap: 6px; }
+.item { display: flex; align-items: center; gap: 8px; background: #10141b; border: 1px solid #1e2632; border-radius: 8px; padding: 7px 10px; }
+.item .nm { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
+.item .st { font-size: 10px; color: #9aa7b8; flex-shrink: 0; }
+.chip { padding: 1px 7px; border-radius: 999px; background: #1c232e; font-size: 10px; }
+.chip.downloading { background: rgba(77,159,255,.13); color: #6cb0ff; }
+.chip.completed { background: rgba(62,207,142,.12); color: #3ecf8e; }
+.chip.failed { background: rgba(244,105,94,.12); color: #f4695e; }
+.chip.paused, .chip.queued, .chip.created, .chip.retrying { color: #e2b53e; background: rgba(226,181,62,.12); }
+.empty { color: #64707f; font-size: 11.5px; padding: 4px 0 2px; }
+
+.settings { padding: 4px 14px 12px; border-top: 1px solid #1e2632; }
+#intercept {
+  width: 100%; height: 30px; margin-top: 4px;
+  background: #1c232e; border: 1px solid #2a3543; border-radius: 8px; color: #e9eef5; padding: 0 8px;
+}
+.foot { display: flex; align-items: center; justify-content: space-between; margin-top: 9px; }
+.ghost {
+  background: none; border: 1px solid #2a3543; color: #9aa7b8; border-radius: 8px;
+  height: 28px; padding: 0 12px; cursor: pointer;
+}
+.ghost:hover { color: #e9eef5; border-color: #4d9fff; }
+.hint { color: #64707f; font-size: 10.5px; text-align: right; max-width: 170px; }

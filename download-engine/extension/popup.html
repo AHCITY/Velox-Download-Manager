@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Velox</title>
+<link rel="stylesheet" href="popup.css">
+</head>
+<body>
+<header>
+  <div class="brand">
+    <span class="logo" aria-hidden="true">V</span>
+    <span class="name">Velox</span>
+  </div>
+  <span class="conn" id="conn"><span class="dot"></span><span id="connText">connecting…</span></span>
+</header>
+
+<section class="add">
+  <div class="row">
+    <input id="url" type="url" placeholder="Paste a URL — http(s) or media page" spellcheck="false" autocomplete="off">
+    <button id="add" title="Add download">Add</button>
+  </div>
+  <div class="fe" id="fe" hidden></div>
+  <div class="clip-row">
+    <label class="toggle"><input type="checkbox" id="clip"><span class="tk"></span> Suggest clipboard URLs <span class="perm" id="permState"></span></label>
+  </div>
+</section>
+
+<section class="stats">
+  <div class="stat"><div class="v" id="speed">—</div><div class="l">speed</div></div>
+  <div class="stat"><div class="v" id="active">—</div><div class="l">active</div></div>
+  <div class="stat"><div class="v" id="ver">—</div><div class="l">app</div></div>
+</section>
+
+<section class="recent">
+  <div class="head">Recent downloads</div>
+  <div id="recent" class="list"><div class="empty">Nothing yet — downloads appear here.</div></div>
+</section>
+
+<section class="settings">
+  <div class="head">Browser downloads</div>
+  <select id="intercept">
+    <option value="ask">Ask before sending to Velox</option>
+    <option value="auto">Automatically send suitable downloads</option>
+    <option value="off">Keep the browser's downloader</option>
+  </select>
+  <div class="foot">
+    <button id="reconnect" class="ghost">Reconnect</button>
+    <span class="hint" id="hint"></span>
+  </div>
+</section>
+
+<script src="popup.js"></script>
+</body>
+</html>

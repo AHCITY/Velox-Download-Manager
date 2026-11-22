@@ -1,0 +1,15 @@
+[package]
+name = "velox-host"
+version = "0.1.0"
+edition = "2021"
+description = "Chrome/Edge/Brave native-messaging host bridging the Velox extension to the desktop app's loopback bridge"
+
+[[bin]]
+name = "velox-browser-host"
+path = "src/main.rs"
+
+[dependencies]
+serde_json = "1"
+
+[target.'cfg(windows)'.dependencies]
+winreg = "0.52"

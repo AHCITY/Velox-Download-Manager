@@ -42,6 +42,37 @@ pub struct SegmentView {
     pub completed: bool,
 }
 
+/// Download intelligence (browser-ecosystem turn): per-download session speed
+/// statistics fed by a lightweight tap task that mirrors the event stream.
+/// smoothed = the engine's own EMA (task.rs), avg = session bytes / active time,
+/// peak = highest smoothed sample. Cleared when the row is removed.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct SpeedStats {
+    pub smoothed_bps: f64,
+    pub avg_bps: f64,
+    pub peak_bps: f64,
+    first_bytes: u64,
+    started: Option<std::time::Instant>,
+}
+
+impl SpeedStats {
+    /// Feed one progress sample. Pure function of inputs (unit-tested).
+    pub fn observe(&mut self, received: u64, speed_bps: f64) {
+        if self.started.is_none() {
+            self.first_bytes = received;
+            self.started = Some(std::time::Instant::now());
+        }
+        self.smoothed_bps = speed_bps;
+        if speed_bps > self.peak_bps {
+            self.peak_bps = speed_bps;
+        }
+        if let Some(t) = self.started {
+            let elapsed = t.elapsed().as_secs_f64().max(1.0);
+            self.avg_bps = (received.saturating_sub(self.first_bytes)) as f64 / elapsed;
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct StatusView {
     pub id: i64,
@@ -74,6 +105,11 @@ pub struct StatusView {
     pub file_missing: bool,
     /// Per-download speed cap from the stored DownloadConfig (UI: Network screen).
     pub bandwidth_limit_bps: Option<u64>,
+    /// Download intelligence (browser-ecosystem turn): smoothed/avg/peak session
+    /// speed in bytes/s. 0.0 = unknown; the UI renders "—", never a fake number.
+    pub bps_smoothed: f64,
+    pub bps_avg: f64,
+    pub bps_peak: f64,
 }
 
 #[derive(Debug, Serialize)]
@@ -98,6 +134,8 @@ pub struct DownloadManager {
     events: EventBus,
     host_sems: Mutex<HashMap<String, Arc<Semaphore>>>,
     running: Mutex<HashMap<i64, RunningTask>>,
+    /// Download intelligence: per-download speed stats (see SpeedStats).
+    speed_stats: std::sync::Arc<std::sync::Mutex<HashMap<i64, SpeedStats>>>,
     /// Admission control: a permit per running download (None = unlimited).
     download_slots: Option<Arc<Semaphore>>,
     /// MediaPipeline merge stage (review §9), implemented in engine-media and
@@ -135,6 +173,7 @@ impl DownloadManager {
             events,
             host_sems: Mutex::new(HashMap::new()),
             running: Mutex::new(HashMap::new()),
+            speed_stats: std::sync::Arc::new(std::sync::Mutex::new(HashMap::new())),
             download_slots,
             media_merge: Mutex::new(None),
             merge_triggers: Mutex::new(HashMap::new()),
@@ -205,6 +244,55 @@ impl DownloadManager {
 
     pub fn events(&self) -> tokio::sync::broadcast::Receiver<Event> {
         self.events.subscribe()
+    }
+
+    /// Speed-intelligence tap: mirrors the event bus for ONE download and
+    /// feeds SpeedStats. One cheap receiver per active download; exits on the
+    /// first terminal state, so nothing leaks while the app runs.
+    #[allow(clippy::while_let_loop)] // explicit Lagged-continue is intentional here
+    fn spawn_speed_tap(&self, id: i64) {
+        let mut rx = self.events.subscribe();
+        let stats = self.speed_stats.clone();
+        tokio::spawn(async move {
+            loop {
+                match rx.recv().await {
+                    Ok(Event::Progress {
+                        received,
+                        speed_bps,
+                        ..
+                    }) => {
+                        if let Ok(mut map) = stats.lock() {
+                            map.entry(id).or_default().observe(received, speed_bps);
+                        }
+                    }
+                    Ok(Event::DownloadState { id: sid, state })
+                        if sid == id
+                            && matches!(state.as_str(), "completed" | "failed" | "cancelled") =>
+                    {
+                        break
+                    }
+                    Ok(_) => {}
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(_) => break,
+                }
+            }
+        });
+    }
+
+    /// Session speed stats for a row (zeros when unknown — the UI renders
+    /// honest "—" rather than inventing numbers).
+    pub fn speed_stats_of(&self, id: i64) -> SpeedStats {
+        self.speed_stats
+            .lock()
+            .ok()
+            .and_then(|m| m.get(&id).copied())
+            .unwrap_or_default()
+    }
+
+    pub fn forget_speed_stats(&self, id: i64) {
+        if let Ok(mut m) = self.speed_stats.lock() {
+            m.remove(&id);
+        }
     }
 
     pub fn engine_config(&self) -> &EngineConfig {
@@ -658,6 +746,7 @@ impl DownloadManager {
             // skip the running-entry removal (which used to zombie the download —
             // pause/cancel then hit their settle timeouts forever). The row is marked
             // failed so the user sees what happened instead of a stuck spinner.
+            this.spawn_speed_tap(id);
             let inner = tokio::spawn(run_task(args, cmd_rx));
             let outcome = match inner.await {
                 Ok(o) => Some(o),
@@ -1001,6 +1090,7 @@ impl DownloadManager {
     /// the row in place to retry. The file is deleted first, record second, and a
     /// `removed` state event lets UIs drop the row immediately.
     pub async fn remove(&self, id: i64, delete_file: bool) -> Result<(), EngineError> {
+        self.forget_speed_stats(id);
         // never delete state under a live task (same guardrail as cancel, audit B1)
         if let Some(entry) = self.running_snapshot(id) {
             let _ = entry.cmd.send(TaskCommand::Cancel);
@@ -1148,6 +1238,9 @@ impl DownloadManager {
             bandwidth_limit_bps: serde_json::from_str::<serde_json::Value>(&row.config_json)
                 .ok()
                 .and_then(|c| c.get("bandwidth_limit_bps").and_then(|v| v.as_u64())),
+            bps_smoothed: self.speed_stats_of(row.id).smoothed_bps,
+            bps_avg: self.speed_stats_of(row.id).avg_bps,
+            bps_peak: self.speed_stats_of(row.id).peak_bps,
         }
     }
 
@@ -1645,5 +1738,40 @@ mod merge_tests {
             m.db.get_download(v).unwrap().unwrap().final_name,
             "video.mkv"
         );
+    }
+}
+
+#[cfg(test)]
+mod speed_stats_tests {
+    use super::SpeedStats;
+
+    #[test]
+    fn observe_tracks_avg_peak_smoothed() {
+        let mut st = SpeedStats::default();
+        st.observe(0, 0.0);
+        st.observe(1_000_000, 1_000_000.0); // ~1s elapsed -> ~1MB/s session average
+        assert!(st.avg_bps > 0.0, "avg must be positive, got {}", st.avg_bps);
+        assert_eq!(st.peak_bps, 1_000_000.0);
+        assert_eq!(st.smoothed_bps, 1_000_000.0);
+        st.observe(1_200_000, 300_000.0); // dip: smoothed follows, peak holds
+        assert_eq!(st.smoothed_bps, 300_000.0);
+        assert_eq!(st.peak_bps, 1_000_000.0);
+        // the 1s elapsed floor keeps this deterministic under a fast test clock
+        assert!(
+            st.avg_bps > 0.0 && st.avg_bps <= 1_200_000.0,
+            "avg {}",
+            st.avg_bps
+        );
+    }
+
+    #[test]
+    fn observe_never_divides_by_zero_or_backslides_avg() {
+        let mut st = SpeedStats::default();
+        st.observe(5_000_000, 0.0); // first sample sets the baseline
+        assert_eq!(
+            st.avg_bps, 0.0,
+            "no elapsed time yet -> no invented average"
+        );
+        assert_eq!(st.peak_bps, 0.0);
     }
 }

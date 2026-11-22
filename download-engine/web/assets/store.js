@@ -46,6 +46,20 @@ export function fmtBytes(n) {
   return `${v >= 100 ? v.toFixed(0) : v.toFixed(1)} ${u[i]}`;
 }
 export const fmtSpeed = (bps) => (bps && bps >= 1 ? `${fmtBytes(bps)}/s` : '—');
+// Download intelligence: ETA from the SMOOTHED engine speed with honest states.
+// Returns null only when truly incomputable (unknown size); stalled/unknown are
+// surfaced by the caller instead of a misleading number.
+export function etaState(r) {
+  if (r.state === 'completed') return { label: 'done' };
+  const total = r.total_size;
+  if (!total) return { label: 'unknown size' };
+  const bps = r.bps_smoothed || r.bps || 0;
+  if (bps < 1024) return { label: 'stalled' };
+  if (r.received >= total) return { label: 'done' };
+  const secs = Math.round((total - r.received) / bps);
+  if (secs < 1) return { label: 'done' };
+  return { label: fmtEta(r.received, total, bps) || '—', secs };
+}
 export function fmtEta(received, total, bps) {
   if (!total || !bps || bps < 1 || received >= total) return null;
   const s = Math.round((total - received) / bps);

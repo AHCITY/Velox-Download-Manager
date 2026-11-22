@@ -59,6 +59,17 @@ Last updated: 2026-11-22 — **UI OVERHAUL SESSION** (complete product rebuild o
   phantom failures); ports are now randomized per run.
 - Release v0.3.1 published + verified (endpoint 0.3.1, minisign main+global VALID, version-bound, hash round-trip).
 
+## Browser ecosystem turn (2026-11-22, post-v0.3.1) — done + gotchas
+
+- Reference repo audited (cloned to /tmp, deleted after) → docs/FEATURE_COMPARISON.md + docs/THIRD_PARTY_NOTICES.md.
+- Browser extension: download-engine/extension/ (MV3, plain JS, pinned key → ID `hpaxoarvxcmmqijm`).
+- Native host: crates/velox-host (`velox-browser-host`) — NM stdio ⇄ loopback HTTP JSON-RPC; 5 stdio E2E tests.
+- App: loopback bridge in app/src-tauri/src/main.rs (random 127.0.0.1 port + token in app_data/data/bridge.json, 0600; whitelist engine.info/list/status/create/pause/cancel).
+- P2 intelligence: SpeedStats tap (mirror broadcast subscriber) → StatusView bps_smoothed/avg/peak; UI details drawer shows avg/peak + etaState labels. Verified live (slow download: smoothed 1.8 / avg 2.1 / peak 4.2 MiB/s).
+- Benchmark: docs/BENCHMARK.md — real before/after (0.02s vs 0.03s loopback, throttled 29.03s both) = no regression.
+- NOT implemented (designed only): browser-assisted transfers (§4 of comparison), tray/taskbar/notifications (§5).
+- GOTCHAS: (1) app crate can NOT build natively on Linux (no GTK) — always build it via scripts/build-velox-msvc.sh (xwin); (2) engine target/debug regrows fast — wipe when disk full, rebuild is ~1 min; (3) NO release publishing this turn (spec §13 forbids without authorization) — Velox.exe with the bridge saved at /tmp/Velox-exe-with-bridge.exe (host-local, not a deliverable).
+
 ## Remaining / next candidates
 
 1. Toast matrix per notification pref; media-merge UI exercise needs yt-dlp + ffmpeg on a real machine (honest-unavailable states already in place).

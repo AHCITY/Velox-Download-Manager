@@ -152,6 +152,130 @@ fn spawn_event_pump(app: AppHandle, manager: Arc<DownloadManager>) {
     });
 }
 
+/* ================= browser-extension loopback bridge =================
+ * docs/FEATURE_COMPARISON.md §3. The native messaging host (crates/velox-host)
+ * is the only intended client: Chrome/Edge/Brave launch it, it speaks NM
+ * framing on stdio, and forwards WHITELISTED JSON-RPC methods to THIS endpoint.
+ * Security: loopback bind, random bearer token published only through a
+ * 0600 file in app data, body caps, method whitelist, engine stays the
+ * single source of truth. Ideas adapted from qamarabbas408/velox-download-manager (MIT).
+ * ==================================================================== */
+const BRIDGE_METHODS: &[&str] = &[
+    "engine.info",
+    "download.list",
+    "download.status",
+    "download.create",
+    "download.pause",
+    "download.cancel",
+];
+const BRIDGE_BODY_CAP: usize = 256 * 1024;
+const BRIDGE_HEAD_CAP: usize = 16 * 1024;
+
+fn bridge_token() -> String {
+    let mut b = [0u8; 32];
+    getrandom::getrandom(&mut b).expect("os rng failure");
+    b.iter().map(|x| format!("{x:02x}")).collect()
+}
+
+async fn spawn_browser_bridge(
+    data_dir: PathBuf,
+    manager: Arc<DownloadManager>,
+    app_version: String,
+) -> Result<(), String> {
+    let token = bridge_token();
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .map_err(|e| e.to_string())?;
+    let port = listener.local_addr().map_err(|e| e.to_string())?.port();
+
+    let doc = serde_json::json!({
+        "port": port,
+        "token": token,
+        "app_version": app_version,
+        "pid": std::process::id(),
+    });
+    let path = data_dir.join("bridge.json");
+    std::fs::write(&path, doc.to_string()).map_err(|e| e.to_string())?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+    }
+    eprintln!("browser bridge: 127.0.0.1:{port} (bridge.json written)");
+
+    tauri::async_runtime::spawn(async move {
+        loop {
+            let Ok((mut stream, _)) = listener.accept().await else { break };
+            let manager = manager.clone();
+            let token = token.clone();
+            // one short-lived task per connection; the host sends one request
+            // per connection (Connection: close) — bounded by design
+            tauri::async_runtime::spawn(async move {
+                use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                let mut head = Vec::new();
+                let mut byte = [0u8; 1];
+                // bounded header read
+                while head.len() < BRIDGE_HEAD_CAP {
+                    if stream.read_exact(&mut byte).await.is_err() {
+                        return;
+                    }
+                    head.push(byte[0]);
+                    if head.ends_with(b"\r\n\r\n") {
+                        break;
+                    }
+                }
+                if !head.ends_with(b"\r\n\r\n") {
+                    return; // oversized/malformed head
+                }
+                let head_str = String::from_utf8_lossy(&head);
+                let auth_ok = head_str
+                    .lines()
+                    .any(|l| l.eq_ignore_ascii_case(&format!("authorization: bearer {token}")));
+                let content_length = head_str
+                    .lines()
+                    .find(|l| l.to_ascii_lowercase().starts_with("content-length:"))
+                    .and_then(|l| l.split(':').nth(1))
+                    .and_then(|v| v.trim().parse::<usize>().ok())
+                    .unwrap_or(0);
+                if !auth_ok || content_length == 0 || content_length > BRIDGE_BODY_CAP {
+                    return; // silent drop: not our client / bad request
+                }
+                let mut body = vec![0u8; content_length];
+                if stream.read_exact(&mut body).await.is_err() {
+                    return;
+                }
+                let body_str = String::from_utf8_lossy(&body).to_string();
+
+                // method whitelist BEFORE dispatch (the engine API itself must
+                // stay unreachable for browser-driven non-whitelisted methods)
+                let parsed: serde_json::Value = serde_json::from_str(&body_str).unwrap_or(serde_json::Value::Null);
+                let method = parsed["method"].as_str().unwrap_or("").to_string();
+                let resp = if BRIDGE_METHODS.contains(&method.as_str()) {
+                    engine_api::handle_line(&manager, &body_str)
+                        .await
+                        .unwrap_or_else(|| {
+                            serde_json::json!({"jsonrpc":"2.0","id":null,"error":{"code":-32603,"message":"no response"}}).to_string()
+                        })
+                } else {
+                    serde_json::json!({
+                        "jsonrpc":"2.0","id":parsed["id"],
+                        "error":{"code":-32601,"message":"method not allowed over the browser bridge"}
+                    })
+                    .to_string()
+                };
+                let http = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    resp.len(),
+                    resp
+                );
+                let _ = stream.write_all(http.as_bytes()).await;
+                let _ = stream.flush().await;
+            });
+        }
+    });
+    Ok(())
+}
+
 fn main() {
     tauri::Builder::default()
         // Auto-update (v0.3.0): signed artifacts on GitHub releases; the frontend
@@ -212,7 +336,14 @@ fn main() {
                 shutting_down: AtomicBool::new(false),
             });
 
-            spawn_event_pump(app.handle().clone(), manager);
+            spawn_event_pump(app.handle().clone(), manager.clone());
+
+            // browser-extension loopback bridge (best-effort: without it the
+            // extension simply reports "Velox is not running")
+            let app_version = app.package_info().version.to_string();
+            if let Err(e) = tauri::async_runtime::block_on(spawn_browser_bridge(data_dir, manager, app_version)) {
+                eprintln!("browser bridge: unavailable ({e})");
+            }
 
             // window icon + title are set from tauri.conf.json; nothing else needed
             Ok(())

@@ -4,6 +4,7 @@ import { icon } from './icons.js';
 import {
   store, fmtBytes, fmtSpeed, fmtEta, fmtTime, pct, categoryOf,
   toast, dismissToast, refreshOne, refreshAll,
+  etaState,
 } from './store.js';
 import { engine, EngineError, openFile, revealFolder, copyText, isDesktop } from './api.js';
 
@@ -423,8 +424,10 @@ export function paintDetails(node, r) {
       <h4>Transfer</h4>
       <div class="kv">
         ${kv('Progress', `${fmtBytes(r.received)} ${r.total_size ? 'of ' + fmtBytes(r.total_size) : ''} (${p == null ? 'unknown size' : p.toFixed(1) + '%'})`)}
-        ${kv('Speed (live)', fmtSpeed(store.bps.get(r.id) || 0), true)}
-        ${kv('ETA', fmtEta(r.received, r.total_size, store.bps.get(r.id)) || '—', true)}
+        ${kv('Speed (live)', fmtSpeed(r.bps_smoothed || store.bps.get(r.id) || 0), true)}
+        ${kv('Speed (session avg)', r.bps_avg ? fmtSpeed(r.bps_avg) : '—', true)}
+        ${kv('Speed (peak)', r.bps_peak ? fmtSpeed(r.bps_peak) : '—', true)}
+        ${kv('ETA', (etaState(r).label), true)}
         ${kv('Connections', `${r.connections_active || 0} active · ${r.accept_ranges === 'yes' ? 'range support' : r.accept_ranges === 'no' ? 'no range support' : 'range unknown'}`)}
         ${kv('Resumable', esc(r.resumable), true)}
       </div>
