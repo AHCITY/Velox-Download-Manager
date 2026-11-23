@@ -28,7 +28,8 @@
     "notifications",
     "alarms",
     "storage",
-    "downloads"
+    "downloads",
+    "nativeMessaging"
   ],
   "optional_permissions": [
     "clipboardRead"

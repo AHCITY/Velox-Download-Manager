@@ -20,6 +20,11 @@ use std::time::Duration;
 
 pub const PROTOCOL_VERSION: u32 = 1;
 pub const HOST_NAME: &str = "io.velox.downloadmanager";
+/// The extension ID Chrome derives from the shipped manifest key. Pinned here
+/// AND re-derived in tests from download-engine/extension/manifest.json
+/// (audit EXT-1: the previously pinned ID did not match the key, so Chrome
+/// refused every native-messaging connection as a forbidden origin).
+pub const EXTENSION_ID: &str = "ffnpjmbhfmaamhlbohbmamnmoaikpdmc";
 /// Chrome caps extension→host messages at 4 MiB; accept no more.
 pub const MAX_MESSAGE_BYTES: usize = 4 * 1024 * 1024;
 /// Response body cap from the loopback bridge (engine responses are small).
@@ -392,6 +397,48 @@ pub fn serve_stdio() -> i32 {
 
 /* ---------------- native-host manifest registration ---------------- */
 
+/// HKCU\Software subkeys whose NativeMessagingHosts\<HOST_NAME> key receives the
+/// manifest path (audit EXT-3: Opera/Chromium/Vivaldi were never registered).
+/// On Linux/macOS Opera reads the Google Chrome path, so the Chrome entry
+/// covers it there.
+#[allow(dead_code)] // consulted by the Windows code paths; tests check it everywhere
+pub const WINDOWS_BROWSER_KEYS: &[&str] = &[
+    "Google\\Chrome",
+    "Microsoft\\Edge",
+    "BraveSoftware\\Brave-Browser",
+    "Opera Software",
+    "Chromium",
+    "Vivaldi",
+];
+
+/// Linux config dirs holding the per-user NM host manifest.
+#[allow(dead_code)]
+pub const UNIX_CONFIG_DIRS: &[&str] = &[
+    ".config/google-chrome/NativeMessagingHosts",
+    ".config/microsoft-edge/NativeMessagingHosts",
+    ".config/BraveSoftware/Brave-Browser/NativeMessagingHosts",
+    ".config/chromium/NativeMessagingHosts",
+    ".config/vivaldi/NativeMessagingHosts",
+];
+
+/// macOS config dirs with documented locations (Edge's macOS dir name is not
+/// stable across versions — deliberately not written).
+#[allow(dead_code)]
+pub const MAC_CONFIG_DIRS: &[&str] = &[
+    "Library/Application Support/Google/Chrome/NativeMessagingHosts",
+    "Library/Application Support/BraveSoftware/Brave-Browser/NativeMessagingHosts",
+];
+
+/// Every directory that can hold the host manifest on this platform.
+#[cfg(unix)]
+fn manifest_dirs(home: &std::path::Path) -> Vec<PathBuf> {
+    #[cfg(target_os = "macos")]
+    let bases = MAC_CONFIG_DIRS;
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let bases = UNIX_CONFIG_DIRS;
+    bases.iter().map(|b| home.join(b)).collect()
+}
+
 pub fn manifest_text(shim: &std::path::Path, ext_ids: &[String]) -> String {
     let origins: Vec<String> = ext_ids
         .iter()
@@ -430,11 +477,7 @@ fn register_windows(manifest: &str, ext_ids: &[String]) -> Result<(), String> {
     std::fs::write(&manifest_path, manifest).map_err(|e| e.to_string())?;
     let _ = ext_ids;
     let hkcu = RegKey::predef(HKEY_CURRENT_USER);
-    for browser in [
-        "Google\\Chrome",
-        "Microsoft\\Edge",
-        "BraveSoftware\\Brave-Browser",
-    ] {
+    for browser in WINDOWS_BROWSER_KEYS {
         let key = format!("Software\\{browser}\\NativeMessagingHosts\\{HOST_NAME}");
         let (sub, _) = hkcu.create_subkey(&key).map_err(|e| e.to_string())?;
         sub.set_value("", &manifest_path.to_string_lossy().to_string())
@@ -446,12 +489,7 @@ fn register_windows(manifest: &str, ext_ids: &[String]) -> Result<(), String> {
 #[cfg(unix)]
 fn register_unix(manifest: &str) -> Result<(), String> {
     let home = std::env::var("HOME").map_err(|_| String::from("HOME not set"))?;
-    for base in [
-        ".config/google-chrome/NativeMessagingHosts",
-        ".config/microsoft-edge/NativeMessagingHosts",
-        ".config/BraveSoftware/Brave-Browser/NativeMessagingHosts",
-    ] {
-        let dir = PathBuf::from(&home).join(base);
+    for dir in manifest_dirs(std::path::Path::new(&home)) {
         std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
         std::fs::write(dir.join(format!("{HOST_NAME}.json")), manifest)
             .map_err(|e| e.to_string())?;
@@ -459,7 +497,9 @@ fn register_unix(manifest: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// `--register <EXTENSION_ID>` — write NM host manifests for Chrome/Edge/Brave.
+/// `--register [EXTENSION_ID]` — write NM host manifests for every supported
+/// Chromium browser. Without an argument the canonical ID (derived from the
+/// shipped manifest key) is used, so a stale literal can never be registered.
 pub fn cmd_register(ext_id: &str) -> Result<(), String> {
     let shim = host_exe_path().ok_or(
         "velox-browser-host must run from its installed location (no exe found beside it)",
@@ -474,7 +514,7 @@ pub fn cmd_register(ext_id: &str) -> Result<(), String> {
         register_unix(&manifest)?;
     }
     println!(
-        "registered native host '{HOST_NAME}' for Chrome, Edge and Brave (extension {ext_id})"
+        "registered native host '{HOST_NAME}' for all supported Chromium browsers (extension {ext_id})"
     );
     Ok(())
 }
@@ -486,11 +526,7 @@ pub fn cmd_unregister() -> Result<(), String> {
         use winreg::enums::{HKEY_CURRENT_USER, KEY_WRITE};
         use winreg::RegKey;
         let hkcu = RegKey::predef(HKEY_CURRENT_USER);
-        for browser in [
-            "Google\\Chrome",
-            "Microsoft\\Edge",
-            "BraveSoftware\\Brave-Browser",
-        ] {
+        for browser in WINDOWS_BROWSER_KEYS {
             let key = format!("Software\\{browser}\\NativeMessagingHosts");
             if let Ok(sub) = hkcu.open_subkey_with_flags(&key, KEY_WRITE) {
                 let _ = sub.delete_value(HOST_NAME);
@@ -500,16 +536,8 @@ pub fn cmd_unregister() -> Result<(), String> {
     #[cfg(unix)]
     {
         let home = std::env::var("HOME").map_err(|_| String::from("HOME not set"))?;
-        for base in [
-            ".config/google-chrome/NativeMessagingHosts",
-            ".config/microsoft-edge/NativeMessagingHosts",
-            ".config/BraveSoftware/Brave-Browser/NativeMessagingHosts",
-        ] {
-            let _ = std::fs::remove_file(
-                PathBuf::from(&home)
-                    .join(base)
-                    .join(format!("{HOST_NAME}.json")),
-            );
+        for dir in manifest_dirs(std::path::Path::new(&home)) {
+            let _ = std::fs::remove_file(dir.join(format!("{HOST_NAME}.json")));
         }
     }
     println!("native host registration removed");
@@ -519,15 +547,14 @@ pub fn cmd_unregister() -> Result<(), String> {
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     if args.iter().any(|a| a == "--register") {
-        let ext = args
+        // the ID argument is optional: without it the canonical ID derived from
+        // the shipped manifest key is used (callers cannot pass a stale value)
+        let ext_id = args
             .iter()
             .position(|a| a == "--register")
             .and_then(|i| args.get(i + 1))
-            .cloned();
-        let ext_id = ext.unwrap_or_else(|| {
-            eprintln!("usage: velox-browser-host --register <EXTENSION_ID>");
-            std::process::exit(2);
-        });
+            .cloned()
+            .unwrap_or_else(|| EXTENSION_ID.to_string());
         std::process::exit(match cmd_register(&ext_id) {
             Ok(()) => 0,
             Err(e) => {
@@ -546,4 +573,117 @@ fn main() {
         });
     }
     std::process::exit(serve_stdio());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::manifest_text;
+    use super::{EXTENSION_ID, HOST_NAME, MAC_CONFIG_DIRS, UNIX_CONFIG_DIRS, WINDOWS_BROWSER_KEYS};
+    use std::path::Path;
+
+    /// The `key` value of download-engine/extension/manifest.json.
+    fn shipped_manifest_key() -> String {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../extension/manifest.json");
+        let s = std::fs::read_to_string(&path)
+            .expect("extension/manifest.json must exist beside the workspace");
+        let start = s
+            .find("\"key\"")
+            .expect("manifest.json must carry a key field");
+        let rest = &s[start..];
+        let colon = rest.find(':').expect("key field followed by a colon");
+        let after = &rest[colon..];
+        let q1 = after.find('"').expect("quoted key value") + 1;
+        let tail = &after[q1..];
+        let q2 = tail.find('"').expect("closing quote of the key value");
+        tail[..q2].to_string()
+    }
+
+    /// Chrome's rule: SHA-256 over the SPKI DER, first 16 bytes, each hex nibble
+    /// mapped to the letters a..p. Test-only copy (the desktop app's copy lives
+    /// in engine_core::extension; both are locked to the shipped key).
+    mod keyid {
+        pub fn id_from_key_hex(hex: &str) -> String {
+            hex.chars()
+                .take(32)
+                .map(|c| match c {
+                    '0'..='9' => (b'a' + (c as u8 - b'0')) as char,
+                    'a'..='f' => (b'k' + (c as u8 - b'a')) as char,
+                    _ => unreachable!("digest hex is lowercase"),
+                })
+                .collect()
+        }
+
+        pub fn b64_decode(s: &str) -> Vec<u8> {
+            const T: &[u8; 64] =
+                b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+            let val = |c: u8| T.iter().position(|&t| t == c).unwrap() as u32;
+            let bytes: Vec<u8> = s.bytes().filter(|&c| c != b'=' && c != b'\n').collect();
+            bytes
+                .chunks(4)
+                .flat_map(|c| {
+                    let n = c.iter().fold(0u32, |a, &b| (a << 6) | val(b));
+                    match c.len() {
+                        4 => vec![(n >> 16) as u8, (n >> 8) as u8, n as u8],
+                        3 => vec![(n >> 10) as u8, (n >> 2) as u8],
+                        2 => vec![(n >> 4) as u8],
+                        _ => vec![],
+                    }
+                })
+                .collect()
+        }
+
+        pub fn id_from_spki(der: &[u8]) -> String {
+            use sha2::Digest;
+            id_from_key_hex(
+                &sha2::Sha256::digest(der)
+                    .iter()
+                    .map(|b| format!("{b:02x}"))
+                    .collect::<String>(),
+            )
+        }
+    }
+
+    #[test]
+    fn shipped_manifest_key_derives_the_pinned_id() {
+        let der = keyid::b64_decode(&shipped_manifest_key());
+        assert_eq!(der.len(), 294, "RSA-2048 SPKI is 294 bytes");
+        let derived = keyid::id_from_spki(&der);
+        assert_eq!(
+            derived, EXTENSION_ID,
+            "manifest key and pinned ID drifted apart"
+        );
+        assert_ne!(derived, "hpaxoarvxcmmqijm", "the old, wrong ID came back");
+    }
+
+    #[test]
+    fn registration_covers_the_common_chromium_browsers() {
+        for key in ["Opera Software", "Chromium", "Vivaldi", "Google\\Chrome"] {
+            assert!(
+                WINDOWS_BROWSER_KEYS.contains(&key),
+                "missing Windows key {key}"
+            );
+        }
+        for dir in [
+            ".config/chromium/NativeMessagingHosts",
+            ".config/vivaldi/NativeMessagingHosts",
+        ] {
+            assert!(UNIX_CONFIG_DIRS.contains(&dir), "missing Linux dir {dir}");
+        }
+        assert!(!MAC_CONFIG_DIRS.is_empty());
+    }
+
+    #[test]
+    fn manifest_text_allowlists_the_extension_origin() {
+        let m = manifest_text(
+            Path::new("/opt/velox/velox-browser-host"),
+            &[EXTENSION_ID.to_string()],
+        );
+        let v: serde_json::Value = serde_json::from_str(&m).expect("manifest is valid JSON");
+        assert_eq!(v["name"], HOST_NAME);
+        assert_eq!(v["path"], "/opt/velox/velox-browser-host");
+        assert_eq!(
+            v["allowed_origins"][0],
+            format!("chrome-extension://{EXTENSION_ID}/")
+        );
+    }
 }

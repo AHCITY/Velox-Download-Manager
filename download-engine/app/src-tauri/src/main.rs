@@ -157,7 +157,10 @@ fn settings_set(state: State<'_, AppState>, json: String) -> Result<(), String> 
  * flow), so "install" = everything automatable + the exact two clicks the
  * user must do, with live verification once the extension connects.
  * ==================================================================== */
-const EXTENSION_ID: &str = "hpaxoarvxcmmqijm";
+// Derived from the shipped manifest key (engine_core::extension) — the ID Chrome
+// actually computes. A stale literal here makes the NM host manifest allowlist an
+// origin Chrome never grants: every connectNative fails with "forbidden".
+use engine_core::extension::EXTENSION_ID;
 
 #[derive(serde::Serialize)]
 struct BrowserInfo {
@@ -295,6 +298,15 @@ fn detect_browsers() -> Vec<BrowserInfo> {
             extensions_page: "opera://extensions".into(),
         });
         out.push(BrowserInfo {
+            id: "vivaldi".into(),
+            name: "Vivaldi".into(),
+            family: "chromium".into(),
+            exe: fs_exe(&[&format!("{}\\Vivaldi\\Application\\vivaldi.exe", lad)])
+                .map(|p| p.display().to_string())
+                .unwrap_or_default(),
+            extensions_page: "vivaldi://extensions".into(),
+        });
+        out.push(BrowserInfo {
             id: "firefox".into(),
             name: "Firefox".into(),
             family: "firefox".into(),
@@ -312,6 +324,8 @@ fn detect_browsers() -> Vec<BrowserInfo> {
             ("edge", "Microsoft Edge", "microsoft-edge", "chrome://extensions"),
             ("brave", "Brave", "brave-browser", "brave://extensions"),
             ("opera", "Opera", "opera", "opera://extensions"),
+            ("vivaldi", "Vivaldi", "vivaldi", "vivaldi://extensions"),
+            ("chromium", "Chromium", "chromium", "chrome://extensions"),
             ("firefox", "Firefox", "firefox", "about:debugging"),
         ] {
             let path = PathBuf::from("/usr/bin").join(bin);
@@ -416,6 +430,7 @@ fn extension_setup(browser: String, mode: String) -> Result<serde_json::Value, S
     };
     if mode == "quick" && launched {
         notes.push("temporary load: if this browser was already running, the flag is ignored — fully quit it first, or use the guided steps".into());
+        notes.push("Chrome 137+ removed --load-extension from branded Chrome: if the extension does not appear, use the guided steps (Developer mode + Load unpacked)".into());
     }
 
     Ok(serde_json::json!({
@@ -466,7 +481,7 @@ fn extension_status() -> serde_json::Value {
     {
         use winreg::enums::{HKEY_CURRENT_USER, KEY_READ};
         let hk = winreg::RegKey::predef(HKEY_CURRENT_USER);
-        for b in ["Google\\Chrome", "Microsoft\\Edge", "BraveSoftware\\Brave-Browser"] {
+        for b in ["Google\\Chrome", "Microsoft\\Edge", "BraveSoftware\\Brave-Browser", "Opera Software", "Chromium", "Vivaldi"] {
             let key = format!("Software\\{b}\\NativeMessagingHosts\\io.velox.downloadmanager");
             if hk.open_subkey_with_flags(&key, KEY_READ).is_ok() {
                 host_registered = true;
@@ -481,6 +496,8 @@ fn extension_status() -> serde_json::Value {
             ".config/google-chrome/NativeMessagingHosts",
             ".config/microsoft-edge/NativeMessagingHosts",
             ".config/BraveSoftware/Brave-Browser/NativeMessagingHosts",
+            ".config/chromium/NativeMessagingHosts",
+            ".config/vivaldi/NativeMessagingHosts",
         ] {
             if std::path::Path::new(&home).join(b).join("io.velox.downloadmanager.json").exists() {
                 host_registered = true;

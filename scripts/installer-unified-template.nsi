@@ -153,8 +153,10 @@ files:
   File "/oname=48.png" "/tmp/installer/extension/icons/48.png"
   File "/oname=128.png" "/tmp/installer/extension/icons/128.png"
   SetOutPath "$INSTDIR"
-  DetailPrint "Registering the Velox native messaging host (Chrome/Edge/Brave)..."
-  nsExec::ExecToLog '"$INSTDIR\velox-browser-host.exe" --register hpaxoarvxcmmqijm'
+  ; --register without an argument uses the canonical ID derived from the
+  ; extension manifest key (a stale literal here would make Chrome refuse NM)
+  DetailPrint "Registering the Velox native messaging host (Chromium browsers)..."
+  nsExec::ExecToLog '"$INSTDIR\velox-browser-host.exe" --register'
   Pop $0
 
   ; --- media tooling: bundled yt-dlp + LGPL ffmpeg (YouTube etc.) ---
@@ -258,6 +260,9 @@ un_done:
   DeleteRegKey HKCU "Software\Google\Chrome\NativeMessagingHosts\io.velox.downloadmanager"
   DeleteRegKey HKCU "Software\Microsoft\Edge\NativeMessagingHosts\io.velox.downloadmanager"
   DeleteRegKey HKCU "Software\BraveSoftware\Brave-Browser\NativeMessagingHosts\io.velox.downloadmanager"
+  DeleteRegKey HKCU "Software\Opera Software\NativeMessagingHosts\io.velox.downloadmanager"
+  DeleteRegKey HKCU "Software\Chromium\NativeMessagingHosts\io.velox.downloadmanager"
+  DeleteRegKey HKCU "Software\Vivaldi\NativeMessagingHosts\io.velox.downloadmanager"
   Delete "$INSTDIR\WebView2Setup.exe"
   Delete "$INSTDIR\Uninstall Velox.exe"
   RMDir "$INSTDIR"

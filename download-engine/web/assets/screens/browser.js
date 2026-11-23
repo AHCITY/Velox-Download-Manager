@@ -67,7 +67,7 @@ function buildShell() {
         <div class="card" style="padding:16px 18px;margin-bottom:14px">
           <h1 style="font-size:14px;margin-bottom:10px">Install in your browser</h1>
           <div data-st="browsers" class="act-feed"><div class="empty" style="color:var(--t3)">detecting browsers…</div></div>
-          <div class="note warn" style="margin-top:10px">${icon('alertTriangle', 14)}<div>Chromium's security model does not allow fully silent installs — the button does everything automatable (staging, host registration, opens the extensions page) and the page shows the last two clicks: enable <b>Developer mode</b> → <b>Load unpacked</b> → pick the shown folder (also copied to your clipboard). <b>Quick start</b> loads the extension immediately for the current browser session (fully quit the browser first if it is running).</div></div>
+          <div class="note warn" style="margin-top:10px">${icon('alertTriangle', 14)}<div>Chromium's security model does not allow fully silent installs — the button does everything automatable (staging, host registration, opens the extensions page) and the page shows the last two clicks: enable <b>Developer mode</b> → <b>Load unpacked</b> → pick the shown folder (also copied to your clipboard). <b>Quick start</b> loads the extension immediately for the current browser session — fully quit the browser first if it is running. On <b>Chrome 137+</b> Google removed the <b>--load-extension</b> flag from branded Chrome, so <b>Quick start</b> is silently ignored there; use the guided steps.</div></div>
         </div>
         <div class="card" style="padding:16px 18px">
           <h1 style="font-size:14px;margin-bottom:10px">Firefox</h1>

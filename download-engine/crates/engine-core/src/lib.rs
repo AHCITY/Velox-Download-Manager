@@ -6,6 +6,7 @@
 pub mod config;
 pub mod error;
 pub mod events;
+pub mod extension;
 pub mod ids;
 pub mod inspect;
 pub mod manager;

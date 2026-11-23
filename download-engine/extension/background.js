@@ -46,7 +46,9 @@ function connect() {
     port = chrome.runtime.connectNative(HOST_NAME);
   } catch (e) {
     connected = false;
-    lastError = 'native host not registered — see extension/README.md';
+    // connectNative itself only throws when the API is absent (the manifest
+    // lacks "nativeMessaging"); registration problems surface via onDisconnect
+    lastError = 'native messaging unavailable — the manifest needs the nativeMessaging permission and the host must be registered';
     scheduleReconnect();
     return;
   }
