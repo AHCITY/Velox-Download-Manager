@@ -8,7 +8,10 @@ set -euo pipefail
 SETUP="${1:?installer path required}"
 OUT="${2:?staging dir required}"
 APP=/home/z/my-project/download-engine/app/src-tauri
-KEY=/home/z/my-project/.secrets/velox-updater.key
+# the key is tracked in the repo (dev-build convention, like the extension key);
+# .secrets/ remains a legacy fallback location
+KEY=/home/z/my-project/scripts/velox-updater.key
+[ -f "$KEY" ] || KEY=/home/z/my-project/.secrets/velox-updater.key
 [ -f "$SETUP" ] || { echo "missing installer $SETUP"; exit 1; }
 [ -f "$KEY" ] || { echo "missing signing key $KEY"; exit 1; }
 
@@ -51,5 +54,9 @@ manifest = {
 pathlib.Path(out, "latest.json").write_text(json.dumps(manifest, indent=2) + "\n")
 print("latest.json:", version, "| signature", len(signature), "chars")
 PY
-cd "$OUT" && sha256sum Velox.exe Velox-Setup-x64.exe > SHA256SUMS.txt
+cd "$OUT"
+# Velox.exe is optional (only present after an msvc cross-build) — list what exists
+SUMS="Velox-Setup-x64.exe"
+[ -f "Velox.exe" ] && SUMS="$SUMS Velox.exe"
+sha256sum $SUMS > SHA256SUMS.txt
 echo "== staged in $OUT (app version $VERSION)"

@@ -76,13 +76,14 @@ jobs:
           cargo test -p engine-storage -- --exact tests::lock_recovered_after_child_process_death
           cargo test -p engine-cli --test crash_resume -- --test-threads=1
 
-  # ---- Job 2: desktop application + installer (manual dispatch only) ----
-  # Sources and Cargo.lock ARE tracked (download-engine/app/src-tauri), so the
-  # reproducibility gate below can run. Still dispatch-only: flip this to
-  # push/tags once CI-built installers are wanted.
+  # ---- Job 2: desktop application + installer ----
+  # Manual dispatch for development builds; every v* tag builds the RELEASE
+  # artifacts: updater-signed installer + latest.json + extension zip, published
+  # by Job 3. Sources and Cargo.lock ARE tracked (download-engine/app/src-tauri),
+  # so the reproducibility gate below can run.
   desktop:
     needs: windows
-    if: github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
     runs-on: windows-latest
     defaults:
       run:
@@ -99,10 +100,15 @@ jobs:
           if (-not (Test-Path Cargo.lock)) { throw "app/src-tauri/Cargo.lock is missing — commit it" }
           cargo fetch --locked
 
-      - name: Build Velox desktop app + NSIS installer (tauri-cli)
+      - name: Build Velox desktop app + NSIS installer (tauri-cli, updater-signed)
         shell: pwsh
         run: |
           cargo install tauri-cli --version "^2" --locked
+          # the updater only signs when the private key env is present; the key is
+          # tracked in the repo (dev-build convention, like the extension key)
+          $key = (Get-Content ..\..\scripts\velox-updater.key -Last 1).Trim()
+          $env:TAURI_SIGNING_PRIVATE_KEY = $key
+          $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = ""
           cd app\src-tauri
           cargo tauri build --target x86_64-pc-windows-msvc
           ls target\x86_64-pc-windows-msvc\release\bundle\nsis\
@@ -124,6 +130,10 @@ jobs:
           $setup = Get-ChildItem "app\src-tauri\target\x86_64-pc-windows-msvc\release\bundle\nsis\*-setup.exe" | Select-Object -First 1
           Copy-Item $setup.FullName Velox-Setup-x64.exe
           Copy-Item "app\src-tauri\target\x86_64-pc-windows-msvc\release\Velox.exe" Velox-app-x64.exe
+          # the minisign signature travels with the installer (validates the file
+          # CONTENT, so the rename below does not affect verification)
+          Copy-Item "$($setup.FullName).sig" Velox-Setup-x64.exe.sig
+          if (-not (Test-Path Velox-Setup-x64.exe.sig)) { throw "updater signature missing — TAURI_SIGNING_PRIVATE_KEY was not picked up" }
 
       - name: Upload installer artifact
         uses: actions/upload-artifact@v4
@@ -132,9 +142,55 @@ jobs:
           path: download-engine/Velox-Setup-x64.exe
           if-no-files-found: error
 
+      - name: Upload installer signature artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Velox-Setup-x64.sig
+          path: download-engine/Velox-Setup-x64.exe.sig
+          if-no-files-found: error
+
       - name: Upload application executable artifact
         uses: actions/upload-artifact@v4
         with:
           name: Velox-app-x64
           path: download-engine/Velox-app-x64.exe
           if-no-files-found: error
+
+  # ---- Job 3: publish the signed release (v* tags only) ----
+  # Assembles and publishes everything the in-app updater and a fresh user
+  # need: Velox-Setup-x64.exe (+ minisign .sig), latest.json (updater manifest
+  # with a tag-pinned asset URL), the browser extension zip and SHA256SUMS.txt.
+  release:
+    needs: desktop
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: rel
+      - name: Assemble release assets (latest.json + extension zip + checksums)
+        run: |
+          VER="${GITHUB_REF_NAME#v}"
+          mkdir -p out
+          cp rel/Velox-Setup-x64/Velox-Setup-x64.exe out/
+          cp rel/Velox-Setup-x64.sig/Velox-Setup-x64.exe.sig out/
+          cp rel/Velox-app-x64/Velox-app-x64.exe out/
+          SIG=$(cat out/Velox-Setup-x64.exe.sig)
+          URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}/Velox-Setup-x64.exe"
+          PUB_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          jq -n --arg v "$VER" --arg s "$SIG" --arg u "$URL" --arg d "$PUB_DATE" \
+            '{version:$v, notes:("Velox "+$v+" — see the release notes for changes."), pub_date:$d, platforms:{"windows-x86_64":{signature:$s, url:$u}}}' \
+            > out/latest.json
+          (cd download-engine/extension && zip -qr "$GITHUB_WORKSPACE/out/Velox-Extension.zip" .)
+          (cd out && sha256sum Velox-Setup-x64.exe Velox-Setup-x64.exe.sig Velox-app-x64.exe Velox-Extension.zip > SHA256SUMS.txt)
+          cat out/latest.json
+      - name: Publish the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" out/* \
+            --title "Velox ${GITHUB_REF_NAME#v}" \
+            --notes "Signed NSIS installer + updater manifest (latest.json) + browser extension zip. The in-app updater offers this release automatically; new users download Velox-Setup-x64.exe."

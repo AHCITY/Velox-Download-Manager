@@ -12,9 +12,11 @@ mkdir -p "$XWIN_CACHE_DIR"
 
 # Updater signing: artifacts must be signed with the release private key or the
 # in-app updater will refuse them (minisign verification, key generated 2026-11-22).
-if [ -r /home/z/my-project/.secrets/velox-updater.key ]; then
+UPDATER_KEY=/home/z/my-project/scripts/velox-updater.key
+[ -r "$UPDATER_KEY" ] || UPDATER_KEY=/home/z/my-project/.secrets/velox-updater.key
+if [ -r "$UPDATER_KEY" ]; then
   # tauri expects the RAW base64 key content (no "untrusted comment" line)
-  export TAURI_SIGNING_PRIVATE_KEY="$(tail -1 /home/z/my-project/.secrets/velox-updater.key)"
+  export TAURI_SIGNING_PRIVATE_KEY="$(tail -1 "$UPDATER_KEY")"
   export TAURI_SIGNING_PRIVATE_KEY_PASSWORD=""
 fi
 

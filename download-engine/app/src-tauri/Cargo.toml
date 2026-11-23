@@ -1,6 +1,6 @@
 [package]
 name = "velox-app"
-version = "0.4.0"
+version = "0.5.0"
 description = "Velox desktop download manager"
 edition = "2021"
 rust-version = "1.77"

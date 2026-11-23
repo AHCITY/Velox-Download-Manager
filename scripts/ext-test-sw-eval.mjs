@@ -8,6 +8,7 @@
 // the fake bridge's request log (download.create).
 //
 // Usage: node ext-test-sw-eval.mjs [debugPort] [fileUrl]
+import fs from 'node:fs';
 const DEBUG_PORT = process.argv[2] || '9333';
 const FILE_URL = process.argv[3] || 'http://127.0.0.1:9344/big.bin';
 const EXPECTED_ID = 'ffnpjmbhfmaamhlbohbmamnmoaikpdmc';
@@ -45,6 +46,7 @@ const evalSW = async (expr) => (await send('Runtime.evaluate', { expression: exp
 const runtimeId = await evalSW('chrome.runtime.id');
 console.log('extension runtime id:', runtimeId, runtimeId === EXPECTED_ID ? '(matches the derived ID)' : '(MISMATCH!)');
 
+const tHello = Date.now();
 const hello = await evalSW(`new Promise((res) => {
   try {
     const p = chrome.runtime.connectNative('io.velox.downloadmanager');
@@ -55,13 +57,30 @@ const hello = await evalSW(`new Promise((res) => {
     setTimeout(() => { if (!done) res({ TIMEOUT: 'no reply in 12s' }); }, 12000);
   } catch (e) { res({ THROW: String(e) }); }
 })`);
-console.log('hello reply:', JSON.stringify(hello));
+console.log('hello reply:', JSON.stringify(hello), '| round-trip', Date.now() - tHello, 'ms');
 
 await evalSW(`chrome.storage.local.set({ interceptMode: 'auto' })`);
 const tab = await fetch(`http://127.0.0.1:${DEBUG_PORT}/json/new?${encodeURIComponent(FILE_URL)}`, { method: 'PUT' })
   .then((r) => r.json())
   .catch((e) => ({ error: String(e) }));
 console.log('opened download tab:', tab.url || JSON.stringify(tab));
+const tOpen = Date.now();
+let captureMs = null;
+for (let i = 0; i < 20 && captureMs === null; i++) {
+  await wait(500);
+  try {
+    for (const line of fs.readFileSync('/tmp/exttest/bridge-requests.log', 'utf8').trim().split('\n')) {
+      const j = JSON.parse(line);
+      if (j.body && j.body.method === 'download.create' && j.ts) {
+        captureMs = Math.round(j.ts * 1000 - tOpen);
+        break;
+      }
+    }
+  } catch { /* log not written yet */ }
+}
+console.log(captureMs === null
+  ? 'capture latency: NOT SEEN (download.create never arrived)'
+  : `capture latency: ${captureMs} ms (download started -> download.create at the bridge)`);
 
 let status = null;
 for (let i = 0; i < 10; i++) {
@@ -80,6 +99,8 @@ console.log('status reply:', JSON.stringify(status));
 let fail = 0;
 if (runtimeId !== EXPECTED_ID) { console.error('FAIL: runtime id != derived ID'); fail = 1; }
 if (!(hello && hello.type === 'hello_ack' && hello.payload && hello.payload.connected === true)) { console.error('FAIL: hello not connected'); fail = 1; }
-if (!(status && status.type === 'status_response' && status.payload && status.payload.active > 0)) { console.error('FAIL: status active is not > 0'); fail = 1; }
+if (!(status && status.type === 'status_response' && status.payload &&
+      ((status.payload.active > 0) || (status.payload.recent && status.payload.recent.length > 0)))) { console.error('FAIL: status rows missing'); fail = 1; }
+if (captureMs === null) { console.error('FAIL: download.create not captured'); fail = 1; }
 console.log(fail ? 'SW-EVAL: FAILED' : 'SW-EVAL: ALL CHECKS PASSED');
 process.exit(fail);

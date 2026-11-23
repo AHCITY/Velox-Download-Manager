@@ -11,9 +11,14 @@ Usage: python3 ext-test-fake-bridge.py [port]   (default 9350)
 import json
 import os
 import sys
+import time
+import urllib.request
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 PORT = int(sys.argv[1]) if len(sys.argv) > 1 else 9350
+# optional: forward whitelisted calls to a REAL velox engine (serve-http) so the
+# E2E proves the whole path extension -> host -> bridge -> engine -> disk
+PROXY = os.environ.get("VELOX_FAKE_BRIDGE_PROXY", "").strip() or None
 BRIDGE_FILE = os.path.expanduser("~/.local/share/io.velox.downloadmanager/data/bridge.json")
 LOG = "/tmp/exttest/bridge-requests.log"
 TOKEN = "e2e-token-0123456789abcdef0123456789abcdef"  # 48 chars: real tokens are >=32
@@ -40,20 +45,49 @@ class H(BaseHTTPRequestHandler):
         auth = self.headers.get("Authorization", "")
         ok = auth == f"Bearer {TOKEN}"
         with open(LOG, "a") as f:
-            f.write(json.dumps({"auth_ok": ok, "body": json.loads(body) if body else None}) + "\n")
+            f.write(json.dumps({"ts": round(time.time(), 3), "auth_ok": ok,
+                                "body": json.loads(body) if body else None}) + "\n")
         if not ok:
             self.send_response(403)
             self.send_header("Content-Length", "0")
             self.end_headers()
             return
         req = json.loads(body)
-        result = RESULTS.get(req.get("method", ""))
-        resp = (
-            {"jsonrpc": "2.0", "id": req.get("id"), "result": result}
-            if result is not None
-            else {"jsonrpc": "2.0", "id": req.get("id"),
-                  "error": {"code": -32601, "message": "method not allowed over the browser bridge"}}
-        )
+        method = req.get("method", "")
+        if PROXY:
+            # full pass-through to the REAL engine: the E2E then shows a real
+            # engine download landing on disk, not a canned row. The engine
+            # creates rows paused, so download.start follows the create.
+            params = dict(req.get("params") or {})
+            params.pop("auto_start", None)
+            payload = json.dumps({"jsonrpc": "2.0", "id": req.get("id"),
+                                  "method": method, "params": params}).encode()
+            try:
+                r = urllib.request.Request(PROXY, data=payload,
+                                           headers={"Content-Type": "application/json"})
+                with urllib.request.urlopen(r, timeout=30) as res:
+                    resp = json.loads(res.read().decode())
+                if method == "download.create" and resp.get("result", {}).get("id"):
+                    start = json.dumps({"jsonrpc": "2.0", "id": req.get("id"),
+                                        "method": "download.start",
+                                        "params": {"id": resp["result"]["id"]}}).encode()
+                    urllib.request.urlopen(urllib.request.Request(
+                        PROXY, data=start, headers={"Content-Type": "application/json"}),
+                        timeout=10)
+            except Exception as e:
+                resp = {"jsonrpc": "2.0", "id": req.get("id"),
+                        "error": {"code": -32000, "message": f"engine proxy failed: {e}"}}
+            with open(LOG, "a") as f:
+                f.write(json.dumps({"ts": round(time.time(), 3), "proxy": method,
+                                    "resp": resp}) + "\n")
+        else:
+            result = RESULTS.get(method)
+            resp = (
+                {"jsonrpc": "2.0", "id": req.get("id"), "result": result}
+                if result is not None
+                else {"jsonrpc": "2.0", "id": req.get("id"),
+                      "error": {"code": -32601, "message": "method not allowed over the browser bridge"}}
+            )
         data = json.dumps(resp).encode()
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
