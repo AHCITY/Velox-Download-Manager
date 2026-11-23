@@ -7,7 +7,8 @@
 // (no URL-input-first toolbar).
 import { icon } from './assets/icons.js';
 import {
-  store, bootstrap, counts, subscribe, refreshAll, visibleRows, fmtSpeed, notify, toast,
+  store, bootstrap, counts, subscribe, refreshAll, visibleRows, fmtSpeed, notify, toast, setPrefs,
+  PAUSABLE_STATES,
 } from './assets/store.js';
 import {
   $, el, esc, renderToasts, detailsDrawer, paintDetails, actions, contextMenu,
@@ -168,7 +169,11 @@ document.addEventListener('keydown', (e) => {
     e.preventDefault();
     const id = [...store.selection][0];
     const r = store.rows.get(id);
-    if (r) (['downloading', 'retrying', 'merging'].includes(r.state) ? actions.pause(id) : actions.retry(id));
+    if (!r) return;
+    // Space toggles pause/resume. A merge in progress cannot be paused (the
+    // engine refuses it), so it is left alone instead of raising an error.
+    if (PAUSABLE_STATES.includes(r.state)) actions.pause(id);
+    else if (r.state !== 'merging') actions.retry(id);
     return;
   }
   if ((e.key === 'Delete' || e.key === 'Backspace') && store.selection.size && route === 'downloads') {
@@ -202,8 +207,7 @@ async function maybeBrowserSetupDialog() {
   if (store.prefs.browserSetupSeen) return;
   const status = await extensionStatus();
   if (status?.extension_connected || status?.ext_installed) {
-    store.prefs.browserSetupSeen = true;
-    saveSettings(store.prefs);
+    setPrefs({ browserSetupSeen: true });
     return; // already set up — no nag
   }
   const { openDialog } = await import('./assets/ui.js');
@@ -226,10 +230,12 @@ async function maybeBrowserSetupDialog() {
         <button class="btn" data-later>Set up later</button>
       </div>
     </div>`);
-  const { saveSettings } = await import('./assets/api.js');
+  // setPrefs writes the whole settings document (prefs AND queues). This used to
+  // call saveSettings(store.prefs) before that name was initialised (ReferenceError:
+  // the flag was never stored) and, once reached, wrote prefs only, which dropped
+  // every saved queue.
   const markSeen = async () => {
-    store.prefs.browserSetupSeen = true;
-    try { await saveSettings(store.prefs); } catch { /* non-fatal */ }
+    try { setPrefs({ browserSetupSeen: true }); } catch { /* non-fatal */ }
   };
   dlg.querySelectorAll('[data-b]').forEach((btn) => {
     btn.addEventListener('click', async () => {

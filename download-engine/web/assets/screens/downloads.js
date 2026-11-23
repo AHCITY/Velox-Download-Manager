@@ -4,11 +4,13 @@
 import { icon } from '../icons.js';
 import {
   store, visibleRows, counts, refreshAll, notify, FILTER_STATES, fmtSpeed,
+  PAUSABLE_STATES, holdQueueItem, releaseQueueItem,
 } from '../store.js';
 import { engine } from '../api.js';
 import { el, esc, downloadRow, paintRow, actions, confirmDialog, reportError } from '../ui.js';
 
 const nodes = new Map(); // id -> row node (keyed updates)
+let domOrder = []; // ids in list order — detects when the visible order changed
 
 export function renderDownloads(root) {
   let shell = root.firstElementChild;
@@ -17,6 +19,7 @@ export function renderDownloads(root) {
     shell = buildShell();
     root.appendChild(shell);
     nodes.clear();
+    domOrder = [];
   }
   paintShell(root);
   syncList(root);
@@ -87,13 +90,22 @@ function buildShell() {
     notify();
   };
   shell.querySelector('#dlPauseAll').onclick = async () => {
-    const running = [...store.rows.values()].filter((r) => ['downloading', 'retrying', 'merging', 'resolving'].includes(r.state));
-    for (const r of running) { try { await engine.pause(r.id); } catch { /* row may settle concurrently */ } }
+    // everything the engine can pause: transfers in flight AND rows waiting for
+    // a slot (queued/created) — otherwise a queued download started right after
+    // "Pause all". A merge in progress cannot be paused (Cancel stops it).
+    const running = [...store.rows.values()].filter((r) => PAUSABLE_STATES.includes(r.state));
+    for (const r of running) {
+      try { await engine.pause(r.id); holdQueueItem(r.id); } catch { /* row may settle concurrently */ }
+    }
     await refreshAll();
   };
   shell.querySelector('#dlResumeAll').onclick = async () => {
-    const paused = [...store.rows.values()].filter((r) => ['paused', 'failed', 'cancelled'].includes(r.state));
-    for (const r of paused) { try { await engine.start(r.id); } catch { /* engine refuses honestly */ } }
+    // "Resume paused" resumes exactly that. Failed and cancelled entries keep
+    // their own explicit Retry action (they used to restart from this button too).
+    const paused = [...store.rows.values()].filter((r) => r.state === 'paused');
+    for (const r of paused) {
+      try { await engine.start(r.id); releaseQueueItem(r.id); } catch { /* engine refuses honestly */ }
+    }
     await refreshAll();
   };
   shell.querySelector('#clearDone').onclick = async () => {
@@ -131,10 +143,18 @@ function paintShell(root) {
     completed: c.completed,
     failed: c.failed,
   };
-  shell.querySelector('#dlSeg').innerHTML =
-    SEGMENTS.map(([k, l]) => `<button data-f="${k}" class="${store.filter.state === k ? 'on' : ''}">${l} <span class="n">${segCounts[k]}</span></button>`).join('');
-  const vis = visibleRows();
-  const active = c.downloading + c.queued;
+  // patch the segment counts in place: rebuilding the buttons on every progress
+  // tick dropped keyboard focus and re-created DOM for no reason
+  const seg = shell.querySelector('#dlSeg');
+  for (const b of seg.querySelectorAll('[data-f]')) {
+    const k = b.dataset.f;
+    b.classList.toggle('on', store.filter.state === k);
+    const n = b.querySelector('.n');
+    if (n && n.textContent !== String(segCounts[k])) n.textContent = segCounts[k];
+  }
+  // “active” follows the Downloading filter (which counts resolving/merging as
+  // the active work they are)
+  const active = c.downloading + c.queued + c.resolving + c.merging;
   shell.querySelector('#dlSub').textContent =
     `${c.all} download${c.all === 1 ? '' : 's'} · ${active} active · ${c.completed} completed · ${fmtAgg()}` +
     (store.filter.query ? ` · filtered by “${store.filter.query}”` : '');
@@ -144,18 +164,18 @@ function paintShell(root) {
   const sel = [...store.selection].filter((id) => store.rows.has(id));
   if (sel.length) {
     const rows = sel.map((id) => store.rows.get(id));
-    const anyRunning = rows.some((r) => ['downloading', 'retrying', 'merging'].includes(r.state));
+    const pausableIds = sel.filter((id) => store.rows.get(id).state === 'downloading' || store.rows.get(id).state === 'retrying');
     const anyPausedOrQueued = rows.some((r) => ['paused', 'queued', 'created'].includes(r.state));
     const anyFailed = rows.some((r) => ['failed', 'cancelled'].includes(r.state));
     const anyCompleted = rows.some((r) => r.state === 'completed');
     selBar.innerHTML = `<div class="sel-bar">${icon('squareCheck', 14)} ${sel.length} selected
-      ${anyRunning ? `<button class="btn sm" data-b="pause">${icon('pause', 12)} Pause</button>` : ''}
+      ${pausableIds.length ? `<button class="btn sm" data-b="pause">${icon('pause', 12)} Pause</button>` : ''}
       ${anyPausedOrQueued || anyFailed ? `<button class="btn sm" data-b="resume">${icon('play', 12)} Resume</button>` : ''}
       <button class="btn sm" data-b="remove">${icon('minus', 12)} Remove from list</button>
       ${anyCompleted ? `<button class="btn sm danger" data-b="delfile">${icon('trash', 12)} Delete files</button>` : ''}
       <button class="btn sm ghost" data-b="clear">Clear selection</button>
     </div>`;
-    selBar.querySelector('[data-b="pause"]')?.addEventListener('click', () => sel.forEach((id) => actions.pause(id)));
+    selBar.querySelector('[data-b="pause"]')?.addEventListener('click', () => pausableIds.forEach((id) => actions.pause(id)));
     selBar.querySelector('[data-b="resume"]')?.addEventListener('click', () => sel.forEach((id) => actions.retry(id)));
     selBar.querySelector('[data-b="remove"]')?.addEventListener('click', () => sel.forEach((id) => actions.remove(id)));
     selBar.querySelector('[data-b="delfile"]')?.addEventListener('click', () => sel.forEach((id) => actions.deleteFile(id)));
@@ -174,29 +194,57 @@ function syncList(root) {
   const vis = visibleRows();
   const list = shell.querySelector('#dlList');
   const compact = store.prefs.density === 'compact';
-  const seen = new Set();
 
   if (!vis.length) {
     list.replaceChildren(emptyNode());
     nodes.clear();
+    domOrder = [];
     return;
   }
   const staleEmpty = list.querySelector('.empty-state');
   if (staleEmpty) staleEmpty.remove();
-  for (const r of vis) {
-    seen.add(r.id);
-    let node = nodes.get(r.id);
-    if (!node) {
-      node = downloadRow(r, { compact });
-      nodes.set(r.id, node);
-      list.appendChild(node);
-    } else {
-      paintRow(node, r, { compact });
-    }
-  }
+
+  // Does the visible order differ from the DOM order? (sort or filter change, a
+  // row added or removed) Existing nodes are keyed and never re-sequenced by
+  // themselves — changing the sort used to have no visible effect and a new
+  // download always landed at the bottom, whatever the sort said.
+  const order = vis.map((r) => r.id);
+  const reorder = order.length !== domOrder.length || order.some((id, i) => id !== domOrder[i]);
+  const seen = new Set(order);
   for (const [id, node] of nodes) {
     if (!seen.has(id)) { node.remove(); nodes.delete(id); }
   }
+  for (const r of vis) {
+    const sig = rowSig(r, compact);
+    let node = nodes.get(r.id);
+    if (!node) {
+      node = downloadRow(r, { compact });
+      node._sig = sig;
+      nodes.set(r.id, node);
+      continue;
+    }
+    // repaint only rows whose data actually changed: every progress tick used
+    // to rebuild the DOM of EVERY visible row, paused and finished ones included
+    if (node._sig === sig) continue;
+    node._sig = sig;
+    paintRow(node, r, { compact });
+  }
+  if (reorder) {
+    // append() moves nodes that are already in the list; one fragment insertion
+    // keeps the re-sequencing to a single DOM update
+    const frag = document.createDocumentFragment();
+    for (const r of vis) frag.appendChild(nodes.get(r.id));
+    list.appendChild(frag);
+    domOrder = order;
+  }
+}
+
+// Everything paintRow() reads: the engine's row object (byte-for-byte), the live
+// speed, selection and density. refreshAll() hands out fresh objects every 15 s,
+// so the signature is content-based, never identity-based.
+function rowSig(r, compact) {
+  return JSON.stringify(r) + (compact ? '|c' : '') + (store.selection.has(r.id) ? '|s' : '') +
+    (store.bps.has(r.id) ? '|' + store.bps.get(r.id) : '');
 }
 
 function emptyNode() {

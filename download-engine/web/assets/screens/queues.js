@@ -3,7 +3,7 @@
 // so queues advance only while the app is open (no hidden timers that pretend
 // otherwise).
 import { icon } from '../icons.js';
-import { store, saveQueues, refreshAll, toast, RUNNING_STATES } from '../store.js';
+import { store, saveQueues, refreshAll, toast, RUNNING_STATES, kickQueues, releaseQueueItem } from '../store.js';
 import { engine } from '../api.js';
 import { el, esc, confirmDialog, reportError } from '../ui.js';
 
@@ -105,7 +105,16 @@ function paintShell(root) {
         const qid = e.target.value;
         if (!qid) return;
         const q = store.queues.find((x) => x.id === qid);
-        if (q && !q.itemIds.includes(r.id)) { q.itemIds.push(r.id); saveQueues(); toast('ok', 'Assigned', `${r.final_name} → ${q.name}`); paintShell(root); }
+        if (q && !q.itemIds.includes(r.id)) {
+          q.itemIds.push(r.id);
+          // membership means "run as part of this queue": a hold left over from an
+          // earlier membership is cleared (a later hand-pause sets it again)
+          releaseQueueItem(r.id);
+          saveQueues();
+          kickQueues(); // a running queue picks the new member up right away
+          toast('ok', 'Assigned', `${r.final_name} → ${q.name}`);
+          paintShell(root);
+        }
       };
       poolEl.appendChild(row);
     }

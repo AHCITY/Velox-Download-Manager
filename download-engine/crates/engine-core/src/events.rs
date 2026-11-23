@@ -33,10 +33,15 @@ pub enum Event {
         kind: String,
         message: String,
     },
+    /// `ok` = "no mismatch detected". `matches` is the comparison itself:
+    /// `None` when there was no reference hash to compare against (the first
+    /// checksum of a file is STORED, not a verification) — consumers that report
+    /// "verified" must look at `matches`, never at `ok` alone (audit D6).
     Verified {
         id: i64,
         ok: bool,
         algo: String,
+        matches: Option<bool>,
     },
     /// Audit D4 (2026-11-21): resolve-phase feedback. URL resolution (Drive confirm
     /// walk, yt-dlp extraction) can take seconds to minutes before a row exists — the

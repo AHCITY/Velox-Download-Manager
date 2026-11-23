@@ -103,24 +103,30 @@ fn open_path(state: State<'_, AppState>, path: String, reveal: bool) -> Result<(
             return Err("path is outside the configured download directories".into());
         }
     }
+    // Launch with the SHELL form of the validated path. `resolved` is canonical,
+    // which on Windows means verbatim (\\?\C:\…) — a form the Win32 file APIs
+    // accept but explorer.exe does not, so "Open file" / "Open folder" opened
+    // nothing. Validation above stays on the canonical form; only the argument
+    // handed to the shell is simplified.
+    let launch = engine_core::paths::shell_path(&resolved);
     #[cfg(target_os = "windows")]
     {
         std::process::Command::new("explorer")
-            .arg(&resolved)
+            .arg(&launch)
             .spawn()
             .map_err(|e| e.to_string())?;
     }
     #[cfg(target_os = "macos")]
     {
         std::process::Command::new("open")
-            .arg(&resolved)
+            .arg(&launch)
             .spawn()
             .map_err(|e| e.to_string())?;
     }
     #[cfg(all(unix, not(target_os = "macos")))]
     {
         std::process::Command::new("xdg-open")
-            .arg(&resolved)
+            .arg(&launch)
             .spawn()
             .map_err(|e| e.to_string())?;
     }

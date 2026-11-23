@@ -35,6 +35,10 @@ jobs:
       - name: Unit + integration tests (workspace)
         run: cargo test --workspace --no-fail-fast
 
+      - name: Frontend unit tests (node:test)
+        working-directory: download-engine/web
+        run: node --test
+
       - name: CLI smoke (v1 stdio)
         run: |
           cargo run -q -p engine-cli --bin velox -- version

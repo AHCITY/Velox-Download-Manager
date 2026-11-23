@@ -105,9 +105,14 @@ pub fn wire_event(e: &Event) -> (String, String) {
             "failed".to_string(),
             json!({ "id": id, "kind": kind, "message": message }).to_string(),
         ),
-        Event::Verified { id, ok, algo } => (
+        Event::Verified {
+            id,
+            ok,
+            algo,
+            matches,
+        } => (
             "verified".to_string(),
-            json!({ "id": id, "ok": ok, "algo": algo }).to_string(),
+            json!({ "id": id, "ok": ok, "algo": algo, "matches": matches }).to_string(),
         ),
         // audit D4: resolve-phase feedback (extraction/confirm-walk in progress;
         // emitted with the original URL — no download row exists yet)
@@ -972,12 +977,23 @@ mod tests {
             message: "x".into(),
         });
         assert_eq!(name, "failed");
-        let (name, _) = wire_event(&Event::Verified {
+        let (name, data) = wire_event(&Event::Verified {
             id: 1,
             ok: true,
             algo: "sha256".into(),
+            matches: None,
         });
         assert_eq!(name, "verified");
+        // audit D6: an uncompared checksum is not reported as a match — the wire
+        // form carries the comparison result explicitly ("matches": null)
+        assert!(data.contains(r#""matches":null"#));
+        let (_, data) = wire_event(&Event::Verified {
+            id: 1,
+            ok: true,
+            algo: "sha256".into(),
+            matches: Some(true),
+        });
+        assert!(data.contains(r#""matches":true"#));
     }
 
     #[test]

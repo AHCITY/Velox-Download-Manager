@@ -50,15 +50,15 @@ cargo build --release
 cargo run -p engine-cli --bin velox -- serve-http --port 8080 --ui-dir ../web   # browser preview
 
 # Windows desktop app (cross-build from Linux, see scripts/TOOLCHAIN-SETUP.md)
-scripts/build-velox-msvc.sh
+../scripts/build-velox-msvc.sh
 ```
 
 Run the test suites:
 
 ```bash
 cargo test --workspace          # 26 suites, incl. a real-HTTP adaptive-media e2e
-node --test web/tests/          # updater version-guard tests
-scripts/e2e-ui.sh               # 33-check browser E2E (needs the debug CLI binary)
+(cd web && node --test)     # updater version-guard + queue orchestrator tests
+../scripts/e2e-ui.sh               # 33-check browser E2E (needs the debug CLI binary)
 ```
 
 ## Project layout

@@ -1450,7 +1450,7 @@ impl DownloadManager {
             return Err(EngineError::new(
                 ErrorKind::Io,
                 format!(
-                    "final file is missing from disk ({}): it was deleted or moved                      externally; verify is impossible for a missing file",
+                    "final file is missing from disk ({}): it was deleted or moved externally; verify is impossible for a missing file",
                     path.display()
                 ),
             ));
@@ -1486,6 +1486,7 @@ impl DownloadManager {
                 id,
                 ok: matches.unwrap_or(true),
                 algo: algo.name().into(),
+                matches,
             })
             .ok();
         Ok(VerifyOutcome {

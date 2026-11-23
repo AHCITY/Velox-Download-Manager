@@ -35,6 +35,10 @@ jobs:
       - name: Unit + integration tests (workspace, incl. cfg(windows) lock-crash-recovery test)
         run: cargo test --workspace --no-fail-fast
 
+      - name: Frontend unit tests (node:test)
+        working-directory: download-engine/web
+        run: node --test
+
       - name: CLI startup/shutdown smoke (v1 stdio, portable ctrl_c path)
         shell: pwsh
         run: |
@@ -73,16 +77,17 @@ jobs:
           cargo test -p engine-cli --test crash_resume -- --test-threads=1
 
   # ---- Job 2: desktop application + installer (manual dispatch only) ----
-  # Sources ARE tracked (download-engine/app/src-tauri) but Cargo.lock is NOT
-  # committed yet — the reproducibility gate below requires it. Commit the lock
-  # (and flip this to push/tags) to enable CI-built installers.
+  # Sources and Cargo.lock ARE tracked (download-engine/app/src-tauri), so the
+  # reproducibility gate below can run. Still dispatch-only: flip this to
+  # push/tags once CI-built installers are wanted.
   desktop:
     needs: windows
     if: github.event_name == 'workflow_dispatch'
     runs-on: windows-latest
     defaults:
       run:
-        working-directory: .
+        # the app sources live in download-engine/ (same root as the engine job)
+        working-directory: download-engine
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -124,12 +129,12 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: Velox-Setup-x64
-          path: Velox-Setup-x64.exe
+          path: download-engine/Velox-Setup-x64.exe
           if-no-files-found: error
 
       - name: Upload application executable artifact
         uses: actions/upload-artifact@v4
         with:
           name: Velox-app-x64
-          path: Velox-app-x64.exe
+          path: download-engine/Velox-app-x64.exe
           if-no-files-found: error

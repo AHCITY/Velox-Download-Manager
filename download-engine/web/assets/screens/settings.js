@@ -106,13 +106,16 @@ function paintShell(root) {
     );
   } else if (section === 'browser') {
     card.append(
-      el(`<div class="setting-row"><div class="s-txt"><div class="s-name">Browser extension</div><div class="s-desc">Not implemented — see the Browser section for today's capture paths.</div></div>
-        <div class="s-ctl"><span class="tag warn">not available</span></div></div>`),
+      el(`<div class="setting-row"><div class="s-txt"><div class="s-name">Browser extension</div><div class="s-desc">Chromium-based browsers: the Velox extension sends downloads from web pages to the app (right-click, then Download with Velox). Install and connect it from the Browser screen; Firefox is not supported yet.</div></div>
+        <div class="s-ctl"><button class="btn sm" id="seGoBrowser">Open Browser</button></div></div>`),
       el(`<div class="setting-row"><div class="s-txt"><div class="s-name">Clipboard monitoring</div><div class="s-desc">Not implemented; the webview cannot watch the clipboard without an OS-level backend.</div></div>
         <div class="s-ctl"><span class="tag warn">not available</span></div></div>`),
       el(`<div class="setting-row"><div class="s-txt"><div class="s-name">Media detection</div><div class="s-desc">Automatic via the yt-dlp extractor when you paste a media page (YouTube etc.).</div></div>
         <div class="s-ctl"><span class="tag ${store.engine?.merge_capable ? 'ok' : 'warn'}">${store.engine?.merge_capable ? 'ready' : 'needs yt-dlp'}</span></div></div>`),
     );
+    // the row used to claim the extension was "not implemented"; it ships with
+    // the installer and the Browser screen owns the install flow
+    card.querySelector('#seGoBrowser').onclick = () => { location.hash = '#browser'; };
   } else if (section === 'appearance') {
     card.append(
       el(`<div class="setting-row"><div class="s-txt"><div class="s-name">Theme</div><div class="s-desc">Velox is deliberately dark-only.</div></div>

@@ -3,8 +3,13 @@
 // reconnects. Screens subscribe to slices; progress events patch rows in place
 // so a moving download never rerenders the whole app.
 import { engine, subscribeEvents, loadSettings, saveSettings, EVENT_NAMES } from './api.js';
+import { planQueueStarts, setQueueHold } from './queue-plan.js';
 
 export const RUNNING_STATES = ['downloading', 'queued', 'created', 'retrying', 'resolving', 'merging'];
+// Rows the engine pauses on request. A merge in progress is NOT pausable
+// (ffmpeg has no resume — pause() refuses it honestly), so the UI must not
+// offer Pause for it; finished/failed rows have nothing to stop.
+export const PAUSABLE_STATES = ['downloading', 'retrying', 'queued', 'created'];
 export const LISTENABLE_STATES = ['all', 'downloading', 'queued', 'completed', 'failed', 'paused', 'resolving', 'merging', 'cancelled'];
 // Downloads screen filter segments: each maps to a set of engine states.
 // "downloading" deliberately includes resolving/merging — they ARE active work.
@@ -131,18 +136,27 @@ export async function initPrefs() {
   store.prefs = await loadSettings(DEFAULT_PREFS);
 }
 let saveTimer = null;
+// Preferences and queues share ONE settings document, and settings_set replaces
+// the whole file — so every write has to carry both. A prefs-only write (any
+// toggle in Settings) used to drop the `queues` key: every saved queue was gone
+// at the next launch.
+function writeLocalSettings() {
+  clearTimeout(saveTimer);
+  saveTimer = null;
+  saveSettings({ ...store.prefs, queues: store.queues }).catch(() => { /* non-fatal */ });
+}
 export function setPrefs(patch) {
   store.prefs = { ...store.prefs, ...patch };
-  clearTimeout(saveTimer);
-  saveTimer = setTimeout(() => saveSettings(store.prefs), 250);
   notify();
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(writeLocalSettings, 250);
 }
 export async function loadQueues() {
   const s = await loadSettings({});
   store.queues = Array.isArray(s.queues) ? s.queues : [];
 }
 export function saveQueues() {
-  saveSettings({ ...store.prefs, queues: store.queues });
+  writeLocalSettings();
 }
 
 /* ---------- activity feed ---------- */
@@ -327,8 +341,22 @@ export function startEvents() {
       }
       case 'verified': {
         await refreshOne(d.id);
-        pushActivity(nowTs(), `Verification ${d.ok ? 'passed' : 'FAILED'} for <b>#${d.id}</b> (${esc(d.algo || '')})`);
-        toast(d.ok ? 'ok' : 'err', d.ok ? 'Verification passed' : 'Verification failed', `${row?.final_name || '#'+d.id} · ${d.algo || ''}`);
+        const name = row?.final_name || `#${d.id}`;
+        // audit D6: `ok` only means "no mismatch detected". Only `matches` tells
+        // whether a reference hash was actually compared (null = none existed:
+        // the checksum was merely STORED). Older engines without the field fall
+        // back to `ok`.
+        const matches = d.matches === undefined ? (d.ok ? null : false) : d.matches;
+        if (matches === false) {
+          pushActivity(nowTs(), `Verification <b>FAILED</b> for <b>${esc(shortName(name))}</b> (${esc(d.algo || '')}) — file does not match its checksum`);
+          toast('err', 'Verification failed', `${name} · ${d.algo || ''} mismatch — the file may be corrupt`, [], 9000);
+        } else if (matches === true) {
+          pushActivity(nowTs(), `Verification passed for <b>${esc(shortName(name))}</b> (${esc(d.algo || '')})`);
+          toast('ok', 'Verification passed', `${name} · ${d.algo || ''}`);
+        } else {
+          pushActivity(nowTs(), `Checksum computed for <b>${esc(shortName(name))}</b> (${esc(d.algo || '')}) — no reference to compare`);
+          toast('info', 'Checksum stored', `${name} · ${d.algo || ''} — no reference hash to compare against yet`);
+        }
         break;
       }
       case 'retrying': {
@@ -393,21 +421,27 @@ async function queueTick() {
   if (queueBusy) return;
   queueBusy = true;
   try {
-    const activeQueues = store.queues.filter((q) => q.active);
-    for (const q of activeQueues) {
-      const items = q.itemIds.map((id) => store.rows.get(id)).filter(Boolean);
-      const running = items.filter((r) => r.state === 'downloading' || r.state === 'retrying' || r.state === 'merging' || r.state === 'resolving').length;
-      let slots = Math.max(0, (q.maxConcurrent || 2) - running);
-      for (const r of items) {
-        if (slots <= 0) break;
-        if (r.state === 'queued' || r.state === 'paused' || r.state === 'created') {
-          try { await engine.start(r.id); slots--; } catch { /* row may have finished already */ }
-        }
-      }
+    // an update install is in flight: rows were paused on purpose for the exit,
+    // so the orchestrator must not undo that by starting waiting members
+    const blocked = store.update?.status === 'installing' || store.update?.status === 'restarting';
+    for (const id of planQueueStarts(store.queues, store.rows, { blocked })) {
+      try { await engine.start(id); } catch { /* row may have finished already */ }
     }
   } finally {
     queueBusy = false;
   }
+}
+/** Re-run the orchestrator now (after assigning an item to a running queue). */
+export const kickQueues = () => queueTick();
+/* User pause/resume of a queue member. The orchestrator only advances items
+ * that are waiting because of their queue, so a hand-paused member is recorded
+ * in the queue's `held` list (persisted with the queues) until the user resumes
+ * it — otherwise the next completion event or the next app start restarted it. */
+export function holdQueueItem(id) {
+  if (setQueueHold(store.queues, id, true)) saveQueues();
+}
+export function releaseQueueItem(id) {
+  if (setQueueHold(store.queues, id, false)) saveQueues();
 }
 export function startQueueItem(qid) {
   const q = store.queues.find((x) => x.id === qid);

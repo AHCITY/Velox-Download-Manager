@@ -4,7 +4,7 @@ import { icon } from './icons.js';
 import {
   store, fmtBytes, fmtSpeed, fmtEta, fmtTime, pct, categoryOf,
   toast, dismissToast, refreshOne, refreshAll,
-  etaState,
+  etaState, holdQueueItem, releaseQueueItem, kickQueues, saveQueues,
 } from './store.js';
 import { engine, EngineError, openFile, revealFolder, copyText, isDesktop } from './api.js';
 
@@ -87,6 +87,11 @@ export function openDialog(html, { onClose } = {}) {
 
 export function confirmDialog({ title, message, confirmLabel = 'Confirm', danger = false }) {
   return new Promise((resolve) => {
+    // settles exactly once, whichever way the dialog goes away — Cancel, the
+    // confirm button, Escape or a click on the backdrop (the last two used to
+    // leave the caller's `await` pending forever)
+    let settled = false;
+    const done = (v) => { if (!settled) { settled = true; resolve(v); } };
     const { dlg, close } = openDialog(`
       <div class="dialog" style="max-width:400px">
         <div class="dialog-head"><h3>${esc(title)}</h3></div>
@@ -95,10 +100,8 @@ export function confirmDialog({ title, message, confirmLabel = 'Confirm', danger
           <button class="btn" data-close>Cancel</button>
           <button class="btn ${danger ? 'danger' : 'primary'}" data-yes>${esc(confirmLabel)}</button>
         </div>
-      </div>`);
-    dlg.querySelector('[data-yes]').onclick = () => { close(); resolve(true); };
-    dlg.querySelector('[data-close]').onclick = () => { close(); resolve(false); };
-    const prev = dlg.querySelector('[data-yes]');
+      </div>`, { onClose: () => done(false) });
+    dlg.querySelector('[data-yes]').onclick = () => { done(true); close(); };
   });
 }
 
@@ -122,14 +125,30 @@ export function reportError(e, context = '') {
 }
 
 export const actions = {
+  // pause/resume/retry are USER actions on a queue member: record the intent in
+  // the queue's `held` list so the orchestrator never overrides it (a merge in
+  // progress cannot be paused — the engine refuses it, so it is not offered)
   async pause(id) {
-    try { await engine.pause(id); await refreshOne(id); } catch (e) { reportError(e, 'Pause failed'); }
+    try {
+      await engine.pause(id);
+      holdQueueItem(id);
+      await refreshOne(id);
+    } catch (e) { reportError(e, 'Pause failed'); }
   },
   async resume(id) {
-    try { await engine.start(id); await refreshOne(id); } catch (e) { reportError(e, 'Resume failed'); }
+    try {
+      await engine.start(id);
+      releaseQueueItem(id);
+      await refreshOne(id);
+    } catch (e) { reportError(e, 'Resume failed'); }
   },
   async retry(id) {
-    try { await engine.start(id); await refreshOne(id); toast('info', 'Retry started', ''); } catch (e) { reportError(e, 'Retry failed'); }
+    try {
+      await engine.start(id);
+      releaseQueueItem(id);
+      await refreshOne(id);
+      toast('info', 'Retry started', '');
+    } catch (e) { reportError(e, 'Retry failed'); }
   },
   async cancel(id) {
     try { await engine.cancel(id); await refreshAll(); } catch (e) { reportError(e, 'Cancel failed'); }
@@ -259,7 +278,7 @@ export function paintRow(node, r, { selectable = true, compact = false } = {}) {
 
   const btns = [];
   const mini = (act, ic, title, danger = false) => `<button class="mini-btn ${danger ? 'danger' : ''}" data-act="${act}" title="${title}" aria-label="${title}">${icon(ic, 14)}</button>`;
-  if (running || merging) btns.push(mini('pause', 'pause', 'Pause'));
+  if (running) btns.push(mini('pause', 'pause', 'Pause')); // merging is not pausable (Cancel instead)
   if (paused || queued || failed || cancelled || (done && missing)) btns.push(mini(resuming(r) ? 'resume' : 'retry', resuming(r) ? 'play' : 'retry', resuming(r) ? 'Resume' : 'Retry'));
   if (!done && !cancelled) btns.push(mini('cancel', 'x', 'Cancel', true));
   if (done || failed || cancelled) btns.push(mini('open', 'external', 'Open file'));
@@ -345,10 +364,12 @@ export function paintRow(node, r, { selectable = true, compact = false } = {}) {
 
 export function rowMenu(x, y, r) {
   const st = r.state;
-  const running = ['downloading', 'retrying', 'merging', 'resolving'].includes(st);
+  // Pause only for transfers in flight (a merge cannot be paused; queued rows
+  // already offer Resume)
+  const pausable = st === 'downloading' || st === 'retrying';
   const done = st === 'completed';
   const items = [];
-  if (running) items.push({ label: 'Pause', icon: 'pause', act: () => actions.pause(r.id) });
+  if (pausable) items.push({ label: 'Pause', icon: 'pause', act: () => actions.pause(r.id) });
   if (st === 'paused' || st === 'queued' || st === 'created') items.push({ label: 'Resume', icon: 'play', act: () => actions.resume(r.id) });
   if (done && r.file_missing) items.push({ label: 'Retry download', icon: 'retry', act: () => actions.retry(r.id) });
   if (st === 'failed' || st === 'cancelled') items.push({ label: 'Retry', icon: 'retry', act: () => actions.retry(r.id) });
@@ -365,12 +386,17 @@ export function rowMenu(x, y, r) {
     if (open.length) {
       items.push('-');
       for (const q of open.slice(0, 4)) {
-        items.push({ label: `Add to queue: ${q.name}`, icon: 'queue', act: () => { q.itemIds.push(r.id); import('./store.js').then((m) => m.saveQueues()); } });
+        items.push({ label: `Add to queue: ${q.name}`, icon: 'queue', act: () => {
+          q.itemIds.push(r.id);
+          releaseQueueItem(r.id); // no hold left over from an earlier membership
+          saveQueues();
+          kickQueues(); // a running queue picks the new member up right away
+        } });
       }
     }
     if (inQ.length) {
       for (const q of inQ.slice(0, 3)) {
-        items.push({ label: `Remove from queue: ${q.name}`, icon: 'minus', act: () => { q.itemIds = q.itemIds.filter((x) => x !== r.id); import('./store.js').then((m) => m.saveQueues()); } });
+        items.push({ label: `Remove from queue: ${q.name}`, icon: 'minus', act: () => { q.itemIds = q.itemIds.filter((x) => x !== r.id); saveQueues(); } });
       }
     }
   }

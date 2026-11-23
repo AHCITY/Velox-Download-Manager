@@ -10,6 +10,7 @@ pub mod ids;
 pub mod inspect;
 pub mod manager;
 pub mod naming;
+pub mod paths;
 pub mod plan;
 pub mod ports;
 pub mod retry;

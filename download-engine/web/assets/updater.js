@@ -28,6 +28,7 @@ const ANNOUNCE_KEY = 'velox.update.announced'; // last version the user was told
 let lastCheckAt = 0;
 let checking = false;
 let pendingUpdate = null; // the plugin's Update handle (downloadAndInstall lives here)
+let installing = false; // an install is in flight: no second install, no status overwrites
 
 const nowTs = () => new Date().toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
 
@@ -48,23 +49,35 @@ export async function currentAppVersion() {
 // and is re-exported for compat with existing importers.
 export { isNewerVersion };
 
-/** Number of downloads that would be interrupted by a restart right now. */
-async function activeDownloadCount() {
+/** Downloads a restart would interrupt right now; `merging` of them cannot be paused. */
+async function activeDownloads() {
   try {
     const rows = (await engine.list()) ?? [];
-    return rows.filter((r) => ['downloading', 'retrying', 'merging', 'resolving'].includes(r.state)).length;
-  } catch { return 0; } // engine unreachable → assume none; restart is still user-confirmed
+    const active = rows.filter((r) => ['downloading', 'retrying', 'merging', 'resolving'].includes(r.state));
+    return { count: active.length, merging: active.filter((r) => r.state === 'merging').length };
+  } catch { return { count: 0, merging: 0 }; } // engine unreachable: assume none; restart is still user-confirmed
 }
 
-/** Pause everything running (best effort, bounded). Returns rows that refused. */
+/**
+ * Pause everything pausable (best effort, bounded). Returns the rows that
+ * refused (`stuck`) and the ones this call paused (`paused`): when the install
+ * does not happen, the latter are handed back because the app keeps running.
+ */
 async function pauseAllActive() {
   const rows = (await engine.list()) ?? [];
   const active = rows.filter((r) => ['downloading', 'retrying', 'resolving'].includes(r.state));
   const stuck = [];
+  const paused = [];
   for (const r of active) {
-    try { await engine.pause(r.id); } catch { stuck.push(r.id); }
+    try { await engine.pause(r.id); paused.push(r.id); } catch { stuck.push(r.id); }
   }
-  return stuck;
+  return { stuck, paused };
+}
+
+async function resumeRows(ids) {
+  for (const id of ids) {
+    try { await engine.start(id); } catch { /* row settled meanwhile */ }
+  }
 }
 
 /**
@@ -73,6 +86,13 @@ async function pauseAllActive() {
  * checks stay quiet — an offline machine must never be nagged.
  */
 export async function checkNow(announce = false) {
+  // the focus timer, the 6h timer and the Settings button all land here: while
+  // an install is running they must not overwrite "installing"/"restarting"
+  if (installing) return { status: 'installing' };
+  return runCheck(announce);
+}
+
+async function runCheck(announce = false) {
   const up = tauriUpdater();
   if (!up) {
     setUpdateState({ status: 'unavailable' });
@@ -138,22 +158,46 @@ function esc(s) {
  * A failure at any point leaves the app running with an honest error state.
  */
 export async function installUpdate() {
+  // re-entrancy: the toast button, Settings and the app menu all reach here, and
+  // two installs racing each other would launch two installers
+  if (installing) return { ok: false, message: 'an update is already installing' };
+  installing = true;
+  try {
+    return await runInstall();
+  } finally {
+    // after a successful hand-over the app is exiting and the flag stays set, so
+    // nothing can overwrite the "restarting" state in its last moments
+    if (store.update?.status !== 'restarting') installing = false;
+  }
+}
+
+async function runInstall() {
   const up = tauriUpdater();
   if (!up) return { ok: false, message: 'Updates require the desktop app' };
   if (!pendingUpdate) {
     // stale handle (state lost after reload): re-check first
-    const res = await checkNow(true);
+    const res = await runCheck(true);
     if (res.status !== 'available') return { ok: false, message: 'No update is pending' };
   }
 
   // 1) explicit consent + active-download protection
-  const active = await activeDownloadCount();
+  const { count: active, merging } = await activeDownloads();
   let proceed = true;
   if (active > 0) {
+    // a merge cannot be paused and the exit interrupts it: the row comes back as
+    // failed (merge interrupted) and needs Retry. Say so instead of promising a
+    // seamless resume for it.
+    const m = merging === 1;
+    const mergeNote = merging
+      ? `<br><br><b>${merging} download${m ? ' is' : 's are'} still merging</b> (streams being combined). A merge cannot be paused: ` +
+        `the restart interrupts ${m ? 'it' : 'them'}, ${m ? 'it' : 'they'} will show as <b>failed</b> (merge interrupted) and ` +
+        `${m ? 'needs' : 'need'} <b>Retry</b> after the update. Cancel to let the merge finish first.`
+      : '';
     proceed = await confirmDialog({
       title: `Restart with ${active} active download${active === 1 ? '' : 's'}?`,
       message: `<b>${active}</b> download${active === 1 ? ' is' : 's are'} still running. Installing the update pauses ` +
-        `them now (progress is checkpointed and resumes exactly where it stopped after the restart).<br><br>` +
+        (merging ? `the pausable ones now (progress is checkpointed and resumes exactly where it stopped after the restart).` : `them now (progress is checkpointed and resumes exactly where it stopped after the restart).`) +
+        `${mergeNote}<br><br>` +
         `Choose <b>Cancel</b> to keep downloading — the update offer stays in Settings → Updates.`,
       confirmLabel: 'Pause & install',
       danger: false,
@@ -173,8 +217,9 @@ export async function installUpdate() {
 
   // 2) pause active downloads and wait for the pauses to settle
   setUpdateState({ status: 'installing', got: 0, total: 0 });
-  const stuck = await pauseAllActive();
+  const { stuck, paused } = await pauseAllActive();
   if (stuck.length) {
+    await resumeRows(paused); // the app stays running: give back what was taken
     setUpdateState({ status: 'error', error: `could not pause ${stuck.length} download(s)` });
     toast('err', 'Update postponed', `${stuck.length} download(s) refused to pause — nothing was closed. Try again in a moment.`, [], 9000);
     return { ok: false, message: 'pause failed' };
@@ -199,6 +244,7 @@ export async function installUpdate() {
     else if (proc?.relaunch) setTimeout(() => { proc.relaunch().catch(() => {}); }, 600);
     return { ok: true };
   } catch (e) {
+    await resumeRows(paused); // the install failed and the app keeps running
     setUpdateState({ status: 'error', error: String(e?.message || e).slice(0, 140), at: lastCheckAt });
     toast('err', 'Update failed', String(e?.message || e).slice(0, 90), [], 9000);
     return { ok: false, message: String(e?.message || e) };
