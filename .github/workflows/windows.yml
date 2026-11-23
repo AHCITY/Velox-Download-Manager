@@ -106,7 +106,9 @@ jobs:
           cargo install tauri-cli --version "^2" --locked
           # the updater only signs when the private key env is present; the key is
           # tracked in the repo (dev-build convention, like the extension key)
-          $key = (Get-Content ..\..\scripts\velox-updater.key -Last 1).Trim()
+          $keyPath = Join-Path $env:GITHUB_WORKSPACE 'scripts\velox-updater.key'
+          $key = (Get-Content $keyPath -Last 1).Trim()
+          if ([string]::IsNullOrWhiteSpace($key)) { throw "updater key is empty at $keyPath" }
           $env:TAURI_SIGNING_PRIVATE_KEY = $key
           $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = ""
           cd app\src-tauri
