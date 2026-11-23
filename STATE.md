@@ -1,6 +1,6 @@
 # STATE.md — Velox Download Manager mission state
 
-Last updated: 2026-11-22 — **UI OVERHAUL SESSION** (complete product rebuild of the web frontend). Keep current; commit before ending every turn.
+Last updated: 2026-11-23 — **RELEASE TURN**: v0.5.0 shipped via CI (signed installer + latest.json + extension zip). Keep current; commit before ending every turn.
 
 ## Where things are
 
@@ -33,6 +33,32 @@ Last updated: 2026-11-22 — **UI OVERHAUL SESSION** (complete product rebuild o
   - **Recorded gotcha**: rAF is throttled to zero in background/headless webviews — `store.notify` uses `setTimeout(0)`.
   - Commit `9cffc19` pushed + remote verified. Windows build launched after it; installer refresh + publish + round-trip follow.
 
+## v0.5.0 release turn (2026-11-23) — CI-driven signed release
+
+- Pushed the extension-fix + release-pipeline stack (3 commits) and tagged v0.5.0;
+  windows.yml builds the signed NSIS installer on the tag and a release job publishes
+  installer + .sig + latest.json + Velox-Extension.zip + SHA256SUMS.txt.
+- CI bug found on the first tag run: the desktop job read the updater key via ..\..
+  relative to working-directory download-engine → one level ABOVE the repo root
+  ("Cannot find path 'D:\a\Velox-Download-Manager\scripts\...'"). Fixed by resolving
+  via $env:GITHUB_WORKSPACE (commit f1a84b3); the tag was moved onto it
+  (delete remote tag → retag → push — no release existed yet, so safe).
+- Second tag run hit the known Windows flake class in crash_resume: parent opened the
+  manifest right after SIGKILL → SQLITE_BUSY, and the row-insert-before-segment-plan
+  window tripped "segments planned". Fixed in tests (commit 818f01b): db() retries
+  busy opens ~5s; empty segments accepted while received==0. Tag moved again.
+- SHIPPED + VERIFIED (run 45219262512, all jobs green): release v0.5.0 contains
+  latest.json (version 0.5.0; sig trusted-comment version:0.5.0 — require_signed_version
+  satisfied; tag-pinned asset URL), Velox-Setup-x64.exe 4.3 MB + .sig, Velox-app-x64.exe,
+  Velox-Extension.zip, SHA256SUMS.txt.
+- Push flow: scripts/publish-release.sh with the token at .secrets/github-token
+  (0600, gitignored). CI watch: scripts/ci-poll.sh; release verify: scripts/release-check.sh.
+- The GitHub connector (account AHCITY) can read + create branches but CANNOT
+  git-push/tag — token-based push is the reliable path. Temporary connector probe
+  branch deleted after the push.
+- CAVEAT: 0.4.0 and older installs pin the pre-recycle updater key (lost) — they
+  cannot auto-update to 0.5.0; one manual install of Velox-Setup-x64.exe required.
+
 ## Auto-updater (added 2026-11-22, v0.3.0)
 
 - **Mechanism**: official `tauri-plugin-updater` 2.14.1 + `tauri-plugin-process` (relaunch), registered in `app/src-tauri/src/main.rs`. Endpoints: `releases/latest/download/latest.json`. Passive NSIS install mode. Permissions in `capabilities/main.json`: `updater:default`, `process:default`.
@@ -62,7 +88,7 @@ Last updated: 2026-11-22 — **UI OVERHAUL SESSION** (complete product rebuild o
 ## Browser ecosystem turn (2026-11-22, post-v0.3.1) — done + gotchas
 
 - Reference repo audited (cloned to /tmp, deleted after) → docs/FEATURE_COMPARISON.md + docs/THIRD_PARTY_NOTICES.md.
-- Browser extension: download-engine/extension/ (MV3, plain JS, pinned key → ID `hpaxoarvxcmmqijm`).
+- Browser extension: download-engine/extension/ (MV3, plain JS, pinned key → ID `ffnpjmbhfmaamhlbohbmamnmoaikpdmc`, re-derived from the shipped key — the old `hpaxoarvxcmmqijm` literal was WRONG and broke every connectNative; fixed in the 2026-11-23 extension audit).
 - Native host: crates/velox-host (`velox-browser-host`) — NM stdio ⇄ loopback HTTP JSON-RPC; 5 stdio E2E tests.
 - App: loopback bridge in app/src-tauri/src/main.rs (random 127.0.0.1 port + token in app_data/data/bridge.json, 0600; whitelist engine.info/list/status/create/pause/cancel).
 - P2 intelligence: SpeedStats tap (mirror broadcast subscriber) → StatusView bps_smoothed/avg/peak; UI details drawer shows avg/peak + etaState labels. Verified live (slow download: smoothed 1.8 / avg 2.1 / peak 4.2 MiB/s).
