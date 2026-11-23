@@ -52,7 +52,26 @@ async fn run_velox(args: &[&str], home: &Path, timeout: Duration) -> (i32, Strin
 }
 
 fn db(home: &Path) -> Db {
-    Db::open(&home.join("state.db")).expect("open manifest")
+    // Windows: right after a kill, the dying child's SQLite lock can outlive the
+    // process for a moment (OS handle cleanup) — a single open races SQLITE_BUSY.
+    let path = home.join("state.db");
+    let mut last: Option<String> = None;
+    for _ in 0..50 {
+        match Db::open(&path) {
+            Ok(d) => return d,
+            Err(e) => {
+                let dbg = format!("{e:?}");
+                let low = dbg.to_ascii_lowercase();
+                if low.contains("locked") || low.contains("busy") {
+                    last = Some(dbg);
+                    std::thread::sleep(Duration::from_millis(100));
+                } else {
+                    panic!("open manifest: {e}");
+                }
+            }
+        }
+    }
+    panic!("open manifest: stayed locked ~5s: {last:?}");
 }
 
 /// Invariant 1+2: manifest positions are a durable lower bound of what is on disk.
@@ -75,7 +94,13 @@ fn check_manifest_consistency(home: &Path) {
         .map(|m| m.len())
         .unwrap_or(0);
     let segs = d.segments(row.id).expect("segments");
-    assert!(!segs.is_empty(), "segments planned");
+    if segs.is_empty() {
+        // Legitimate kill window: the row is inserted BEFORE any segment is planned,
+        // so an in-flight manifest may legitimately have zero segments. Nothing may
+        // be claimed yet — `received` must still be 0 (Σ-consistency, invariant 2).
+        assert_eq!(row.received, 0, "no segments planned but received > 0");
+        return;
+    }
     let mut sum = 0i64;
     for s in &segs {
         assert!(s.pos >= 0);
