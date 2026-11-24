@@ -31,10 +31,17 @@ RequestExecutionLevel user
   !define BUILD_STAGING "/tmp/installer"
 !endif
 !ifndef BUILD_OUTPUT
-  !define BUILD_OUTPUT "${BUILD_STAGING}/Velox-Setup-x64-unified.exe"
+  !define BUILD_OUTPUT "${BUILD_STAGING}${SEP}Velox-Setup-x64-unified.exe"
 !endif
 !ifndef BUILD_ICON_DIR
   !define BUILD_ICON_DIR "/home/z/my-project/download-engine/app/src-tauri/icons"
+!endif
+; Path separator for JOINING build paths. NSIS's File command splits paths on
+; the BUILD HOST's native separator only (util.cpp get_dir_name — upstream
+; BUGBUG note: Windows supports "\" only). CI on Windows passes backslash
+; staging dirs, so the default is "\"; Linux cross-builds pass -DSEP=/ .
+!ifndef SEP
+  !define SEP "\"
 !endif
 !define PRODUCT_NAME "Velox"
 !define IDENTIFIER "io.velox.downloadmanager"
@@ -57,8 +64,8 @@ VIAddVersionKey CompanyName "Velox Project"
 VIAddVersionKey FileDescription "Velox installer"
 VIAddVersionKey LegalCopyright "MIT License"
 
-!define MUI_ICON "${BUILD_ICON_DIR}/icon.ico"
-!define MUI_UNICON "${BUILD_ICON_DIR}/icon.ico"
+!define MUI_ICON "${BUILD_ICON_DIR}${SEP}icon.ico"
+!define MUI_UNICON "${BUILD_ICON_DIR}${SEP}icon.ico"
 !define MUI_ABORTWARNING
 !define MUI_FINISHPAGE_RUN "$INSTDIR\Velox.exe"
 !define MUI_FINISHPAGE_RUN_TEXT "Launch Velox"
@@ -154,22 +161,22 @@ interactive:
 files:
 
   ; --- application ---
-  File "/oname=Velox.exe" "${BUILD_STAGING}/Velox.exe"
+  File "/oname=Velox.exe" "${BUILD_STAGING}${SEP}Velox.exe"
 
   ; --- browser ecosystem: extension assets + native messaging host ---
-  File "/oname=velox-browser-host.exe" "${BUILD_STAGING}/velox-browser-host.exe"
+  File "/oname=velox-browser-host.exe" "${BUILD_STAGING}${SEP}velox-browser-host.exe"
   SetOutPath "$INSTDIR\extension"
-  File "/oname=manifest.json" "${BUILD_STAGING}/extension/manifest.json"
-  File "/oname=background.js" "${BUILD_STAGING}/extension/background.js"
-  File "/oname=popup.html" "${BUILD_STAGING}/extension/popup.html"
-  File "/oname=popup.css" "${BUILD_STAGING}/extension/popup.css"
-  File "/oname=popup.js" "${BUILD_STAGING}/extension/popup.js"
-  File "/oname=README.md" "${BUILD_STAGING}/extension/README.md"
+  File "/oname=manifest.json" "${BUILD_STAGING}${SEP}extension${SEP}manifest.json"
+  File "/oname=background.js" "${BUILD_STAGING}${SEP}extension${SEP}background.js"
+  File "/oname=popup.html" "${BUILD_STAGING}${SEP}extension${SEP}popup.html"
+  File "/oname=popup.css" "${BUILD_STAGING}${SEP}extension${SEP}popup.css"
+  File "/oname=popup.js" "${BUILD_STAGING}${SEP}extension${SEP}popup.js"
+  File "/oname=README.md" "${BUILD_STAGING}${SEP}extension${SEP}README.md"
   SetOutPath "$INSTDIR\extension\icons"
-  File "/oname=16.png" "${BUILD_STAGING}/extension/icons/16.png"
-  File "/oname=32.png" "${BUILD_STAGING}/extension/icons/32.png"
-  File "/oname=48.png" "${BUILD_STAGING}/extension/icons/48.png"
-  File "/oname=128.png" "${BUILD_STAGING}/extension/icons/128.png"
+  File "/oname=16.png" "${BUILD_STAGING}${SEP}extension${SEP}icons${SEP}16.png"
+  File "/oname=32.png" "${BUILD_STAGING}${SEP}extension${SEP}icons${SEP}32.png"
+  File "/oname=48.png" "${BUILD_STAGING}${SEP}extension${SEP}icons${SEP}48.png"
+  File "/oname=128.png" "${BUILD_STAGING}${SEP}extension${SEP}icons${SEP}128.png"
   SetOutPath "$INSTDIR"
   ; --register without an argument uses the canonical ID derived from the
   ; extension manifest key (a stale literal here would make Chrome refuse NM)
@@ -178,13 +185,13 @@ files:
   Pop $0
 
   ; --- media tooling: bundled yt-dlp + LGPL ffmpeg (YouTube etc.) ---
-  File "/oname=yt-dlp.exe" "${BUILD_STAGING}/yt-dlp.exe"
-  File "/oname=ffmpeg.exe" "${BUILD_STAGING}/ffmpeg.exe"
-  File "/oname=ffprobe.exe" "${BUILD_STAGING}/ffprobe.exe"
+  File "/oname=yt-dlp.exe" "${BUILD_STAGING}${SEP}yt-dlp.exe"
+  File "/oname=ffmpeg.exe" "${BUILD_STAGING}${SEP}ffmpeg.exe"
+  File "/oname=ffprobe.exe" "${BUILD_STAGING}${SEP}ffprobe.exe"
 
   ; --- licenses & notices (LGPL compliance) ---
-  File "/oname=THIRD-PARTY-NOTICES.md" "${BUILD_STAGING}/THIRD_PARTY_NOTICES.md"
-  File "/oname=FFMPEG-LICENSE.txt" "${BUILD_STAGING}/ffmpeg-lgpl-LICENSE.txt"
+  File "/oname=THIRD-PARTY-NOTICES.md" "${BUILD_STAGING}${SEP}THIRD_PARTY_NOTICES.md"
+  File "/oname=FFMPEG-LICENSE.txt" "${BUILD_STAGING}${SEP}ffmpeg-lgpl-LICENSE.txt"
 
   ; --- verify every required bundled file actually exists (Phase 5) ---
   StrCpy $3 0
@@ -219,7 +226,7 @@ files:
   StrCmp $0 "" 0 runtime_ok
   ReadRegStr $0 HKCU "${WEBVIEW2_KEY_L}" "pv"
   StrCmp $0 "" 0 runtime_ok
-  File "/oname=WebView2Setup.exe" "${BUILD_STAGING}/MicrosoftEdgeWebview2Setup.exe"
+  File "/oname=WebView2Setup.exe" "${BUILD_STAGING}${SEP}MicrosoftEdgeWebview2Setup.exe"
   DetailPrint "WebView2 runtime not found - installing (Evergreen standalone)..."
   ExecWait '"$INSTDIR\WebView2Setup.exe" /silent /install' $1
   DetailPrint "WebView2 installer exit code: $1"
