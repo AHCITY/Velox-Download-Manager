@@ -195,15 +195,15 @@ jobs:
         run: |
           $seven = "C:\Program Files\7-Zip\7z.exe"
           if (-not (Test-Path $seven)) { throw "7-Zip not found at $seven" }
-          $listing = & $seven l Velox-Setup-x64-unified.exe
-          # NSIS stores the payload flat: the template installs every extension
-          # file with /oname= directly into $INSTDIR (manifest.json, README.md,
-          # icons...) — there is no "extension/" directory inside the archive,
-          # so the required list uses the FLAT installed names.
+          # 7-Zip's NSIS handler displays inner paths with the HOST separator:
+          # the Windows runner lists "extension\README.md" while the check (and
+          # our Linux local verification) uses forward slashes. Normalize the
+          # listing to forward slashes before matching.
+          $listing = (& $seven l Velox-Setup-x64-unified.exe) -replace '\\','/'
           $required = @(
             "Velox.exe", "velox-browser-host.exe", "yt-dlp.exe",
-            "ffmpeg.exe", "ffprobe.exe", "manifest.json",
-            "background.js", "popup.html", "popup.js", "README.md",
+            "ffmpeg.exe", "ffprobe.exe", "extension", "manifest.json",
+            "background.js", "popup.html", "popup.js", "extension/README.md",
             "THIRD-PARTY-NOTICES.md", "FFMPEG-LICENSE.txt", "WebView2Setup"
           )
           $missing = @()
