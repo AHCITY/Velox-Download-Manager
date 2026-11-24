@@ -1,0 +1,58 @@
+{
+  "cold_build_ci": {
+    "source": "GitHub Actions windows-latest, desktop job, runs 45354005853 (28799af4) + 45357202428 (a816ebf3)",
+    "job_total_s": 491,
+    "steps_s": {
+      "checkout": 6,
+      "toolchain": 7,
+      "cargo_fetch_locked": 48,
+      "tauri_app_build_release": 412,
+      "velox_host_build_stage": 8,
+      "stage_components_download": 4,
+      "nsis_install": 10,
+      "makensis_sign": null,
+      "verify_7z": null
+    },
+    "app_build_split_s": {
+      "dependencies_294_crates": [
+        206,
+        149
+      ],
+      "velox_app_itself_fat_lto_cu1": [
+        210,
+        169
+      ],
+      "slowest_crate_engine_media_static_ffmpeg": "RETRACTED: engine-media is pure Rust, 719 lines; no static C ffmpeg",
+      "note_correction": "gap-attribution correction: the 158-195s gap after 'Compiling engine-media' is velox-app's own codegen+fat-LTO link (engine-media itself is 719 lines, compiles in <2s); so: deps ~149-206s, app crate link ~157-210s"
+    },
+    "notes": "CARGO_INCREMENTAL=0, no cargo cache action, no sccache; engine-media embeds static FFmpeg libs (C build) and dominates dep time; velox-app link uses fat LTO + codegen-units=1 + strip in app/src-tauri/Cargo.toml"
+  },
+  "staging_payload_bytes": {
+    "Velox.exe": 15972352,
+    "yt-dlp.exe": 23627865,
+    "ffmpeg.exe": 138752000,
+    "ffprobe.exe": 138535424,
+    "MicrosoftEdgeWebview2Setup.exe": 1826528,
+    "velox-browser-host.exe": 374784,
+    "THIRD-PARTY_NOTICES.md": 2662,
+    "ffmpeg_lgpl_LICENSE.txt": 7651,
+    "extension_dir": "small (manifest+js+4 png icons)",
+    "payload_total_excl_ext_and_zip": 323899266,
+    "installer_bytes": 147768031,
+    "ffmpeg_share_of_payload": 0.867,
+    "ffmpeg_zip_downloaded_then_discarded_bytes": 179014274
+  },
+  "nsis_template_findings": {
+    "SetCompressor_directive": "ABSENT (NSIS defaults to zlib, non-solid)",
+    "compression_estimate": "payload 323.9MB -> installer 147.8MB = 2.19x overall",
+    "per_file_notes": "Velox.exe/yt-dlp/ffmpeg binaries are already-compressed or high-entropy; zlib on PE files typically 1.5-2x; ffmpeg/ffprobe share most codec code -> solid/LZMA would dedupe significantly",
+    "updater_contract": "installer is signed as a whole by tauri signer; SetCompressor change does not affect signature validity (sig covers final bytes)",
+    "webview2": "Evergreen bootstrapper 1.8MB, executed only if runtime missing, then DELETED from INSTDIR - correct minimal choice, keep"
+  },
+  "ci_caching": {
+    "actions_cache_used": false,
+    "sccache_used": false,
+    "xwin_cache": "local-only (.xwin-cache 1.1GB), CI does not need xwin (native MSVC toolchain on runner)",
+    "impact": "every tag build recompiles all 294 dep crates incl. 158-195s engine-media C build"
+  }
+}

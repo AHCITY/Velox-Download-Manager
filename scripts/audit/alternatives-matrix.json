@@ -1,0 +1,48 @@
+{
+  "alternatives_comparison": {
+    "methodology": "Build speed and installer size are measured (this sandbox, real payload, makensis A/B + py7zr/lzma experiments). Install/upgrade speed and NM registration are assessed from the NSIS script's actual behavior and the documented Tauri NSIS bundle layout; items marked [assessed] were not executed on a live Windows machine in this session.",
+    "candidates": [
+      {
+        "name": "Custom unified NSIS template (CURRENT)",
+        "build_speed": "makensis, measured in this session (see nsis_ab)",
+        "installer_size": "147.8 MB @ zlib (measured); ~117 MB @ /SOLID lzma (measured model, to be confirmed by makensis A/B)",
+        "why_it_is_needed": [
+          "ONE payload = Velox.exe + extension + NM host + yt-dlp + ffmpeg/ffprobe + WebView2 bootstrapper + licenses",
+          "update-mode contract: /P /S /R /UPDATE handling, wait-for-app-exit up to 120s, honest abort (exit 2), restart after update (RC7/RC8 fixes)",
+          "NM registration via velox-browser-host.exe --register (host writes its own manifest with correct path) + 6 browser registry keys cleaned on uninstall",
+          "graceful close: WM_CLOSE via taskkill w/o /F, bounded wait, RETRYCANCEL prompt, never force-kill on user data"
+        ],
+        "verdict": "KEEP as the installer technology"
+      },
+      {
+        "name": "Tauri NSIS bundler (bundle.targets=['nsis'])",
+        "assessment": "tauri.conf.json already lists nsis as a bundle target but CI never invokes `tauri build`; the custom template is used instead",
+        "limitations_vs_current": [
+          "bundles only the Tauri app resources — yt-dlp/ffmpeg/extension/NM host would need the (undocumented-ish) resources mechanism; WebView2 handling differs (downloadBootstrapper already configured)",
+          "NSIS hooks exist (installerHooks / customLanguageFiles) but the updater contract (/P /S /UPDATE wait-handover-restart, exit-code 2 semantics) is custom here",
+          "would require re-implementing update-mode + NM registration inside Tauri's generated script; the current template already encodes lessons RC7/RC8",
+          "tldr: migration risk with no measured size/build advantage — the payload dominates, not the installer engine"
+        ],
+        "verdict": "REJECT for the unified payload; keep tauri.conf bundle config as-is (harmless)"
+      },
+      {
+        "name": "Inno Setup",
+        "assessment": "[assessed] capable (LZMA2/solid, good silent flags, registry support) but: Pascal-script based NM registration + update-mode would be a rewrite; no measurable size advantage (same LZMA family — our measured payload floor is ~117 MB solid-LZMA); ISCC is Windows-only with no first-class GH Actions caching difference",
+        "verdict": "REJECT — full rewrite of working updater contract for zero measured gain"
+      },
+      {
+        "name": "WiX MSI / Burn bundle",
+        "assessment": "[assessed] MSI gives enterprise deployment (GPO, rollback, component repair) but: per-user install + NM registration + custom update flow fight MSI's servicing model; WiX v4/v5 build adds .NET SDK dep to CI; bundle size similar (same compression family); Burn bootstrapper adds UX we do not control for the updater handover",
+        "verdict": "REJECT — solves problems this consumer per-user app does not have"
+      }
+    ],
+    "decision_rule": "Do not replace NSIS based on theoretical advantages — confirmed: no candidate demonstrates a measurable advantage on size/build; the custom template holds the working updater + NM contract"
+  },
+  "pipeline_bottleneck_ranking": [
+    {"rank": 1, "item": "Cold dependency compile (294 crates, 149-206s) + velox-app fat-LTO link (157-210s) — NO cache between runs", "fix": "rust-cache action (Cargo.lock keyed) + keep fat LTO for release only"},
+    {"rank": 2, "item": "cargo fetch step (48s) re-downloads the registry every run", "fix": "covered by the same rust-cache (cargo home cache)"},
+    {"rank": 3, "item": "NSIS default zlib leaves 29.6 MB on the table (147.8 -> ~117 MB measured floor)", "fix": "SetCompressor /SOLID lzma (one line) — build-time cost measured in A/B test"},
+    {"rank": 4, "item": "ffmpeg.zip (179 MB) downloaded and fully extracted to pick 2 files, then discarded — wasted bandwidth each CI run", "fix": "stage ffmpeg/ffprobe as CI cache keyed by the download URL, or use the smaller essentials build if codec needs allow — MUST verify codec coverage before switching builds"},
+    {"rank": 5, "item": "velox-host rebuilt from scratch each run (6-8s — negligible)", "fix": "none needed"}
+  ]
+}

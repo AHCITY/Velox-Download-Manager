@@ -1,0 +1,314 @@
+{
+  "total_count": 3,
+  "jobs": [
+    {
+      "id": 138317867618,
+      "run_id": 45357202428,
+      "workflow_name": "windows",
+      "head_branch": "v0.6.0",
+      "run_url": "https://api.github.com/repos/AHCITY/Velox-Download-Manager/actions/runs/45357202428",
+      "run_attempt": 1,
+      "node_id": "CR_kwDOV2hQ2M8AAAAgNGMqYg",
+      "head_sha": "a816ebf34070f1f9267802f9e2f5600b616955d9",
+      "url": "https://api.github.com/repos/AHCITY/Velox-Download-Manager/actions/jobs/138317867618",
+      "html_url": "https://github.com/AHCITY/Velox-Download-Manager/actions/runs/45357202428/job/138317867618",
+      "status": "completed",
+      "conclusion": "success",
+      "created_at": "2026-11-24T08:33:47Z",
+      "started_at": "2026-11-24T08:33:49Z",
+      "completed_at": "2026-11-24T08:45:06Z",
+      "name": "windows",
+      "steps": [
+        {
+          "name": "Set up job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 1,
+          "started_at": "2026-11-24T08:33:50Z",
+          "completed_at": "2026-11-24T08:33:51Z"
+        },
+        {
+          "name": "Run actions/checkout@v4",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 2,
+          "started_at": "2026-11-24T08:33:51Z",
+          "completed_at": "2026-11-24T08:33:56Z"
+        },
+        {
+          "name": "Run dtolnay/rust-toolchain@stable",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 3,
+          "started_at": "2026-11-24T08:33:56Z",
+          "completed_at": "2026-11-24T08:34:02Z"
+        },
+        {
+          "name": "Formatting check",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 4,
+          "started_at": "2026-11-24T08:34:02Z",
+          "completed_at": "2026-11-24T08:34:07Z"
+        },
+        {
+          "name": "Clippy (workspace, all targets, warnings are errors)",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 5,
+          "started_at": "2026-11-24T08:34:07Z",
+          "completed_at": "2026-11-24T08:35:37Z"
+        },
+        {
+          "name": "Build (workspace, all targets)",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 6,
+          "started_at": "2026-11-24T08:35:37Z",
+          "completed_at": "2026-11-24T08:38:16Z"
+        },
+        {
+          "name": "Unit + integration tests (workspace, incl. cfg(windows) lock-crash-recovery test)",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 7,
+          "started_at": "2026-11-24T08:38:16Z",
+          "completed_at": "2026-11-24T08:39:24Z"
+        },
+        {
+          "name": "Frontend unit tests (node:test)",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 8,
+          "started_at": "2026-11-24T08:39:24Z",
+          "completed_at": "2026-11-24T08:39:27Z"
+        },
+        {
+          "name": "Desktop-app unit tests (velox-app — browser detection, host-manifest probe)",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 9,
+          "started_at": "2026-11-24T08:39:27Z",
+          "completed_at": "2026-11-24T08:42:25Z"
+        },
+        {
+          "name": "CLI startup/shutdown smoke (v1 stdio, portable ctrl_c path)",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 10,
+          "started_at": "2026-11-24T08:42:25Z",
+          "completed_at": "2026-11-24T08:42:26Z"
+        },
+        {
+          "name": "API v2 smoke — serve-http startup, RPC round-trip, Host guard, clean shutdown",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 11,
+          "started_at": "2026-11-24T08:42:26Z",
+          "completed_at": "2026-11-24T08:44:48Z"
+        },
+        {
+          "name": "Crash-recovery focus (windows lock variant + resume tests)",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 12,
+          "started_at": "2026-11-24T08:44:48Z",
+          "completed_at": "2026-11-24T08:45:03Z"
+        },
+        {
+          "name": "Post Run actions/checkout@v4",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 24,
+          "started_at": "2026-11-24T08:45:03Z",
+          "completed_at": "2026-11-24T08:45:05Z"
+        },
+        {
+          "name": "Complete job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 25,
+          "started_at": "2026-11-24T08:45:05Z",
+          "completed_at": "2026-11-24T08:45:05Z"
+        }
+      ],
+      "check_run_url": "https://api.github.com/repos/AHCITY/Velox-Download-Manager/check-runs/138317867618",
+      "labels": [
+        "windows-latest"
+      ],
+      "runner_id": 1000000295,
+      "runner_name": "GitHub Actions 1000000295",
+      "runner_group_id": 0,
+      "runner_group_name": "GitHub Actions"
+    },
+    {
+      "id": 138323450988,
+      "run_id": 45357202428,
+      "workflow_name": "windows",
+      "head_branch": "v0.6.0",
+      "run_url": "https://api.github.com/repos/AHCITY/Velox-Download-Manager/actions/runs/45357202428",
+      "run_attempt": 1,
+      "node_id": "CR_kwDOV2hQ2M8AAAAgNLhcbA",
+      "head_sha": "a816ebf34070f1f9267802f9e2f5600b616955d9",
+      "url": "https://api.github.com/repos/AHCITY/Velox-Download-Manager/actions/jobs/138323450988",
+      "html_url": "https://github.com/AHCITY/Velox-Download-Manager/actions/runs/45357202428/job/138323450988",
+      "status": "completed",
+      "conclusion": "failure",
+      "created_at": "2026-11-24T08:45:07Z",
+      "started_at": "2026-11-24T08:45:10Z",
+      "completed_at": "2026-11-24T08:51:51Z",
+      "name": "desktop",
+      "steps": [
+        {
+          "name": "Set up job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 1,
+          "started_at": "2026-11-24T08:45:12Z",
+          "completed_at": "2026-11-24T08:45:13Z"
+        },
+        {
+          "name": "Run actions/checkout@v4",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 2,
+          "started_at": "2026-11-24T08:45:13Z",
+          "completed_at": "2026-11-24T08:45:19Z"
+        },
+        {
+          "name": "Run dtolnay/rust-toolchain@stable",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 3,
+          "started_at": "2026-11-24T08:45:19Z",
+          "completed_at": "2026-11-24T08:45:25Z"
+        },
+        {
+          "name": "Resolve dependencies with the committed Cargo.lock (reproducibility gate)",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 4,
+          "started_at": "2026-11-24T08:45:25Z",
+          "completed_at": "2026-11-24T08:46:10Z"
+        },
+        {
+          "name": "Build Velox desktop app (release, updater-enabled)",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 5,
+          "started_at": "2026-11-24T08:46:10Z",
+          "completed_at": "2026-11-24T08:51:25Z"
+        },
+        {
+          "name": "Build + stage the native messaging host from the workspace",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 6,
+          "started_at": "2026-11-24T08:51:25Z",
+          "completed_at": "2026-11-24T08:51:32Z"
+        },
+        {
+          "name": "Stage bundled components (yt-dlp, LGPL ffmpeg/ffprobe, WebView2 fallback)",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 7,
+          "started_at": "2026-11-24T08:51:32Z",
+          "completed_at": "2026-11-24T08:51:37Z"
+        },
+        {
+          "name": "Install NSIS (makensis for the unified installer)",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 8,
+          "started_at": "2026-11-24T08:51:37Z",
+          "completed_at": "2026-11-24T08:51:47Z"
+        },
+        {
+          "name": "Build the unified NSIS installer (makensis, updater-signed)",
+          "status": "completed",
+          "conclusion": "failure",
+          "number": 9,
+          "started_at": "2026-11-24T08:51:47Z",
+          "completed_at": "2026-11-24T08:51:48Z"
+        },
+        {
+          "name": "Verify the installer actually contains every required component",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 10,
+          "started_at": "2026-11-24T08:51:48Z",
+          "completed_at": "2026-11-24T08:51:48Z"
+        },
+        {
+          "name": "Upload unified installer artifact",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 11,
+          "started_at": "2026-11-24T08:51:48Z",
+          "completed_at": "2026-11-24T08:51:48Z"
+        },
+        {
+          "name": "Upload unified installer signature artifact",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 12,
+          "started_at": "2026-11-24T08:51:48Z",
+          "completed_at": "2026-11-24T08:51:48Z"
+        },
+        {
+          "name": "Post Run actions/checkout@v4",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 24,
+          "started_at": "2026-11-24T08:51:48Z",
+          "completed_at": "2026-11-24T08:51:49Z"
+        },
+        {
+          "name": "Complete job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 25,
+          "started_at": "2026-11-24T08:51:49Z",
+          "completed_at": "2026-11-24T08:51:50Z"
+        }
+      ],
+      "check_run_url": "https://api.github.com/repos/AHCITY/Velox-Download-Manager/check-runs/138323450988",
+      "labels": [
+        "windows-latest"
+      ],
+      "runner_id": 1000000296,
+      "runner_name": "GitHub Actions 1000000296",
+      "runner_group_id": 0,
+      "runner_group_name": "GitHub Actions"
+    },
+    {
+      "id": 138326755827,
+      "run_id": 45357202428,
+      "workflow_name": "windows",
+      "head_branch": "v0.6.0",
+      "run_url": "https://api.github.com/repos/AHCITY/Velox-Download-Manager/actions/runs/45357202428",
+      "run_attempt": 1,
+      "node_id": "CR_kwDOV2hQ2M8AAAAgNOrJ8w",
+      "head_sha": "a816ebf34070f1f9267802f9e2f5600b616955d9",
+      "url": "https://api.github.com/repos/AHCITY/Velox-Download-Manager/actions/jobs/138326755827",
+      "html_url": "https://github.com/AHCITY/Velox-Download-Manager/actions/runs/45357202428/job/138326755827",
+      "status": "completed",
+      "conclusion": "skipped",
+      "created_at": "2026-11-24T08:51:51Z",
+      "started_at": "2026-11-24T08:51:51Z",
+      "completed_at": "2026-11-24T08:51:51Z",
+      "name": "release",
+      "steps": [
+
+      ],
+      "check_run_url": "https://api.github.com/repos/AHCITY/Velox-Download-Manager/check-runs/138326755827",
+      "labels": [
+        "ubuntu-latest"
+      ],
+      "runner_id": null,
+      "runner_name": null,
+      "runner_group_id": null,
+      "runner_group_name": null
+    }
+  ]
+}

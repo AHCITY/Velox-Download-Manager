@@ -33,6 +33,19 @@ Last updated: 2026-11-24 — **v0.6.0 TURN**: extension install fixed at the pac
   - **Recorded gotcha**: rAF is throttled to zero in background/headless webviews — `store.notify` uses `setTimeout(0)`.
   - Commit `9cffc19` pushed + remote verified. Windows build launched after it; installer refresh + publish + round-trip follow.
 
+## Pipeline audit turn (2026-11-24, later)
+- **CI repairs (3 bugs found+fixed, each verified by a real run):**
+  1. a816ebf — windows-latest has NO NSIS preinstalled → choco install step (+sourceforge fallback).
+  2. 3e6e7b7 — desktop job cwd is download-engine/; makensis template path must be $env:GITHUB_WORKSPACE-absolute.
+  3. eec7c6f — NSIS BUGBUG (util.cpp get_dir_name splits File paths on the host separator only): mixed `staging/Velox.exe` paths → "no files found" on Windows makensis. Template now joins via ${SEP} (default backslash; local Linux builds pass -DSEP=/). Local rebuild byte-identical (sha256 f369b184...).
+- **Audit measurements** (scripts/audit/, report: download/Velox-Pipeline-Installer-Audit.docx):
+  - Cold desktop job 491 s: app build 412 s (deps 294 crates 149-206 s + velox-app fat-LTO link 157-210 s), fetch 48 s. NO CI caching at all.
+  - Warm local incremental rebuild: 134 s (app crate + link only).
+  - Installer payload: ffmpeg+ffprobe = 277.3 MB of 323.9 MB (86.7%). NSIS default zlib (no SetCompressor). makensis A/B on real payload: zlib 31 s → 147.77 MB; /SOLID lzma 149 s → 117.24 MB (−30.5 MB, −20.7%). Signature unaffected (signs final bytes).
+  - ffmpeg.zip 179 MB downloaded+extracted+discarded every CI run.
+  - Alternatives: Tauri NSIS bundler / Inno / WiX-Burn all rejected (no measurable gain; rewrite of updater contract RC7/RC8 + NM registration). KEEP custom NSIS.
+  - Recommended (NOT yet applied — release in flight): SetCompressor /SOLID lzma; Swatinem/rust-cache on app/src-tauri Cargo.lock; actions/cache for staged yt-dlp/ffmpeg/WebView2; keep fat LTO+cu1+strip for release.
+
 ## v0.6.0 turn (2026-11-24) — extension root cause + unified installer + UI refinement
 
 Root causes found & fixed (user screenshots were the evidence):
