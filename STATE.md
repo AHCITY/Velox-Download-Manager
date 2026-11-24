@@ -197,6 +197,23 @@ Gates at round end: cargo fmt ✓, clippy workspace 0 issues, JS tests 4/4, E2E 
 
 HONEST LIMITS: no real-Windows machine available → installer run/install, console-window invisibility (flag present at all 3 sites, mechanism documented), and a real updater hop are UNTESTED on Windows; sandbox recycled mid-round (toolchain rebuilt via scripts/rebuild-toolchain.sh; GitHub token + velox-updater.key were LOST with it — push and release signing need re-provisioning).
 
+## NEXT SESSION STARTS HERE — v0.6.0 CI watch (turn ended mid-CI)
+
+- main = 28799af4 (all v0.6.0 work), tag v0.6.0 = 28799af4 (includes the YAML fix:
+  colons in plain step-name scalars broke windows.yml — runs had ZERO jobs).
+- CI watch: `bash scripts/ci-poll.sh` — the tag run (head_branch v0.6.0) builds the
+  unified installer in the desktop job (windows gate → desktop → release).
+- On green: verify with `bash scripts/release-check.sh` — expect EXACTLY
+  Velox-Setup-x64-unified.exe + .sig + latest.json + SHA256SUMS.txt on
+  releases/tag/v0.6.0 (release-check.sh TAG var still says v0.5.0 — change to v0.6.0),
+  then verify latest.json URL/signature (trusted comment version:0.6.0).
+- On desktop-job failure: fetch job logs via API, fix, commit, move tag
+  (delete remote tag → retag → push), rerun. Locally-built + verified installer copy:
+  download/v0.6.0-staging/ (147 MB, 22 files, signed, latest.json version:0.6.0) —
+  CI's copy must match this composition.
+- v0.5.0 page already cleaned (Velox-app-x64.exe + Velox-Extension.zip deleted; its
+  updater trio Velox-Setup-x64.exe + .sig + latest.json stays for that tag's manifest).
+
 ## Remaining / next candidates
 
 1. Toast matrix per notification pref; media-merge UI exercise needs yt-dlp + ffmpeg on a real machine (honest-unavailable states already in place).
