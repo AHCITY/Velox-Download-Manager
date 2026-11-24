@@ -147,6 +147,21 @@ jobs:
           Copy-Item "app\src-tauri\target\release\Velox.exe" "$env:STAGING\Velox.exe"
           Get-ChildItem "$env:STAGING" | Select-Object Name, Length
 
+      - name: Install NSIS (makensis for the unified installer)
+        # windows-latest runners do NOT ship NSIS — install it, with a direct
+        # setup-exe fallback in case the chocolatey feed is flaky.
+        shell: pwsh
+        run: |
+          choco install nsis -y --no-progress
+          $nsis = "C:\Program Files (x86)\NSIS\makensis.exe"
+          if (-not (Test-Path $nsis)) {
+            Write-Host "choco install did not produce makensis — direct NSIS setup fallback"
+            Invoke-WebRequest -Uri "https://downloads.sourceforge.net/nsis/nsis-3.10-setup.exe" -OutFile nsis-setup.exe
+            Start-Process -FilePath ".\nsis-setup.exe" -ArgumentList "/S" -Wait -NoNewWindow
+          }
+          if (-not (Test-Path $nsis)) { throw "makensis still missing at $nsis after install" }
+          & $nsis -VERSION
+
       - name: Build the unified NSIS installer (makensis, updater-signed)
         shell: pwsh
         run: |
