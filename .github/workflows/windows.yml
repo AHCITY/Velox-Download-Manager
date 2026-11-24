@@ -180,7 +180,7 @@ jobs:
             "/DBUILD_STAGING=$env:STAGING" `
             "/DBUILD_OUTPUT=$env:STAGING\Velox-Setup-x64-unified.exe" `
             "/DBUILD_ICON_DIR=$env:GITHUB_WORKSPACE\download-engine\app\src-tauri\icons" `
-            scripts\installer-unified-template.nsi
+            "$env:GITHUB_WORKSPACE\scripts\installer-unified-template.nsi"
           if ($LASTEXITCODE -ne 0) { throw "makensis failed with $LASTEXITCODE" }
           # sign the EXACT installer bytes the updater will verify (minisign,
           # trusted-comment version binding checked by require_signed_version)
