@@ -7,11 +7,11 @@
 // (no URL-input-first toolbar).
 import { icon } from './assets/icons.js';
 import {
-  store, bootstrap, counts, subscribe, refreshAll, visibleRows, fmtSpeed, notify, toast, setPrefs,
-  PAUSABLE_STATES,
+  store, bootstrap, counts, subscribe, refreshAll, visibleRows, notify, toast, setPrefs,
+  PAUSABLE_STATES, ACTIVE_STATES,
 } from './assets/store.js';
 import {
-  $, el, esc, renderToasts, detailsDrawer, paintDetails, actions, contextMenu,
+  $, el, esc, renderToasts, detailsDrawer, paintDetails, actions, contextMenu, openDialog,
 } from './assets/ui.js';
 import { openAddDialog } from './assets/screens/addDialog.js';
 
@@ -64,8 +64,8 @@ function buildToolbar() {
       <input id="tbSearch" placeholder="Search downloads — name, URL, folder" aria-label="Search downloads">
     </div>
     <span style="flex:1"></span>
-    <span class="agg-pill" title="Combined speed of active downloads">
-      <span class="live" id="tbLive"></span><b id="tbAgg">0 B/s</b>
+    <span class="agg-pill" id="tbActivePill" title="Downloads currently transferring (downloading, retrying, resolving or merging)">
+      Active downloads <b id="tbActive">0</b>
     </span>
     <button class="icon-btn" id="tbBell" title="Recent activity" aria-label="Recent activity">${icon('bell', 15)}</button>
     <button class="icon-btn" id="tbMenu" title="Application menu" aria-label="Application menu">${icon('more', 15)}</button>
@@ -127,11 +127,14 @@ function paintBadges() {
   }
   const up = sideEl.querySelector('[data-badge="update"]');
   if (up) up.style.display = store.update?.status === 'available' ? '' : 'none';
-  let sum = 0;
-  for (const r of store.rows.values()) if (r.state === 'downloading') sum += store.bps.get(r.id) || 0;
-  const agg = $('#tbAgg'), live = $('#tbLive');
-  if (agg) agg.textContent = fmtSpeed(sum);
-  if (live) live.classList.toggle('on', sum > 0);
+  // Active Downloads indicator: rows in an ACTIVE engine state only (work in
+  // flight). Paused, queued and completed rows are never counted. Replaces the
+  // aggregate speed counter (live speed stays on the Network screen and in rows).
+  const active = [...store.rows.values()].filter((r) => ACTIVE_STATES.includes(r.state)).length;
+  const pill = $('#tbActivePill');
+  if (pill) pill.classList.toggle('on', active > 0);
+  const tbActive = $('#tbActive');
+  if (tbActive && tbActive.textContent !== String(active)) tbActive.textContent = String(active);
 }
 
 function paintConnection() {
@@ -196,33 +199,56 @@ window.__veloxOpenDetails = (id) => {
   drawer.classList.add('show');
 };
 
-/* ---------- first-launch browser setup ----------
- * Browser-ecosystem turn: on the FIRST desktop launch, offer the one-click
- * extension install (Browser screen owns the full flow). Never shown again
- * once dismissed; the screen stays available under Browser.
+/* ---------- browser setup onboarding ----------
+ * Version-aware state machine (replaces the single browserSetupSeen boolean,
+ * which never re-checked after an app update and suppressed itself even when
+ * the native host was broken):
+ *   - working extension (connected, or staged + valid host manifest):
+ *       remember per app version, never prompt;
+ *   - staged but host manifest broken/stale: offer REPAIR once per version;
+ *   - nothing staged: offer INSTALL once per version;
+ *   - a dismissal is remembered per app version — a new app version rechecks
+ *     the real installation state once (never repeatedly interrupts).
  * ------------------------------------------------ */
-async function maybeBrowserSetupDialog() {
+async function maybeBrowserSetup() {
   const { isDesktop, extensionStatus, extensionSetup } = await import('./assets/api.js');
   if (!isDesktop) return;
-  if (store.prefs.browserSetupSeen) return;
+  let appVersion = '';
+  try { appVersion = String(await window.__TAURI__.app.getVersion() || ''); } catch { /* keep '' */ }
   const status = await extensionStatus();
-  if (status?.extension_connected || status?.ext_installed) {
-    setPrefs({ browserSetupSeen: true });
-    return; // already set up — no nag
-  }
-  const { openDialog } = await import('./assets/ui.js');
-  const { el } = await import('./assets/ui.js');
-  const browsers = (status?.browsers || []).filter((b) => b.family === 'chromium' && b.exe);
+  if (!status) return;
+
+  const seenFor = (v) => store.prefs.browserSetupStateVersion === v;
+  const markFor = (v) => setPrefs({ browserSetupStateVersion: v });
+  const dismissedFor = (v) => store.prefs.browserSetupDismissedFor === v;
+  const dismissFor = (v) => setPrefs({ browserSetupDismissedFor: v });
+
+  // healthy: staged extension AND a host manifest Chrome/Edge will accept
+  // (extension_connected implies both — the host actually talked to the bridge)
+  const healthy = status.extension_connected
+    || (status.ext_installed && status.host_registered && status.host_manifest_valid);
+  if (healthy) { markFor(appVersion); return; }
+
+  // same version already handled (installed, repaired or dismissed): no nag
+  if (seenFor(appVersion) || dismissedFor(appVersion)) return;
+
+  const browsers = (status.browsers || []).filter((b) => b.family === 'chromium' && b.exe);
+  const repair = status.ext_installed && status.host_registered && status.host_manifest_valid === false;
+  const issueText = (status.host_issues || []).join(' ');
   const rows = browsers.map((b) => `
     <div class="setting-row" style="gap:10px">
-      <div class="s-txt"><div class="s-name">${esc(b.name)}</div><div class="s-desc">stages the extension + registers the native host, then opens the extensions page</div></div>
-      <div class="s-ctl"><button class="btn primary" data-b="${esc(b.id)}">${icon('download', 13)} Install</button></div>
+      <div class="s-txt"><div class="s-name">${esc(b.name)}</div><div class="s-desc">${repair ? 'restages the extension files and re-registers the native host' : 'stages the extension + registers the native host, then opens the extensions page'}</div></div>
+      <div class="s-ctl"><button class="btn primary" data-b="${esc(b.id)}">${icon(repair ? 'refresh' : 'download', 13)} ${repair ? 'Repair' : 'Install'}</button></div>
     </div>`).join('');
+
   const { dlg, close } = openDialog(`
     <div class="dialog" style="max-width:460px">
-      <div class="dialog-head"><h3>Connect your browser to Velox</h3></div>
+      <div class="dialog-head"><h3>${repair ? 'Repair your browser connection to Velox' : 'Connect your browser to Velox'}</h3></div>
       <div class="dialog-body">
-        <p style="color:var(--t2);font-size:13px;line-height:1.55;margin-bottom:10px">Install the official Velox extension to send downloads straight from the web (right-click → <b>Download with Velox</b>). Chromium shows its standard two-click confirmation — nothing is installed silently.</p>
+        ${repair
+          ? `<p style="color:var(--t2);font-size:13px;line-height:1.55;margin-bottom:10px">The extension files are staged, but the native messaging host registration is not usable by Chrome/Edge:</p>
+             <p class="path" style="color:var(--err);font-size:12px;line-height:1.5;margin-bottom:10px">${esc(issueText || 'host manifest invalid')}</p>`
+          : `<p style="color:var(--t2);font-size:13px;line-height:1.55;margin-bottom:10px">Install the official Velox extension to send downloads straight from the web (right-click → <b>Download with Velox</b>). Chromium shows its standard two-click confirmation — nothing is installed silently.</p>`}
         ${rows || '<p style="color:var(--t3);font-size:12px">No Chromium browsers detected — you can set this up later in the Browser screen.</p>'}
         <p style="color:var(--t3);font-size:11.5px;margin-top:10px">Firefox is not supported yet. You can always reach this from the <b>Browser</b> screen.</p>
       </div>
@@ -230,21 +256,16 @@ async function maybeBrowserSetupDialog() {
         <button class="btn" data-later>Set up later</button>
       </div>
     </div>`);
-  // setPrefs writes the whole settings document (prefs AND queues). This used to
-  // call saveSettings(store.prefs) before that name was initialised (ReferenceError:
-  // the flag was never stored) and, once reached, wrote prefs only, which dropped
-  // every saved queue.
-  const markSeen = async () => {
-    try { setPrefs({ browserSetupSeen: true }); } catch { /* non-fatal */ }
-  };
+
+  const settleSeen = async () => markFor(appVersion);
   dlg.querySelectorAll('[data-b]').forEach((btn) => {
     btn.addEventListener('click', async () => {
       btn.disabled = true;
       try {
         const r = await extensionSetup(btn.dataset.b, 'guide');
         toast(r.registered ? 'ok' : 'warn', 'Browser setup',
-          r.registered ? `Extension staged and host registered — finish in ${r.browser}: Developer mode → Load unpacked → paste the copied folder path.` : 'Extension staged, but host registration failed — see the Browser screen.');
-        await markSeen();
+          r.registered ? `Extension staged and host registered — finish in ${r.browser}: Developer mode → Load unpacked → paste the copied folder path.` : 'Extension staged, but host registration did not verify — see the Browser screen.');
+        await settleSeen();
         close();
         location.hash = '#browser';
         go('browser');
@@ -254,7 +275,7 @@ async function maybeBrowserSetupDialog() {
       }
     });
   });
-  dlg.querySelector('[data-later]')?.addEventListener('click', async () => { await markSeen(); close(); });
+  dlg.querySelector('[data-later]')?.addEventListener('click', async () => { await dismissFor(appVersion); close(); });
 }
 
 /* ---------- boot ---------- */
@@ -265,7 +286,7 @@ async function boot() {
   renderToasts($('#toasts'));
   await bootstrap();
   import('./assets/updater.js').then((m) => m.initUpdater());
-  maybeBrowserSetupDialog();
+  maybeBrowserSetup();
   document.body.dataset.anim = store.prefs.animations ? 'on' : 'off';
   if (!store.prefs.sidebarExpanded) sideEl.classList.add('compact');
   document.addEventListener('velox:sidebar', (e) => sideEl.classList.toggle('compact', !e.detail));

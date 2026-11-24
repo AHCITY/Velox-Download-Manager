@@ -4,6 +4,7 @@
 // so a moving download never rerenders the whole app.
 import { engine, subscribeEvents, loadSettings, saveSettings, EVENT_NAMES } from './api.js';
 import { planQueueStarts, setQueueHold } from './queue-plan.js';
+import { orderRows, becameActive } from './ordering.js';
 
 export const RUNNING_STATES = ['downloading', 'queued', 'created', 'retrying', 'resolving', 'merging'];
 // Rows the engine pauses on request. A merge in progress is NOT pausable
@@ -22,6 +23,10 @@ export const FILTER_STATES = {
   completed: ['completed'],
   failed: ['failed'],
 };
+// States that represent work IN FLIGHT right now (the Active Downloads
+// indicator and the activity-first list ordering both use exactly this set;
+// paused/queued/completed rows are not "active").
+export const ACTIVE_STATES = FILTER_STATES.downloading; // downloading/retrying/resolving/merging
 
 export const CATEGORIES = {
   video: ['mp4', 'mkv', 'webm', 'avi', 'mov', 'flv', 'wmv', 'm4v', 'ts', 'm3u8'],
@@ -98,12 +103,17 @@ export const DEFAULT_PREFS = {
   defaultDir: '',               // default destination for NEW downloads (Settings → General)
   defaultConnections: '',       // '' = engine default; else int per download
   defaultOverwrite: false,      // pre-check "overwrite existing file" in the Add dialog
+  // browser-setup onboarding state (version-aware; app.js maybeBrowserSetup):
+  // the app version last evaluated, and the app version the user last dismissed
+  browserSetupStateVersion: '',
+  browserSetupDismissedFor: '',
 };
 export const DEFAULT_DIR_PREF = 'defaultDir';
 
 export const store = {
   rows: new Map(),            // id -> StatusView (engine-authoritative)
   bps: new Map(),             // id -> last observed speed (from progress events)
+  lastActive: new Map(),      // id -> ms when the row most recently ENTERED an active state
   engine: null,
   prefs: { ...DEFAULT_PREFS },
   selection: new Set(),
@@ -193,10 +203,13 @@ export async function refreshAll() {
     for (const r of rows) {
       ids.add(r.id);
       const prev = store.rows.get(r.id);
+      // activity-first ordering: stamp rows that (re)entered an active state,
+      // from the authoritative resync as well as from live events
+      if (becameActive(prev?.state, r.state, ACTIVE_STATES)) store.lastActive.set(r.id, Date.now());
       store.rows.set(r.id, r);
       if (prev && r.bps == null) r.bps = store.bps.get(r.id) ?? prev.bps ?? null;
     }
-    for (const id of [...store.rows.keys()]) if (!ids.has(id)) { store.rows.delete(id); store.bps.delete(id); store.selection.delete(id); }
+    for (const id of [...store.rows.keys()]) if (!ids.has(id)) { store.rows.delete(id); store.bps.delete(id); store.lastActive.delete(id); store.selection.delete(id); }
     if (!store.engine) {
       store.engine = await engine.info();
     }
@@ -236,17 +249,9 @@ export function visibleRows() {
       (r.dest_dir || '').toLowerCase().includes(q));
   }
   const { key, dir } = store.sort;
-  const mul = dir === 'asc' ? 1 : -1;
-  rows.sort((a, b) => {
-    let va = a[key], vb = b[key];
-    if (key === 'final_name') { va = (va || '').toLowerCase(); vb = (vb || '').toLowerCase(); }
-    if (va == null) va = key === 'total_size' ? -1 : '';
-    if (vb == null) vb = key === 'total_size' ? -1 : '';
-    if (va < vb) return -1 * mul;
-    if (va > vb) return 1 * mul;
-    return (b.id - a.id) * mul;
-  });
-  return rows;
+  // activity-first ordering: active downloads on top (most recent activity
+  // first), everything else under the user's chosen sort — see ordering.js
+  return orderRows(rows, { activeStates: ACTIVE_STATES, lastActive: store.lastActive, sortKey: key, sortDir: dir });
 }
 
 export function counts() {
@@ -298,6 +303,7 @@ export function startEvents() {
     if (name === '__error') { store.connected = false; notify(); return; }
 
     const row = d.id != null ? store.rows.get(d.id) : null;
+    const prevState = row?.state;
 
     switch (name) {
       case 'progress': {
@@ -389,6 +395,7 @@ export function startEvents() {
       case 'removed': {
         store.rows.delete(d.id);
         store.bps.delete(d.id);
+        store.lastActive.delete(d.id);
         store.selection.delete(d.id);
         break;
       }
@@ -399,6 +406,11 @@ export function startEvents() {
         break;
       }
       default: break;
+    }
+    // stamp (re)entry into an active state from LIVE events too (resume,
+    // queue start, retry): a resumed download jumps back to the top
+    if (row && becameActive(prevState, row.state, ACTIVE_STATES)) {
+      store.lastActive.set(d.id, Date.now());
     }
     notify();
   });

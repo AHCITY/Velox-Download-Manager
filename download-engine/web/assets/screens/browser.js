@@ -46,13 +46,19 @@ function buildShell() {
           <h1 style="font-size:14px;margin-bottom:10px">Integration status</h1>
           <div class="setting-row"><div class="s-txt"><div class="s-name">Extension connected</div><div class="s-desc">A browser extension has talked to Velox through the native host.</div></div>
             <div class="s-ctl" data-st="connected"><span class="tag">checking…</span></div></div>
-          <div class="setting-row"><div class="s-txt"><div class="s-name">Native host registered</div><div class="s-desc">velox-browser-host is registered with at least one Chromium browser.</div></div>
+          <div class="setting-row"><div class="s-txt"><div class="s-name">Native host registered</div><div class="s-desc">velox-browser-host manifest registered with at least one Chromium browser — its content is verified, not just the registry key.</div></div>
             <div class="s-ctl" data-st="host"><span class="tag">checking…</span></div></div>
+          <div data-st="hostIssues" hidden>
+            <div class="note err" style="margin-bottom:6px"><div class="n-ic">${icon('alertTriangle', 14)}</div><div class="path" data-st="issueText"></div></div>
+            <div style="display:flex;justify-content:flex-end;margin-bottom:6px"><button class="btn sm primary" data-repair>${icon('refresh', 13)} Repair registration</button></div>
+          </div>
           <div class="setting-row"><div class="s-txt"><div class="s-name">Extension staged</div><div class="s-desc">Unpacked extension copied to the stable per-user folder.</div></div>
             <div class="s-ctl" data-st="staged"><span class="tag">checking…</span></div></div>
           <div class="setting-row"><div class="s-txt"><div class="s-name">yt-dlp extractor</div><div class="s-desc">Resolves media pages (YouTube etc.) into stream URLs.</div></div>
             <div class="s-ctl" data-st="ytdlp"><span class="tag">checking…</span></div></div>
-          <div class="s-desc" data-st="extpath" style="margin-top:6px;font-family:var(--mono);font-size:11px;color:var(--t3)"></div>
+          <div class="setting-row"><div class="s-txt"><div class="s-name">FFmpeg (merge)</div><div class="s-desc">Combines separate video + audio streams; LGPL build ships with the unified installer.</div></div>
+            <div class="s-ctl" data-st="ffmpeg"><span class="tag">checking…</span></div></div>
+          <div class="s-desc path" data-st="extpath" style="margin-top:6px;font-family:var(--mono);font-size:11px;color:var(--t3)"></div>
         </div>
         <div class="card" style="padding:16px 18px">
           <h1 style="font-size:14px;margin-bottom:10px">What the extension gives you</h1>
@@ -90,10 +96,26 @@ function paintShell(shell) {
   set('connected', s.extension_connected
     ? tagFor('ok', 'connected')
     : (s.last_bridge_secs_ago != null ? tagFor('warn', `last seen ${s.last_bridge_secs_ago}s ago`) : tagFor('warn', 'not connected')));
-  set('host', s.host_registered ? tagFor('ok', 'registered') : tagFor('warn', 'not registered'));
+  // honest host state: a registry key alone is not "registered" — the manifest
+  // content is validated app-side; broken/stale registrations offer a repair
+  const hostBroken = s.host_registered && s.host_manifest_valid === false;
+  set('host', hostBroken
+    ? tagFor('err', 'needs repair')
+    : s.host_registered ? tagFor('ok', 'registered') : tagFor('warn', 'not registered'));
+  const issues = shell.querySelector('[data-st="hostIssues"]');
+  if (issues) {
+    const showIssues = (hostBroken || (!s.host_registered && s.ext_installed)) && (s.host_issues || []).length > 0;
+    issues.hidden = !showIssues;
+    if (showIssues) set('issueText', esc((s.host_issues || []).join(' — ')));
+  }
   set('staged', s.ext_installed ? tagFor('ok', 'ready') : tagFor('warn', 'not staged'));
   set('ytdlp', s.ytdlp === 'bundled' ? tagFor('ok', 'bundled') : s.ytdlp === 'path' ? tagFor('ok', 'on PATH') : tagFor('warn', 'not found'));
+  set('ffmpeg', s.ffmpeg === 'bundled' ? tagFor('ok', 'bundled') : s.ffmpeg === 'path' ? tagFor('ok', 'on PATH') : tagFor('warn', 'not found'));
   set('extpath', s.ext_installed ? `staged: ${s.ext_dir}` : '');
+  shell.querySelector('[data-repair]')?.addEventListener('click', () => {
+    const first = (s.browsers || []).find((b) => b.family === 'chromium' && b.exe);
+    if (first) runSetup(shell, first.id, 'guide');
+  });
 
   const host = shell.querySelector('[data-st="browsers"]');
   if (!s.browsers.length) {
@@ -103,7 +125,7 @@ function paintShell(shell) {
   host.innerHTML = '';
   for (const b of s.browsers) {
     const row = el(`<div class="setting-row" style="gap:10px">
-      <div class="s-txt"><div class="s-name">${esc(b.name)}</div><div class="s-desc">${b.exe ? esc(b.exe) : 'not found'}</div></div>
+      <div class="s-txt"><div class="s-name">${esc(b.name)}</div><div class="s-desc path">${b.exe ? esc(b.exe) : 'not found'}</div></div>
       <div class="s-ctl" style="display:flex;gap:8px">
         ${b.family === 'chromium' && b.exe ? `
           <button class="btn primary" data-inst="${esc(b.id)}">Install extension</button>

@@ -39,6 +39,10 @@ function tauriApp() { return window.__TAURI__?.app ?? null; }
 export function setUpdateState(patch) {
   store.update = { ...(store.update || { status: 'idle' }), ...patch };
   notify();
+  // Settings → Updates repaints on this event (store.notify only repaints the
+  // ACTIVE screen's live regions — Settings' update card used to go stale until
+  // the user clicked something)
+  try { document.dispatchEvent(new CustomEvent('velox:update')); } catch { /* non-fatal */ }
 }
 
 export async function currentAppVersion() {

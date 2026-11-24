@@ -80,7 +80,8 @@ check "default route is Downloads" "location.hash !== '#home' && !!document.quer
 check "no Home/Vault/Devices nav items" "![...document.querySelectorAll('.nav-item')].some(function(b){return /Home|Vault|Devices/.test(b.textContent);})" "'nav: ' + ([...document.querySelectorAll('.nav-item')].map(function(b){return b.textContent.trim();}).join(','))"
 check "toolbar has prominent Add Download" "!!document.querySelector('#tbAdd.btn.primary')" "document.querySelector('#tbAdd')?.textContent.trim()"
 check "toolbar has no URL input" "!document.querySelector('#tbUrl')" "'removed'"
-check "aggregate speed pill present" "!!document.querySelector('#tbAgg')" "'—'"
+check "Active Downloads indicator present (replaces the speed counter)" "!!document.querySelector('#tbActivePill') && /Active downloads/.test(document.querySelector('#tbActivePill').textContent) && /^\d+$/.test(document.querySelector('#tbActive').textContent)" "'text: ' + (document.querySelector('#tbActivePill')?.textContent.trim() || 'MISSING')"
+check "no Velox text in the sidebar head (icon-only branding)" "!document.querySelector('.logo-name')" "'removed'"
 
 # ---------- B. add download flow ----------
 eb "(function(){ document.querySelector('#tbAdd').click(); return 'ok'; })()" >/dev/null

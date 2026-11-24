@@ -7,3 +7,4 @@ node_modules/
 target/
 cache-manifest.json
 __pycache__/
+upload/

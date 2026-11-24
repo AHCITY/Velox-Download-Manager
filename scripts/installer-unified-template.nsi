@@ -1,7 +1,14 @@
-; Velox — UNIFIED per-user NSIS installer (Phase 5: ONE Velox-Setup-x64.exe).
-; Replaces the former online/offline variant pair: this template installs the
-; COMPLETE application (Velox.exe, browser extension + native host, yt-dlp,
-; LGPL ffmpeg/ffprobe, WebView2 bootstrapper fallback, licenses/notices).
+; Velox — UNIFIED per-user NSIS installer (THE Windows distribution).
+; ONE Velox-Setup-x64-unified.exe containing the COMPLETE application:
+; Velox.exe, browser extension + native messaging host, yt-dlp, LGPL
+; ffmpeg/ffprobe, WebView2 fallback installer, licenses/notices.
+;
+; Build parameters (defaults keep the historical local-build layout; CI passes
+; /DBUILD_STAGING=..., /DBUILD_OUTPUT=... and /DBUILD_ICON_DIR=...):
+;   BUILD_STAGING  directory holding the input files (Velox.exe, extension/, …)
+;   BUILD_OUTPUT   the installer file to produce
+;   BUILD_ICON_DIR directory of icon.ico for the MUI/uninstaller icon
+;   PRODUCT_VERSION the app version (kept in lockstep with tauri.conf.json)
 ;
 ; Tauri updater contract (docs/PHASE0-ROOT-CAUSES.md RC8, Phase 4 flow):
 ;   - launched BY THE UPDATER with /P, /S and/or /UPDATE flags → UPDATE MODE:
@@ -17,8 +24,19 @@ Unicode true
 ManifestDPIAware true
 RequestExecutionLevel user
 
+!ifndef PRODUCT_VERSION
+  !define PRODUCT_VERSION "0.6.0"
+!endif
+!ifndef BUILD_STAGING
+  !define BUILD_STAGING "/tmp/installer"
+!endif
+!ifndef BUILD_OUTPUT
+  !define BUILD_OUTPUT "${BUILD_STAGING}/Velox-Setup-x64-unified.exe"
+!endif
+!ifndef BUILD_ICON_DIR
+  !define BUILD_ICON_DIR "/home/z/my-project/download-engine/app/src-tauri/icons"
+!endif
 !define PRODUCT_NAME "Velox"
-!define PRODUCT_VERSION "0.5.0"
 !define IDENTIFIER "io.velox.downloadmanager"
 !define UNINST_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\${IDENTIFIER}"
 !define WEBVIEW2_KEY_L "SOFTWARE\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}"
@@ -28,19 +46,19 @@ RequestExecutionLevel user
 !include "FileFunc.nsh"
 
 Name "${PRODUCT_NAME} ${PRODUCT_VERSION}"
-OutFile "/tmp/installer/Velox-Setup-x64.exe"
+OutFile "${BUILD_OUTPUT}"
 InstallDir "$LOCALAPPDATA\Programs\Velox"
 InstallDirRegKey HKCU "${UNINST_KEY}" "InstallDir"
-VIProductVersion "0.5.0.0"
+VIProductVersion "${PRODUCT_VERSION}.0"
 VIAddVersionKey ProductName "${PRODUCT_NAME}"
-VIAddVersionKey FileVersion "0.5.0.0"
-VIAddVersionKey ProductVersion "0.5.0.0"
+VIAddVersionKey FileVersion "${PRODUCT_VERSION}.0"
+VIAddVersionKey ProductVersion "${PRODUCT_VERSION}.0"
 VIAddVersionKey CompanyName "Velox Project"
 VIAddVersionKey FileDescription "Velox installer"
 VIAddVersionKey LegalCopyright "MIT License"
 
-!define MUI_ICON "/home/z/my-project/download-engine/app/src-tauri/icons/icon.ico"
-!define MUI_UNICON "/home/z/my-project/download-engine/app/src-tauri/icons/icon.ico"
+!define MUI_ICON "${BUILD_ICON_DIR}/icon.ico"
+!define MUI_UNICON "${BUILD_ICON_DIR}/icon.ico"
 !define MUI_ABORTWARNING
 !define MUI_FINISHPAGE_RUN "$INSTDIR\Velox.exe"
 !define MUI_FINISHPAGE_RUN_TEXT "Launch Velox"
@@ -136,22 +154,22 @@ interactive:
 files:
 
   ; --- application ---
-  File "/oname=Velox.exe" "/tmp/installer/Velox.exe"
+  File "/oname=Velox.exe" "${BUILD_STAGING}/Velox.exe"
 
   ; --- browser ecosystem: extension assets + native messaging host ---
-  File "/oname=velox-browser-host.exe" "/tmp/installer/velox-browser-host.exe"
+  File "/oname=velox-browser-host.exe" "${BUILD_STAGING}/velox-browser-host.exe"
   SetOutPath "$INSTDIR\extension"
-  File "/oname=manifest.json" "/tmp/installer/extension/manifest.json"
-  File "/oname=background.js" "/tmp/installer/extension/background.js"
-  File "/oname=popup.html" "/tmp/installer/extension/popup.html"
-  File "/oname=popup.css" "/tmp/installer/extension/popup.css"
-  File "/oname=popup.js" "/tmp/installer/extension/popup.js"
-  File "/oname=README.md" "/tmp/installer/extension/README.md"
+  File "/oname=manifest.json" "${BUILD_STAGING}/extension/manifest.json"
+  File "/oname=background.js" "${BUILD_STAGING}/extension/background.js"
+  File "/oname=popup.html" "${BUILD_STAGING}/extension/popup.html"
+  File "/oname=popup.css" "${BUILD_STAGING}/extension/popup.css"
+  File "/oname=popup.js" "${BUILD_STAGING}/extension/popup.js"
+  File "/oname=README.md" "${BUILD_STAGING}/extension/README.md"
   SetOutPath "$INSTDIR\extension\icons"
-  File "/oname=16.png" "/tmp/installer/extension/icons/16.png"
-  File "/oname=32.png" "/tmp/installer/extension/icons/32.png"
-  File "/oname=48.png" "/tmp/installer/extension/icons/48.png"
-  File "/oname=128.png" "/tmp/installer/extension/icons/128.png"
+  File "/oname=16.png" "${BUILD_STAGING}/extension/icons/16.png"
+  File "/oname=32.png" "${BUILD_STAGING}/extension/icons/32.png"
+  File "/oname=48.png" "${BUILD_STAGING}/extension/icons/48.png"
+  File "/oname=128.png" "${BUILD_STAGING}/extension/icons/128.png"
   SetOutPath "$INSTDIR"
   ; --register without an argument uses the canonical ID derived from the
   ; extension manifest key (a stale literal here would make Chrome refuse NM)
@@ -160,13 +178,13 @@ files:
   Pop $0
 
   ; --- media tooling: bundled yt-dlp + LGPL ffmpeg (YouTube etc.) ---
-  File "/oname=yt-dlp.exe" "/tmp/installer/yt-dlp.exe"
-  File "/oname=ffmpeg.exe" "/tmp/installer/ffmpeg.exe"
-  File "/oname=ffprobe.exe" "/tmp/installer/ffprobe.exe"
+  File "/oname=yt-dlp.exe" "${BUILD_STAGING}/yt-dlp.exe"
+  File "/oname=ffmpeg.exe" "${BUILD_STAGING}/ffmpeg.exe"
+  File "/oname=ffprobe.exe" "${BUILD_STAGING}/ffprobe.exe"
 
   ; --- licenses & notices (LGPL compliance) ---
-  File "/oname=THIRD-PARTY-NOTICES.md" "/tmp/installer/THIRD_PARTY_NOTICES.md"
-  File "/oname=FFMPEG-LICENSE.txt" "/tmp/installer/ffmpeg-lgpl-LICENSE.txt"
+  File "/oname=THIRD-PARTY-NOTICES.md" "${BUILD_STAGING}/THIRD_PARTY_NOTICES.md"
+  File "/oname=FFMPEG-LICENSE.txt" "${BUILD_STAGING}/ffmpeg-lgpl-LICENSE.txt"
 
   ; --- verify every required bundled file actually exists (Phase 5) ---
   StrCpy $3 0
@@ -201,7 +219,7 @@ files:
   StrCmp $0 "" 0 runtime_ok
   ReadRegStr $0 HKCU "${WEBVIEW2_KEY_L}" "pv"
   StrCmp $0 "" 0 runtime_ok
-  File "/oname=WebView2Setup.exe" "/tmp/installer/MicrosoftEdgeWebview2Setup.exe"
+  File "/oname=WebView2Setup.exe" "${BUILD_STAGING}/MicrosoftEdgeWebview2Setup.exe"
   DetailPrint "WebView2 runtime not found - installing (Evergreen standalone)..."
   ExecWait '"$INSTDIR\WebView2Setup.exe" /silent /install' $1
   DetailPrint "WebView2 installer exit code: $1"

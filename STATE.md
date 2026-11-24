@@ -1,6 +1,6 @@
 # STATE.md — Velox Download Manager mission state
 
-Last updated: 2026-11-23 — **RELEASE TURN**: v0.5.0 shipped via CI (signed installer + latest.json + extension zip). Keep current; commit before ending every turn.
+Last updated: 2026-11-24 — **v0.6.0 TURN**: extension install fixed at the packaging root cause, unified installer restored as THE release, UI refined, updater-at-launch polished. Keep current; commit before ending every turn.
 
 ## Where things are
 
@@ -32,6 +32,66 @@ Last updated: 2026-11-23 — **RELEASE TURN**: v0.5.0 shipped via CI (signed ins
   - E2E in headless browser against `velox serve-http` + real file servers: dialog add with inspect preview, completion, resume wiring, live progress (speed/ETA/connections), file-missing badge, delete-file with confirmation (disk + DB verified), settings persistence across reload, Ctrl+A bulk bar, invalid-URL inline errors, context menus. Screenshots reviewed (Home/Downloads/Settings).
   - **Recorded gotcha**: rAF is throttled to zero in background/headless webviews — `store.notify` uses `setTimeout(0)`.
   - Commit `9cffc19` pushed + remote verified. Windows build launched after it; installer refresh + publish + round-trip follow.
+
+## v0.6.0 turn (2026-11-24) — extension root cause + unified installer + UI refinement
+
+Root causes found & fixed (user screenshots were the evidence):
+- **RC-1 "bundled extension assets missing (installation layout)"**: the v0.5.0 CI release
+  shipped the BARE tauri-bundled NSIS (tauri.conf.json has no resources/externalBin) —
+  no `extension/`, no `velox-browser-host.exe` beside the exe → `extension_setup` failed
+  on every installed machine. Fix: the UNIFIED NSIS template is now what CI builds and
+  ships (it bundles extension+host+yt-dlp+ffmpeg/ffprobe+WebView2 fallback+licenses) and
+  it is the SIGNED UPDATER PAYLOAD (`Velox-Setup-x64-unified.exe`, signed with
+  `tauri signer sign --app-version`, trusted-comment version:0.6.0 verified).
+- **RC-2 stale "registered"**: extension_status now READS the registration (registry
+  default value / unix manifest file), validates the manifest content (name, type,
+  exe exists, allowed_origins = DERIVED extension ID) and reports
+  host_manifest_valid + host_issues; extension_setup verifies post-conditions.
+  Browser screen shows "needs repair" + a Repair button (re-stage + re-register).
+- **RC-3 Edge per-user installs missed**: msedge.exe discovery now also probes
+  %LOCALAPPDATA%\Microsoft\Edge (unit-tested).
+- **RC-4 onboarding boolean**: maybeBrowserSetup is a VERSION-AWARE state machine
+  (prefs browserSetupStateVersion/browserSetupDismissedFor): healthy = silent;
+  broken = repair prompt once per app version; fresh = install prompt once per
+  version; dismissal remembered per version; update = one recheck.
+- **RC-5 context menus duplicated on reload**: removeAll() before create (mocked-SW
+  regression test).
+
+Unified installer verified LOCALLY end-to-end: xwin cross-compiled Velox.exe (16 MB,
+custom-protocol) + velox-browser-host.exe (371 KB), real yt-dlp.exe / BtbN LGPL
+ffmpeg+ffprobe / WebView2 bootstrapper staged, makensis 3.13 built
+Velox-Setup-x64-unified.exe (147 MB, 22 files — contents verified with 7zz), signed,
+latest.json URL points at the unified exe. Template is parameterized
+(/DPRODUCT_VERSION, BUILD_STAGING, BUILD_OUTPUT, BUILD_ICON_DIR — POSIX makensis
+needs FORWARD slashes in File source paths).
+
+Release page policy (CI): unified installer + .sig + latest.json + SHA256SUMS.txt ONLY.
+v0.5.0 page cleaned manually (Velox-app-x64.exe + Velox-Extension.zip deleted; its own
+updater trio stays intact). velox-host now also registers google-chrome-for-testing
+(CfT probes its own config dir; Linux NM lookup follows the ACTIVE user-data-dir).
+
+UI: top-left "Velox" text removed (icon-only branding); speed counter → "Active
+downloads N" pill (ACTIVE_STATES = downloading/retrying/resolving/merging; paused/
+queued/completed never counted); Downloads header buttons are contextual; activity-first
+ordering via pure ordering.js (active rows on top by lastActive, user sort below —
+7 node tests) + lastActive stamped from live events AND resyncs; Browser screen got
+manifest-issue display + Repair + FFmpeg row; `.grid-2` minmax(0,1fr) + `.path`
+word-break (Browser screen no longer overflows — 0px overflow-x at 720px on every
+screen); Settings nav responsive; Settings→Updates now repaints via a real
+'velox:update' event (was a dead listener).
+
+Icons: curated 66-glyph set from Iconoir (MIT, primary) + Coolicons (MIT, gap fills),
+same 24×24 stroke-1.5 renderer — scripts/build-icons.py regenerates assets/icons.js
+(24.8 KB); attribution in THIRD_PARTY_NOTICES.md.
+
+Tests: engine fmt ✓ clippy ✓ 191 tests ✓ (26 suites); web node 21+8 mocked-SW tests ✓;
+UI E2E 34/34 ✓ (speed-pill check replaced by Active-Downloads + icon-only-branding
+checks); REAL-CHROME E2E PASSED (CfT 157 under Xvfb: derived ID ✓ hello_ack 6 ms ✓
+capture 15 ms ✓ big.bin BYTE-EXACT via extension→host→bridge→REAL engine ✓);
+6 new velox-app Rust tests (manifest validation, Edge paths, probe coverage) run in
+the Windows CI gate (sandbox has no GTK — cannot build the Tauri app locally).
+makensis path gotcha: POSIX makensis wants -D defines and forward-slash File sources;
+CI (windows makensis) keeps /D.
 
 ## v0.5.0 release turn (2026-11-23) — CI-driven signed release
 

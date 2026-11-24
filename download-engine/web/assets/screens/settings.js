@@ -43,7 +43,7 @@ function toggleRow(name, title, desc, value, onChange) {
 function buildShell() {
   const shell = el(`<div class="screen" id="screen-settings">
     <div class="screen-head"><div><h1>Settings</h1><div class="sub" id="seSub"></div></div></div>
-    <div style="display:grid;grid-template-columns:190px 1fr;gap:18px" id="seGrid">
+    <div class="se-grid" id="seGrid">
       <div class="card" style="padding:8px;align-self:start" id="seNav"></div>
       <div id="seBody"></div>
     </div>

@@ -152,11 +152,17 @@ function paintShell(root) {
     const n = b.querySelector('.n');
     if (n && n.textContent !== String(segCounts[k])) n.textContent = segCounts[k];
   }
-  // “active” follows the Downloading filter (which counts resolving/merging as
-  // the active work they are)
-  const active = c.downloading + c.queued + c.resolving + c.merging;
+  // contextual header actions: a button that cannot do anything right now is
+  // hidden instead of permanently displaying an inactive control (Pause all
+  // with nothing running, Resume paused with nothing paused, …)
+  const anyPausable = [...store.rows.values()].some((r) => PAUSABLE_STATES.includes(r.state));
+  shell.querySelector('#dlPauseAll').style.display = anyPausable ? '' : 'none';
+  shell.querySelector('#dlResumeAll').style.display = c.paused > 0 ? '' : 'none';
+  shell.querySelector('#clearDone').style.display = c.completed > 0 ? '' : 'none';
+  // the toolbar pill owns the Active count now; the segment chips own the
+  // per-state counts — the sub line stays short and honest
   shell.querySelector('#dlSub').textContent =
-    `${c.all} download${c.all === 1 ? '' : 's'} · ${active} active · ${c.completed} completed · ${fmtAgg()}` +
+    `${c.all} download${c.all === 1 ? '' : 's'} · ${fmtAgg()}` +
     (store.filter.query ? ` · filtered by “${store.filter.query}”` : '');
 
   // selection bar

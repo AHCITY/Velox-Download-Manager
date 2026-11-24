@@ -415,6 +415,7 @@ pub const WINDOWS_BROWSER_KEYS: &[&str] = &[
 #[allow(dead_code)]
 pub const UNIX_CONFIG_DIRS: &[&str] = &[
     ".config/google-chrome/NativeMessagingHosts",
+    ".config/google-chrome-for-testing/NativeMessagingHosts",
     ".config/microsoft-edge/NativeMessagingHosts",
     ".config/BraveSoftware/Brave-Browser/NativeMessagingHosts",
     ".config/chromium/NativeMessagingHosts",
@@ -666,6 +667,7 @@ mod tests {
         for dir in [
             ".config/chromium/NativeMessagingHosts",
             ".config/vivaldi/NativeMessagingHosts",
+            ".config/google-chrome-for-testing/NativeMessagingHosts",
         ] {
             assert!(UNIX_CONFIG_DIRS.contains(&dir), "missing Linux dir {dir}");
         }

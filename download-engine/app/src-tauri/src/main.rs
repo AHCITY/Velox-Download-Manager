@@ -220,6 +220,19 @@ fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> Result<()
     Ok(())
 }
 
+/// Where msedge.exe lives: the system install (Program Files (x86)) AND the
+/// per-user install under %LOCALAPPDATA% — the second form is common on
+/// machines without admin rights and was previously missed, so Edge users got
+/// "Microsoft Edge is not installed (or could not be located)" with Edge
+/// present (RC-4).
+#[cfg_attr(not(windows), allow(dead_code))]
+fn edge_exe_candidates(pf86: &str, lad: &str) -> Vec<String> {
+    vec![
+        format!(r"{}\Microsoft\Edge\Application\msedge.exe", pf86),
+        format!(r"{}\Microsoft\Edge\Application\msedge.exe", lad),
+    ]
+}
+
 /// Filesystem + (Windows) registry discovery of installed browsers.
 fn detect_browsers() -> Vec<BrowserInfo> {
     #[allow(unused_mut)]
@@ -247,7 +260,6 @@ fn detect_browsers() -> Vec<BrowserInfo> {
         let pf = std::env::var("ProgramFiles").unwrap_or_default();
         let pf86 = std::env::var("ProgramFiles(x86)").unwrap_or_default();
         let lad = std::env::var("LOCALAPPDATA").unwrap_or_default();
-        let _ = (&pf, &pf86, &lad);
         out.push(BrowserInfo {
             id: "chrome".into(),
             name: "Google Chrome".into(),
@@ -268,7 +280,10 @@ fn detect_browsers() -> Vec<BrowserInfo> {
             family: "chromium".into(),
             exe: resolve(
                 r"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\msedge.exe",
-                &[&format!("{}\\Microsoft\\Edge\\Application\\msedge.exe", pf86)],
+                &edge_exe_candidates(&pf86, &lad)
+                    .iter()
+                    .map(String::as_str)
+                    .collect::<Vec<&str>>(),
             ),
             extensions_page: "edge://extensions".into(),
         });
@@ -348,6 +363,163 @@ fn browser_detect() -> Vec<BrowserInfo> {
     detect_browsers()
 }
 
+/* ---------------- native-host registration probe ----------------
+ * A registry KEY existing is not "registered": an older install (or an
+ * uninstalled machine migration) can leave a default value pointing at a
+ * missing manifest or a dead exe, and the UI then shows a green light while
+ * every connectNative fails. The probe reads the actual registration, loads
+ * the manifest file, and validates its CONTENT against what Chrome/Edge
+ * enforce — the concrete issues drive the Browser screen's repair flow.
+ * ==================================================================== */
+
+/// HKCU\Software subkeys whose NativeMessagingHosts\io.velox.downloadmanager
+/// key receives the manifest path. Mirrors velox-host's WINDOWS_BROWSER_KEYS
+/// (kept in sync by velox-host's own tests).
+#[cfg_attr(not(windows), allow(dead_code))]
+const HOST_REG_BROWSERS: &[&str] = &[
+    "Google\\Chrome",
+    "Microsoft\\Edge",
+    "BraveSoftware\\Brave-Browser",
+    "Opera Software",
+    "Chromium",
+    "Vivaldi",
+];
+
+#[cfg_attr(not(windows), allow(dead_code))]
+#[derive(serde::Serialize)]
+struct HostRegistration {
+    /// at least one browser's NM key points at a manifest path
+    registered: bool,
+    /// the manifest path the (first found) registration points at
+    manifest_path: String,
+    /// the manifest file exists AND its content satisfies Chrome/Edge rules
+    manifest_valid: bool,
+    /// concrete problems (empty when valid) — what "Repair" fixes
+    issues: Vec<String>,
+}
+
+/// Validate a native-host manifest's content. Returns the host executable
+/// path, or the concrete issues (name/type/path/allowed_origins per the
+/// Chrome and Edge native-messaging specs).
+#[cfg_attr(not(windows), allow(dead_code))]
+fn validate_host_manifest(raw: &str) -> Result<String, Vec<String>> {
+    let v: serde_json::Value = serde_json::from_str(raw)
+        .map_err(|e| vec![format!("host manifest is not valid JSON: {e}")])?;
+    let mut issues = Vec::new();
+    if v["name"].as_str() != Some("io.velox.downloadmanager") {
+        issues.push(format!(
+            "manifest name is {:?}, expected \"io.velox.downloadmanager\"",
+            v["name"].as_str().unwrap_or("")
+        ));
+    }
+    if v["type"].as_str() != Some("stdio") {
+        issues.push("manifest type must be \"stdio\"".into());
+    }
+    let exe = v["path"].as_str().unwrap_or("").to_string();
+    if exe.is_empty() {
+        issues.push("manifest path is empty".into());
+    } else if !std::path::Path::new(&exe).exists() {
+        issues.push(format!("host executable no longer exists: {exe}"));
+    }
+    let want = format!("chrome-extension://{EXTENSION_ID}/");
+    let origins = v["allowed_origins"].as_array().cloned().unwrap_or_default();
+    if !origins
+        .iter()
+        .any(|o| o.as_str() == Some(want.as_str()))
+    {
+        issues.push(format!(
+            "allowed_origins does not include the shipped extension origin ({want}) — Chrome and Edge refuse every connectNative as a forbidden origin"
+        ));
+    }
+    if issues.is_empty() {
+        Ok(exe)
+    } else {
+        Err(issues)
+    }
+}
+
+fn host_registration_unregistered() -> HostRegistration {
+    HostRegistration {
+        registered: false,
+        manifest_path: String::new(),
+        manifest_valid: false,
+        issues: vec!["no native-host registration found for any supported Chromium browser".into()],
+    }
+}
+
+fn registration_from_manifest(manifest_path: &std::path::Path) -> HostRegistration {
+    match std::fs::read_to_string(manifest_path) {
+        Ok(raw) => match validate_host_manifest(&raw) {
+            Ok(_) => HostRegistration {
+                registered: true,
+                manifest_path: manifest_path.display().to_string(),
+                manifest_valid: true,
+                issues: Vec::new(),
+            },
+            Err(issues) => HostRegistration {
+                registered: true,
+                manifest_path: manifest_path.display().to_string(),
+                manifest_valid: false,
+                issues,
+            },
+        },
+        Err(e) => HostRegistration {
+            registered: true,
+            manifest_path: manifest_path.display().to_string(),
+            manifest_valid: false,
+            issues: vec![format!("registered manifest file cannot be read: {e}")],
+        },
+    }
+}
+
+#[cfg(windows)]
+fn probe_host_registration() -> HostRegistration {
+    use winreg::enums::{HKEY_CURRENT_USER, KEY_READ};
+    let hk = winreg::RegKey::predef(HKEY_CURRENT_USER);
+    for b in HOST_REG_BROWSERS {
+        let key = format!(r"Software\{b}\NativeMessagingHosts\io.velox.downloadmanager");
+        let Ok(sub) = hk.open_subkey_with_flags(&key, KEY_READ) else {
+            continue;
+        };
+        let Ok(path) = sub.get_value::<String, _>("") else {
+            // key exists without a default value: Chrome/Edge treat that as a
+            // broken registration — report it instead of green-lighting it
+            return HostRegistration {
+                registered: true,
+                manifest_path: String::new(),
+                manifest_valid: false,
+                issues: vec![format!("registry key {key} has no manifest path (default value missing)")],
+            };
+        };
+        return registration_from_manifest(std::path::Path::new(&path));
+    }
+    host_registration_unregistered()
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+fn probe_host_registration() -> HostRegistration {
+    let home = std::env::var("HOME").unwrap_or_default();
+    for dir in [
+        ".config/google-chrome/NativeMessagingHosts",
+        ".config/google-chrome-for-testing/NativeMessagingHosts",
+        ".config/microsoft-edge/NativeMessagingHosts",
+        ".config/BraveSoftware/Brave-Browser/NativeMessagingHosts",
+        ".config/chromium/NativeMessagingHosts",
+        ".config/vivaldi/NativeMessagingHosts",
+    ] {
+        let p = std::path::Path::new(&home).join(dir).join("io.velox.downloadmanager.json");
+        if p.exists() {
+            return registration_from_manifest(&p);
+        }
+    }
+    host_registration_unregistered()
+}
+
+#[cfg(target_os = "macos")]
+fn probe_host_registration() -> HostRegistration {
+    host_registration_unregistered()
+}
+
 /// One-click setup for ONE browser. `mode`:
 ///   "guide" — stage + register + open the browser's extensions page (persistent)
 ///   "quick" — additionally launch the browser with --load-extension for an
@@ -385,17 +557,17 @@ fn extension_setup(browser: String, mode: String) -> Result<serde_json::Value, S
             d.join(if cfg!(windows) { "velox-browser-host.exe" } else { "velox-browser-host" })
         })
         .filter(|p| p.exists());
-    let registered = match host {
+    let mut registered = match host {
         Some(h) => {
-            let mut reg = std::process::Command::new(&h);
-            reg.arg("--register").arg(EXTENSION_ID);
+            let mut cmd = std::process::Command::new(&h);
+            cmd.arg("--register").arg(EXTENSION_ID);
             #[cfg(windows)]
             {
                 // console-subsystem sidecar: suppress the window flash (RC5), keep output
                 use std::os::windows::process::CommandExt;
-                reg.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+                cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
             }
-            let out = reg
+            let out = cmd
                 .output()
                 .map_err(|e| format!("native host registration failed to run: {e}"))?;
             if out.status.success() {
@@ -414,6 +586,17 @@ fn extension_setup(browser: String, mode: String) -> Result<serde_json::Value, S
             false
         }
     };
+    // verify the registration the way Chrome/Edge will consume it: a silent
+    // --register failure (or a stale manifest) must never end as a green
+    // "registered" toast (audit RC-3)
+    let post = probe_host_registration();
+    if registered && (!post.registered || !post.manifest_valid) {
+        registered = false;
+        notes.push(format!("registration did not verify: {}", post.issues.join("; ")));
+    }
+    if registered {
+        notes.push(format!("host manifest: {}", post.manifest_path));
+    }
 
     // 3) open the browser: extensions page (guide) or session load (quick)
     let launched = if mode == "quick" {
@@ -474,52 +657,32 @@ fn extension_status() -> serde_json::Value {
     };
     let connected = matches!(last_secs, Some(s) if s < 120);
 
-    // host registration probe (Windows registry / unix manifest dirs)
-    #[allow(unused_mut)]
-    let mut host_registered = false;
-    #[cfg(windows)]
-    {
-        use winreg::enums::{HKEY_CURRENT_USER, KEY_READ};
-        let hk = winreg::RegKey::predef(HKEY_CURRENT_USER);
-        for b in ["Google\\Chrome", "Microsoft\\Edge", "BraveSoftware\\Brave-Browser", "Opera Software", "Chromium", "Vivaldi"] {
-            let key = format!("Software\\{b}\\NativeMessagingHosts\\io.velox.downloadmanager");
-            if hk.open_subkey_with_flags(&key, KEY_READ).is_ok() {
-                host_registered = true;
-                break;
-            }
-        }
-    }
-    #[cfg(all(unix, not(target_os = "macos")))]
-    {
-        let home = std::env::var("HOME").unwrap_or_default();
-        for b in [
-            ".config/google-chrome/NativeMessagingHosts",
-            ".config/microsoft-edge/NativeMessagingHosts",
-            ".config/BraveSoftware/Brave-Browser/NativeMessagingHosts",
-            ".config/chromium/NativeMessagingHosts",
-            ".config/vivaldi/NativeMessagingHosts",
-        ] {
-            if std::path::Path::new(&home).join(b).join("io.velox.downloadmanager.json").exists() {
-                host_registered = true;
-                break;
-            }
-        }
-    }
+    // host registration probe: reads the actual registration and VALIDATES the
+    // manifest content (a stale key alone no longer reports "registered")
+    let reg = probe_host_registration();
 
     let ext_dir = extension_install_dir();
-    // bundled-extractor probe: beside-exe wins, PATH fallback reported as "path"
-    let ytdlp = exe_dir()
-        .map(|d| d.join(if cfg!(windows) { "yt-dlp.exe" } else { "yt-dlp" }))
-        .filter(|p| p.exists())
-        .map(|_| "bundled")
-        .or_else(|| find_on_path(if cfg!(windows) { "yt-dlp.exe" } else { "yt-dlp" }).map(|_| "path"))
-        .unwrap_or("missing");
+    // bundled-extractor probes: beside-exe wins, PATH fallback reported as "path"
+    let exe_name = |n: &str| if cfg!(windows) { format!("{n}.exe") } else { n.to_string() };
+    let probe_tool = |n: &str| -> &'static str {
+        exe_dir()
+            .map(|d| d.join(exe_name(n)))
+            .filter(|p| p.exists())
+            .map(|_| "bundled")
+            .or_else(|| find_on_path(&exe_name(n)).map(|_| "path"))
+            .unwrap_or("missing")
+    };
+    let ytdlp = probe_tool("yt-dlp");
+    let ffmpeg = probe_tool("ffmpeg");
 
     serde_json::json!({
         "bridge_listening": bridge_listening,
         "extension_connected": connected,
         "last_bridge_secs_ago": last_secs,
-        "host_registered": host_registered,
+        "host_registered": reg.registered,
+        "host_manifest_valid": reg.manifest_valid,
+        "host_manifest_path": reg.manifest_path,
+        "host_issues": reg.issues,
         "ext_installed": ext_dir.join("manifest.json").exists(),
         "ext_dir": ext_dir.display().to_string(),
         "extension_id": EXTENSION_ID,
@@ -527,6 +690,7 @@ fn extension_status() -> serde_json::Value {
             .map(|d| d.join(if cfg!(windows) { "velox-browser-host.exe" } else { "velox-browser-host" }).exists())
             .unwrap_or(false),
         "ytdlp": ytdlp,
+        "ffmpeg": ffmpeg,
         "browsers": detect_browsers(),
     })
 }
@@ -856,4 +1020,98 @@ fn main() {
     ])
         .run(tauri::generate_context!())
         .expect("error while running Velox");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{edge_exe_candidates, validate_host_manifest, HOST_REG_BROWSERS};
+    use engine_core::extension::EXTENSION_ID;
+
+    /// A manifest pointing at a REAL file (path existence is part of the check).
+    fn valid_manifest() -> (String, std::path::PathBuf) {
+        let exe = std::env::temp_dir().join(format!(
+            "velox-host-probe-test-{}.exe",
+            std::process::id()
+        ));
+        std::fs::write(&exe, b"mz").expect("write probe exe");
+        let manifest = serde_json::json!({
+            "name": "io.velox.downloadmanager",
+            "description": "Velox browser integration host",
+            "path": exe.display().to_string(),
+            "type": "stdio",
+            "allowed_origins": [format!("chrome-extension://{EXTENSION_ID}/")],
+        })
+        .to_string();
+        (manifest, exe)
+    }
+
+    #[test]
+    fn valid_manifest_passes_and_reports_the_host_path() {
+        let (raw, exe) = valid_manifest();
+        let path = validate_host_manifest(&raw).expect("a complete, present manifest is valid");
+        assert_eq!(std::path::Path::new(&path), exe.as_path());
+        let _ = std::fs::remove_file(&exe);
+    }
+
+    #[test]
+    fn every_broken_aspect_is_named_individually() {
+        let dead_exe = std::env::temp_dir().join("velox-host-probe-test-definitely-gone.exe");
+        let manifest = serde_json::json!({
+            "name": "io.velox.downloadmanager",
+            "path": dead_exe.display().to_string(),
+            "allowed_origins": ["chrome-extension://hpaxoarvxcmmqijm/"],
+        })
+        .to_string();
+        let issues = validate_host_manifest(&manifest).expect_err("dead exe + missing type + wrong origin");
+        assert!(issues.iter().any(|i| i.contains("no longer exists")), "dead exe reported: {issues:?}");
+        assert!(issues.iter().any(|i| i.contains("stdio")), "missing type reported: {issues:?}");
+        assert!(
+            issues.iter().any(|i| i.contains("allowed_origins") && i.contains(EXTENSION_ID)),
+            "stale origin reported against the DERIVED id: {issues:?}"
+        );
+    }
+
+    #[test]
+    fn malformed_json_is_a_single_clear_issue() {
+        let issues = validate_host_manifest("not json at all").expect_err("malformed manifest");
+        assert_eq!(issues.len(), 1);
+        assert!(issues[0].contains("valid JSON"));
+    }
+
+    #[test]
+    fn stale_registration_shape_is_reported_not_greenlit() {
+        // what an uninstalled predecessor leaves behind: a manifest whose exe
+        // is gone. registered=true + manifest_valid=false is exactly the state
+        // the Browser screen's Repair flow is driven by.
+        let issues = validate_host_manifest(&serde_json::json!({
+            "name": "io.velox.downloadmanager",
+            "path": "C:\\does\\not\\exist\\velox-browser-host.exe",
+            "type": "stdio",
+            "allowed_origins": [format!("chrome-extension://{EXTENSION_ID}/")],
+        })
+        .to_string())
+        .expect_err("dead exe");
+        assert_eq!(issues.len(), 1);
+        assert!(issues[0].contains("no longer exists"));
+    }
+
+    #[test]
+    fn edge_discovery_includes_the_per_user_install_location() {
+        let cands = edge_exe_candidates("C:\\Program Files (x86)", "C:\\Users\\u\\AppData\\Local");
+        assert_eq!(cands.len(), 2, "system + per-user Edge locations");
+        assert!(cands[0].starts_with("C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe"));
+        assert!(
+            cands[1].starts_with("C:\\Users\\u\\AppData\\Local\\Microsoft\\Edge\\Application\\msedge.exe"),
+            "per-user Edge install (RC-4) must be probed: {cands:?}"
+        );
+    }
+
+    #[test]
+    fn host_registration_probe_covers_chrome_and_edge() {
+        for b in ["Google\\Chrome", "Microsoft\\Edge"] {
+            assert!(HOST_REG_BROWSERS.contains(&b), "missing probe key {b}");
+        }
+        // kept in sync with the host's own registration list
+        assert_eq!(HOST_REG_BROWSERS.len(), 6);
+    }
 }

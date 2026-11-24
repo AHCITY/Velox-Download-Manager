@@ -8,7 +8,10 @@
 
 const HOST_NAME = 'io.velox.downloadmanager';
 const PROTOCOL_VERSION = 1;
-const REQUEST_TIMEOUT_MS = 20000;
+// test hooks: the mocked-SW suite (scripts/ext-test-mocked.mjs) shortens these
+// so timeout/reconnect paths run in milliseconds instead of wall-clock minutes
+const REQUEST_TIMEOUT_MS = globalThis.VELOX_TEST_REQUEST_TIMEOUT_MS || 20000;
+const RECONNECT_BASE_MS = globalThis.VELOX_TEST_RECONNECT_MS || 1000;
 const MAX_POLL_MS = 15000;
 const INTERCEPT_MIN_BYTES = 1 * 1024 * 1024;
 
@@ -17,7 +20,7 @@ let connected = false;
 let appVersion = null;
 let lastError = null;
 let reconnectTimer = null;
-let reconnectDelay = 1000;
+let reconnectDelay = RECONNECT_BASE_MS;
 let seq = 0;
 const pending = new Map(); // request id -> {resolve}
 let lastStatus = { active: 0, aggBps: 0, recent: [] };
@@ -34,7 +37,7 @@ function sendHello() {
       connected = !!(ack && ack.type === 'hello_ack' && ack.payload && ack.payload.connected === true);
       appVersion = ack && ack.payload ? ack.payload.app_version || null : null;
       if (ack && ack.payload && ack.payload.reason) lastError = ack.payload.reason;
-      if (connected) { lastError = null; reconnectDelay = 1000; }
+      if (connected) { lastError = null; reconnectDelay = RECONNECT_BASE_MS; }
       refreshBadge();
     })
     .catch(() => {});
@@ -87,7 +90,6 @@ function scheduleReconnect() {
     connect();
   }, reconnectDelay);
 }
-
 function request(type, payload = {}) {
   return new Promise((resolve) => {
     if (!port) connect();
@@ -180,11 +182,19 @@ async function submitUrl(url, source, tab) {
   return r;
 }
 
-/* ---------- context menu ---------- */
+/* ---------- context menu ----------
+ * removeAll() before create: on extension update/reload Chrome keeps the old
+ * menus only until the SW unloads, but a duplicate create() throws
+ * "Cannot create item with duplicate id" and aborts the remaining creates.
+ * Recreating idempotently makes every install/reload/update path identical. */
 chrome.runtime.onInstalled.addListener(async () => {
-  chrome.contextMenus.create({ id: 'velox-download-link', title: 'Download with Velox', contexts: ['link'] });
-  chrome.contextMenus.create({ id: 'velox-download-page', title: 'Download page URL with Velox', contexts: ['page', 'frame'] });
-  chrome.contextMenus.create({ id: 'velox-download-selection', title: 'Download selected URL with Velox', contexts: ['selection'] });
+  chrome.contextMenus.removeAll(() => {
+    const create = (id, title, contexts) =>
+      chrome.contextMenus.create({ id, title, contexts }, () => void chrome.runtime.lastError);
+    create('velox-download-link', 'Download with Velox', ['link']);
+    create('velox-download-page', 'Download page URL with Velox', ['page', 'frame']);
+    create('velox-download-selection', 'Download selected URL with Velox', ['selection']);
+  });
   connect();
 });
 
@@ -256,7 +266,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       sendResponse({ ok: r.type === 'download_accepted', detail: r.payload && r.payload.message });
     } else if (msg.type === 'reconnect') {
       if (port) { try { port.disconnect(); } catch (e) { /* already gone */ } port = null; }
-      reconnectDelay = 1000;
+      reconnectDelay = RECONNECT_BASE_MS;
       connect();
       sendResponse({ ok: true });
     } else if (msg.type === 'set_pref') {

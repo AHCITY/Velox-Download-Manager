@@ -39,6 +39,12 @@ jobs:
         working-directory: download-engine/web
         run: node --test
 
+      - name: Desktop-app unit tests (velox-app: browser detection, host-manifest probe)
+        # velox-app is a standalone crate (not in the engine workspace) and can
+        # only be compiled where the Tauri stack exists — the Windows runner.
+        working-directory: download-engine/app/src-tauri
+        run: cargo test
+
       - name: CLI startup/shutdown smoke (v1 stdio, portable ctrl_c path)
         shell: pwsh
         run: |
@@ -76,11 +82,12 @@ jobs:
           cargo test -p engine-storage -- --exact tests::lock_recovered_after_child_process_death
           cargo test -p engine-cli --test crash_resume -- --test-threads=1
 
-  # ---- Job 2: desktop application + installer ----
+  # ---- Job 2: desktop application + UNIFIED installer ----
   # Manual dispatch for development builds; every v* tag builds the RELEASE
-  # artifacts: updater-signed installer + latest.json + extension zip, published
-  # by Job 3. Sources and Cargo.lock ARE tracked (download-engine/app/src-tauri),
-  # so the reproducibility gate below can run.
+  # artifacts. The unified NSIS template (scripts/installer-unified-template.nsi)
+  # installs EVERYTHING — Velox.exe, browser extension, velox-browser-host.exe,
+  # yt-dlp, LGPL ffmpeg/ffprobe, WebView2 fallback, licenses — one complete
+  # installer, which is also the signed auto-updater payload.
   desktop:
     needs: windows
     if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
@@ -89,6 +96,8 @@ jobs:
       run:
         # the app sources live in download-engine/ (same root as the engine job)
         working-directory: download-engine
+    env:
+      STAGING: ${{ github.workspace }}\staging
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -100,68 +109,111 @@ jobs:
           if (-not (Test-Path Cargo.lock)) { throw "app/src-tauri/Cargo.lock is missing — commit it" }
           cargo fetch --locked
 
-      - name: Build Velox desktop app + NSIS installer (tauri-cli, updater-signed)
+      - name: Build Velox desktop app (release, updater-enabled)
         shell: pwsh
         run: |
-          cargo install tauri-cli --version "^2" --locked
-          # the updater only signs when the private key env is present; the key is
-          # tracked in the repo (dev-build convention, like the extension key)
+          cd app\src-tauri
+          cargo build --release --features custom-protocol
+          $exe = "target\release\Velox.exe"
+          if (-not (Test-Path $exe)) { throw "Velox.exe was not produced — check the [[bin]] name = Velox target" }
+          Write-Host "app exe: $((Get-Item $exe).Length) bytes"
+
+      - name: Build + stage the native messaging host from the workspace
+        shell: pwsh
+        run: |
+          cargo build --release -p velox-host
+          New-Item -ItemType Directory -Force "$env:STAGING" | Out-Null
+          Copy-Item "target\release\velox-browser-host.exe" "$env:STAGING\"
+          Write-Host "velox-browser-host.exe: $((Get-Item "$env:STAGING\velox-browser-host.exe").Length) bytes"
+
+      - name: Stage bundled components (yt-dlp, LGPL ffmpeg/ffprobe, WebView2 fallback)
+        shell: pwsh
+        run: |
+          # yt-dlp: official signed release binary
+          Invoke-WebRequest -Uri "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe" -OutFile "$env:STAGING\yt-dlp.exe"
+          # ffmpeg/ffprobe: BtbN LGPL build (redistributable, no GPL taint)
+          Invoke-WebRequest -Uri "https://github.com/BtbN/FFmpeg-Builds/releases/latest/download/ffmpeg-master-latest-win64-lgpl.zip" -OutFile "$env:STAGING\ffmpeg.zip"
+          Expand-Archive "$env:STAGING\ffmpeg.zip" "$env:STAGING\ffmpeg" -Force
+          Copy-Item (Get-ChildItem "$env:STAGING\ffmpeg" -Recurse -Filter "ffmpeg.exe" | Select-Object -First 1).FullName "$env:STAGING\ffmpeg.exe"
+          Copy-Item (Get-ChildItem "$env:STAGING\ffmpeg" -Recurse -Filter "ffprobe.exe" | Select-Object -First 1).FullName "$env:STAGING\ffprobe.exe"
+          $lic = Get-ChildItem "$env:STAGING\ffmpeg" -Recurse -Filter "LICENSE*" | Select-Object -First 1
+          if ($lic) { Copy-Item $lic.FullName "$env:STAGING\ffmpeg-lgpl-LICENSE.txt" }
+          # WebView2 fallback: Evergreen Bootstrapper (official fwlink, ~2 MB;
+          # runs only on machines whose WebView2 runtime is genuinely missing)
+          Invoke-WebRequest -Uri "https://go.microsoft.com/fwlink/?LinkId=2124703" -OutFile "$env:STAGING\MicrosoftEdgeWebview2Setup.exe"
+          # extension + notices from the repository
+          Copy-Item "$env:GITHUB_WORKSPACE\download-engine\extension" "$env:STAGING\extension" -Recurse
+          Copy-Item "$env:GITHUB_WORKSPACE\download-engine\docs\THIRD_PARTY_NOTICES.md" "$env:STAGING\THIRD_PARTY_NOTICES.md"
+          Copy-Item "app\src-tauri\target\release\Velox.exe" "$env:STAGING\Velox.exe"
+          Get-ChildItem "$env:STAGING" | Select-Object Name, Length
+
+      - name: Build the unified NSIS installer (makensis, updater-signed)
+        shell: pwsh
+        run: |
+          $ver = "${{ github.ref_name }}".TrimStart('v')
+          if ($ver -match '^[0-9]+\.[0-9]+\.[0-9]+$') { Write-Host "tag version $ver" }
+          else { $conf = Get-Content app\src-tauri\tauri.conf.json -Raw | ConvertFrom-Json; $ver = $conf.version; Write-Host "config version $ver (no tag version)" }
+          $nsis = "C:\Program Files (x86)\NSIS\makensis.exe"
+          if (-not (Test-Path $nsis)) { throw "makensis not found at $nsis" }
           $keyPath = Join-Path $env:GITHUB_WORKSPACE 'scripts\velox-updater.key'
           $key = (Get-Content $keyPath -Last 1).Trim()
           if ([string]::IsNullOrWhiteSpace($key)) { throw "updater key is empty at $keyPath" }
           $env:TAURI_SIGNING_PRIVATE_KEY = $key
           $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = ""
-          cd app\src-tauri
-          cargo tauri build --target x86_64-pc-windows-msvc
-          ls target\x86_64-pc-windows-msvc\release\bundle\nsis\
+          & $nsis `
+            "/DPRODUCT_VERSION=$ver" `
+            "/DBUILD_STAGING=$env:STAGING" `
+            "/DBUILD_OUTPUT=$env:STAGING\Velox-Setup-x64-unified.exe" `
+            "/DBUILD_ICON_DIR=$env:GITHUB_WORKSPACE\download-engine\app\src-tauri\icons" `
+            scripts\installer-unified-template.nsi
+          if ($LASTEXITCODE -ne 0) { throw "makensis failed with $LASTEXITCODE" }
+          # sign the EXACT installer bytes the updater will verify (minisign,
+          # trusted-comment version binding checked by require_signed_version)
+          npm install -g "@tauri-apps/cli@^2"
+          tauri signer sign --app-version $ver "$env:STAGING\Velox-Setup-x64-unified.exe"
+          if (-not (Test-Path "$env:STAGING\Velox-Setup-x64-unified.exe.sig")) { throw "updater signature missing — TAURI_SIGNING_PRIVATE_KEY was not picked up" }
+          Copy-Item "$env:STAGING\Velox-Setup-x64-unified.exe" .
+          Copy-Item "$env:STAGING\Velox-Setup-x64-unified.exe.sig" .
 
-      - name: Verify the installed-app executable and the setup executable are distinct artifacts
+      - name: Verify the installer actually contains every required component
         shell: pwsh
         run: |
-          $app = Get-ChildItem "app\src-tauri\target\x86_64-pc-windows-msvc\release\Velox.exe" -ErrorAction SilentlyContinue
-          if (-not $app) { throw "Velox.exe (application) was not produced — check the [[bin]] name = Velox target" }
-          if ((Get-ChildItem "app\src-tauri\target\x86_64-pc-windows-msvc\release\*.exe").Count -lt 1 -or $app.Name -ne "Velox.exe") { throw "binary name is not Velox.exe" }
-          $setup = Get-ChildItem "app\src-tauri\target\x86_64-pc-windows-msvc\release\bundle\nsis\*-setup.exe" | Select-Object -First 1
-          if (-not $setup) { throw "NSIS setup executable was not produced" }
-          Write-Host "application exe: $($app.FullName) ($([math]::Round($app.Length/1MB,1)) MB)"
-          Write-Host "installer exe:   $($setup.FullName) ($([math]::Round($setup.Length/1MB,1)) MB)"
+          $seven = "C:\Program Files\7-Zip\7z.exe"
+          if (-not (Test-Path $seven)) { throw "7-Zip not found at $seven" }
+          $listing = & $seven l Velox-Setup-x64-unified.exe
+          $required = @(
+            "Velox.exe", "velox-browser-host.exe", "yt-dlp.exe",
+            "ffmpeg.exe", "ffprobe.exe", "extension", "manifest.json",
+            "background.js", "popup.html", "popup.js", "extension/README.md",
+            "THIRD-PARTY-NOTICES.md", "FFMPEG-LICENSE.txt", "WebView2Setup"
+          )
+          $missing = @()
+          foreach ($r in $required) {
+            if (-not ($listing -match [regex]::Escape($r))) { $missing += $r }
+          }
+          if ($missing.Count) { throw "unified installer is INCOMPLETE — missing: $($missing -join ', ')" }
+          Write-Host "unified installer contents verified: $($required -join ', ')"
+          $size = [math]::Round((Get-Item Velox-Setup-x64-unified.exe).Length / 1MB, 1)
+          Write-Host "Velox-Setup-x64-unified.exe: $size MB"
 
-      - name: Normalize artifact name
-        shell: pwsh
-        run: |
-          $setup = Get-ChildItem "app\src-tauri\target\x86_64-pc-windows-msvc\release\bundle\nsis\*-setup.exe" | Select-Object -First 1
-          Copy-Item $setup.FullName Velox-Setup-x64.exe
-          Copy-Item "app\src-tauri\target\x86_64-pc-windows-msvc\release\Velox.exe" Velox-app-x64.exe
-          # the minisign signature travels with the installer (validates the file
-          # CONTENT, so the rename below does not affect verification)
-          Copy-Item "$($setup.FullName).sig" Velox-Setup-x64.exe.sig
-          if (-not (Test-Path Velox-Setup-x64.exe.sig)) { throw "updater signature missing — TAURI_SIGNING_PRIVATE_KEY was not picked up" }
-
-      - name: Upload installer artifact
+      - name: Upload unified installer artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Velox-Setup-x64
-          path: download-engine/Velox-Setup-x64.exe
+          name: Velox-Setup-x64-unified
+          path: download-engine/Velox-Setup-x64-unified.exe
           if-no-files-found: error
 
-      - name: Upload installer signature artifact
+      - name: Upload unified installer signature artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Velox-Setup-x64.sig
-          path: download-engine/Velox-Setup-x64.exe.sig
-          if-no-files-found: error
-
-      - name: Upload application executable artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: Velox-app-x64
-          path: download-engine/Velox-app-x64.exe
+          name: Velox-Setup-x64-unified.sig
+          path: download-engine/Velox-Setup-x64-unified.exe.sig
           if-no-files-found: error
 
   # ---- Job 3: publish the signed release (v* tags only) ----
-  # Assembles and publishes everything the in-app updater and a fresh user
-  # need: Velox-Setup-x64.exe (+ minisign .sig), latest.json (updater manifest
-  # with a tag-pinned asset URL), the browser extension zip and SHA256SUMS.txt.
+  # The release page stays CLEAN: one obvious installer download (the unified
+  # setup) plus exactly what the signed auto-updater requires — latest.json
+  # (tag-pinned URL), the minisign .sig and SHA256SUMS.txt. Nothing else.
   release:
     needs: desktop
     if: startsWith(github.ref, 'refs/tags/v')
@@ -173,21 +225,19 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           path: rel
-      - name: Assemble release assets (latest.json + extension zip + checksums)
+      - name: Assemble release assets (latest.json + checksums)
         run: |
           VER="${GITHUB_REF_NAME#v}"
           mkdir -p out
-          cp rel/Velox-Setup-x64/Velox-Setup-x64.exe out/
-          cp rel/Velox-Setup-x64.sig/Velox-Setup-x64.exe.sig out/
-          cp rel/Velox-app-x64/Velox-app-x64.exe out/
-          SIG=$(cat out/Velox-Setup-x64.exe.sig)
-          URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}/Velox-Setup-x64.exe"
+          cp rel/Velox-Setup-x64-unified/Velox-Setup-x64-unified.exe out/
+          cp rel/Velox-Setup-x64-unified.sig/Velox-Setup-x64-unified.exe.sig out/
+          SIG=$(cat out/Velox-Setup-x64-unified.exe.sig)
+          URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}/Velox-Setup-x64-unified.exe"
           PUB_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)
           jq -n --arg v "$VER" --arg s "$SIG" --arg u "$URL" --arg d "$PUB_DATE" \
             '{version:$v, notes:("Velox "+$v+" — see the release notes for changes."), pub_date:$d, platforms:{"windows-x86_64":{signature:$s, url:$u}}}' \
             > out/latest.json
-          (cd download-engine/extension && zip -qr "$GITHUB_WORKSPACE/out/Velox-Extension.zip" .)
-          (cd out && sha256sum Velox-Setup-x64.exe Velox-Setup-x64.exe.sig Velox-app-x64.exe Velox-Extension.zip > SHA256SUMS.txt)
+          (cd out && sha256sum Velox-Setup-x64-unified.exe Velox-Setup-x64-unified.exe.sig latest.json > SHA256SUMS.txt)
           cat out/latest.json
       - name: Publish the GitHub release
         env:
@@ -195,4 +245,4 @@ jobs:
         run: |
           gh release create "$GITHUB_REF_NAME" out/* \
             --title "Velox ${GITHUB_REF_NAME#v}" \
-            --notes "Signed NSIS installer + updater manifest (latest.json) + browser extension zip. The in-app updater offers this release automatically; new users download Velox-Setup-x64.exe."
+            --notes "Unified signed installer — Velox desktop app, browser extension + native messaging host, yt-dlp, LGPL ffmpeg/ffprobe and the WebView2 fallback in ONE package. The in-app updater offers this release automatically; new users download **Velox-Setup-x64-unified.exe**. SHA256SUMS.txt covers the installer, its signature and latest.json."
