@@ -39,7 +39,7 @@ jobs:
         working-directory: download-engine/web
         run: node --test
 
-      - name: Desktop-app unit tests (velox-app: browser detection, host-manifest probe)
+      - name: Desktop-app unit tests (velox-app — browser detection, host-manifest probe)
         # velox-app is a standalone crate (not in the engine workspace) and can
         # only be compiled where the Tauri stack exists — the Windows runner.
         working-directory: download-engine/app/src-tauri
