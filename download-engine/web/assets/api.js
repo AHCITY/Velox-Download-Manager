@@ -55,6 +55,7 @@ export const engine = {
   list: () => api('download.list'),
   status: (id) => api('download.status', { id }),
   inspect: (url, cfg) => api('download.inspect', { url, ...(cfg || {}) }),
+  mediaFormats: (url) => api('media.formats', { url }),
   create: (url, cfg) => api('download.create', { url, ...(cfg || {}) }),
   start: (id) => api('download.start', { id }),
   pause: (id) => api('download.pause', { id }),

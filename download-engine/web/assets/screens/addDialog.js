@@ -114,6 +114,57 @@ export function openAddDialog(prefillUrl = '') {
 
   $('#adAdvBtn').onclick = () => $('#adAdv').classList.toggle('open');
 
+  // ---- media format selection (YouTube): real qualities from the engine ----
+  let mediaChoice = { format: store.prefs.mediaFormat || 'mp4', height: null, fps: null };
+  const fmtRow = el(`<div class="field" id="adMediaFmt" style="display:none">
+    <label>Format</label>
+    <div class="seg" id="adFmtSeg">
+      <button type="button" data-f="mp4">MP4 · video + audio</button>
+      <button type="button" data-f="mp3">MP3 · audio only</button>
+    </div>
+    <div id="adQualityWrap" style="margin-top:8px"></div>
+    <div class="hint" id="adFmtNote"></div>
+  </div>`);
+  const urlField = $('#adUrl').closest('.field');
+  if (urlField && urlField.nextSibling) urlField.parentNode.insertBefore(fmtRow, urlField.nextSibling);
+  else $('#adUrl').closest('.dialog-body').appendChild(fmtRow);
+
+  async function probeMediaFormats(url) {
+    const box = $('#adMediaFmt'); if (!box) return;
+    const seg = $('#adFmtSeg'), qw = $('#adQualityWrap'), note = $('#adFmtNote');
+    note.textContent = 'Checking available formats…';
+    box.style.display = 'block';
+    try {
+      const f = await engine.mediaFormats(url);
+      const qualities = f.qualities || [];
+      note.textContent = qualities.length ? 'Qualities offered by this source:' : 'No selectable video qualities — best available will be used.';
+      seg.querySelectorAll('button').forEach((b) => {
+        b.classList.toggle('on', b.dataset.f === mediaChoice.format);
+        b.disabled = b.dataset.f === 'mp3' && f.has_progressive === false && f.has_audio_only === false;
+      });
+      qw.innerHTML = mediaChoice.format === 'mp3' ? '' :
+        `<select id="adQuality">
+          <option value="best">Best available</option>
+          ${qualities.map((q) => `<option value="${q.height}${q.fps ? ':' + q.fps : ''}" ${store.prefs.mediaQuality !== 'best' && String(store.prefs.mediaQuality) === String(q.height) ? 'selected' : ''}>${esc(q.label)}${f.sizesByHeight && f.sizesByHeight[q.height] ? ' · ' + fmtBytes(f.sizesByHeight[q.height]) : ''}</option>`).join('')}
+        </select>`;
+      const sel = qw.querySelector('#adQuality');
+      if (sel) sel.onchange = () => {
+        const [h, fps] = sel.value === 'best' ? [null, null] : sel.value.split(':').map(Number);
+        mediaChoice.height = h || null; mediaChoice.fps = fps || null;
+      };
+      seg.querySelectorAll('button').forEach((b) => {
+        b.onclick = () => {
+          mediaChoice.format = b.dataset.f;
+          seg.querySelectorAll('button').forEach((x) => x.classList.toggle('on', x === b));
+          probeMediaFormats.lastUrl && probeMediaFormats(probeMediaFormats.lastUrl);
+        };
+      });
+      probeMediaFormats.lastUrl = url;
+    } catch (e) {
+      note.textContent = 'Format listing unavailable (' + friendly(e) + ') — best available will be used.';
+    }
+  }
+
   let inspecting = false;
   let lastInspected = '';
   async function doInspect() {
@@ -143,6 +194,9 @@ export function openAddDialog(prefillUrl = '') {
     } catch (e) {
       prev.className = 'preview bad';
       prev.innerHTML = `<div class="p-row"><span class="p-v" style="color:var(--err)">${esc(friendly(e))}</span></div>`;
+    }
+    // media page (YouTube etc.): offer honest format + quality selection
+    if (/youtube\.com|youtu\.be/i.test(url)) probeMediaFormats(url);
     } finally {
       inspecting = false;
     }
