@@ -1,6 +1,6 @@
 # STATE.md — Velox Download Manager mission state
 
-Last updated: 2026-11-24 — **v0.6.0 TURN**: extension install fixed at the packaging root cause, unified installer restored as THE release, UI refined, updater-at-launch polished. Keep current; commit before ending every turn.
+Last updated: 2026-11-25 — **UX/RELIABILITY + ONLINE INSTALLER TURN**: extension install fixed at the packaging root cause, unified installer restored as THE release, UI refined, updater-at-launch polished. Keep current; commit before ending every turn.
 
 ## Where things are
 
@@ -23,6 +23,14 @@ Last updated: 2026-11-24 — **v0.6.0 TURN**: extension install fixed at the pac
 | GitHub release `v0.1.0` | durable artifact copies |
 
 ## Progress
+
+- **UX/reliability + online installer session (2026-11-25)**:
+  - YouTube two-files root cause FIXED: `MergePort::discover_subprocess()` missed the bundled ffmpeg beside Velox.exe; now `discover_subprocess_at(exe_dir)` prefers bundled binaries (LGPL gate unchanged).
+  - Updater race FIXED: removed the competing 600 ms `exit(0)` (tauri-plugin-updater exits inside `downloadAndInstall()` on Windows — the JS promise never resolves there); macOS/Linux path relaunches directly; added verify-on-next-launch (`velox.update.attempt` in localStorage; boot compares versions and reports "update did not install" honestly).
+  - UI batch: YouTube mqdefault thumbnails (CSP +i.ytimg.com, icon fallback), sidebar collapse toggle + Ctrl+B (persisted), notification de-clutter (max 4 toasts, completion burst-batching 1.5 s, verification/merge successes → activity feed only), `friendlyEngineMessage` mapper shared by failure events + action toasts + details drawer, double-click = open/retry/details by state, compact details drawer (truncated URL + copy button, Advanced disclosure), Enter opens completed files.
+  - ONLINE INSTALLER: `scripts/installer-online-template.nsi` (MUI components page; optional "YouTube Video Downloader" section fetches yt-dlp + BtbN win64-lgpl ffmpeg/ffprobe at install time via `velox-fetch.ps1`; skips network when tools exist; never fatal) + `scripts/velox-online-fetch.ps1` (official sources, TLS 1.2, 3 retries, exit 0/2) + `desktop-online` CI job (builds Velox-Setup-x64-Online.exe; verifies core present AND media tools absent).
+  - `scripts/mock-engine-server.py`: browser-transport mock engine (POST /rpc + SSE /events) for UI preview/screenshots; 8 UI screenshots in `download/ui-screenshots/`.
+  - Research: `download/RESEARCH-FINDINGS.md` (10 topics, primary sources).
 
 - Engine cycles 1–7: complete (see `docs/AUTONOMOUS_CYCLE_PROGRESS.md`).
 - **UI overhaul session (this one)**:
