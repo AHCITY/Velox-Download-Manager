@@ -117,6 +117,301 @@ pub async fn resolve_media(
     url: &str,
     hdrs: &RequestHeaders,
 ) -> Result<ResourceInfo, EngineError> {
+    resolve_media_with(backend, url, hdrs, None, None, None).await
+}
+
+/// Format-aware media resolution (Add dialog "MP4 @ 720p" / "MP3"):
+/// `choice` carries the user's format/height/fps selection from
+/// download.create's DownloadConfig. `None` = legacy best-available.
+pub async fn resolve_media_with(
+    backend: &ReqwestBackend,
+    url: &str,
+    hdrs: &RequestHeaders,
+    choice: Option<crate::formats::MediaFormatChoice>,
+    max_height: Option<u32>,
+    want_fps: Option<u32>,
+) -> Result<ResourceInfo, EngineError> {
+    // Shared yt-dlp -J run (audit D1 kill-on-drop + D2 header forwarding live
+    // in run_extractor_json, used by both the resolve and the formats probe).
+    let meta = run_extractor_json(backend, url, hdrs).await?;
+    let title = meta
+        .get("title")
+        .and_then(|t| t.as_str())
+        .unwrap_or("media")
+        .to_string();
+    let plan_choice = choice.map(|format| PlanChoice { format, max_height, want_fps });
+    let plan = pick_plan(&meta, plan_choice)?;
+    let info = if plan.to_mp3 {
+        // MP3 path: single audio-stream download; the media job converts it to
+        // .mp3 (libmp3lame -q:a 0) once the raw stream lands on disk.
+        ResourceInfo {
+            final_url: plan.video.url.clone(),
+            redirect_chain: vec![url.to_string()],
+            status: 200,
+            content_length: plan.video.size,
+            range_support: engine_core::inspect::RangeSupport::Unknown,
+            mime: Some("audio/mpeg".into()),
+            sniffed: engine_core::inspect::SniffedKind::Unknown,
+            suggested_name: Some(format!("{}.mp3", title)),
+            resolve_note: Some(format!(
+                "media extractor: “{}” — best audio [{}] → MP3",
+                title, plan.video.format_id
+            )),
+            media: Some(engine_core::config::MediaMergeSpec {
+                audio_url: String::new(),
+                output_ext: Some("mp3".into()),
+                output_name: Some(format!("{}.mp3", title)),
+                audio_name: None,
+                convert: Some(engine_core::config::MediaConvert::Mp3),
+            }),
+            ..Default::default()
+        }
+    } else if let Some(audio) = &plan.audio {
+        // Adaptive: separate video/audio https streams → two-stream media job.
+        let output_ext = merge_container(&plan.video.ext, &audio.ext);
+        ResourceInfo {
+            final_url: plan.video.url.clone(),
+            redirect_chain: vec![url.to_string()],
+            status: 200,
+            content_length: plan.video.size,
+            range_support: engine_core::inspect::RangeSupport::Unknown,
+            mime: Some(plan.video.mime.clone()),
+            sniffed: engine_core::inspect::SniffedKind::Unknown,
+            suggested_name: Some(format!("{} (video stream).{}", title, plan.video.ext)),
+            resolve_note: Some(format!(
+                "media extractor: “{}” — adaptive {}+{} → merged .{}",
+                title, plan.video.format_id, audio.format_id, output_ext
+            )),
+            media: Some(engine_core::config::MediaMergeSpec {
+                audio_url: audio.url.clone(),
+                output_ext: Some(output_ext.clone()),
+                output_name: Some(format!("{}.{}", title, output_ext)),
+                audio_name: Some(format!("{} (audio stream).{}", title, audio.ext)),
+                convert: None,
+            }),
+            ..Default::default()
+        }
+    } else {
+        // Fast path: progressive stream (video+audio in ONE file) — download directly.
+        ResourceInfo {
+            final_url: plan.video.url.clone(),
+            redirect_chain: vec![url.to_string()],
+            status: 200,
+            content_length: plan.video.size,
+            range_support: engine_core::inspect::RangeSupport::Unknown,
+            mime: Some(plan.video.mime.clone()),
+            sniffed: engine_core::inspect::SniffedKind::Unknown,
+            suggested_name: Some(format!("{}.{}", title, plan.video.ext)),
+            resolve_note: Some(format!(
+                "media extractor: “{}” [{}]",
+                title, plan.video.format_id
+            )),
+            ..Default::default()
+        }
+    };
+    Ok(info)
+}
+
+/// Container choice for a merged artifact without transcoding: mp4 hosts
+/// H.264/AV1 + AAC/MP3 cleanly; VP9/Opus pairs go into Matroska (mkv), which
+/// accepts any codec stream-copy.
+fn merge_container(video_ext: &str, audio_ext: &str) -> String {
+    let mp4_video = video_ext == "mp4";
+    let mp4_audio = matches!(audio_ext, "m4a" | "aac" | "mp3");
+    if mp4_video && mp4_audio {
+        "mp4".into()
+    } else {
+        "mkv".into()
+    }
+}
+
+/// The resolved download plan for one media URL.
+///
+/// `audio: None`  → progressive: `video` already contains both streams.
+/// `audio: Some`  → adaptive: download `video` + `audio`, then merge (`-c copy`).
+/// `to_mp3`       → the download is the best audio stream; the media job
+///                  converts it to `.mp3` with the bundled ffmpeg (libmp3lame).
+#[derive(Debug)]
+struct MediaPlan {
+    video: ChosenStream,
+    audio: Option<ChosenStream>,
+    to_mp3: bool,
+}
+
+/// User format choice: height/fps come from the caller's DownloadConfig, the
+/// format (mp4/mp3) from the Add dialog.
+#[derive(Debug, Clone, Copy)]
+pub struct PlanChoice {
+    pub format: crate::formats::MediaFormatChoice,
+    pub max_height: Option<u32>,
+    pub want_fps: Option<u32>,
+}
+
+impl From<crate::formats::MediaFormatChoice> for PlanChoice {
+    fn from(f: crate::formats::MediaFormatChoice) -> Self {
+        PlanChoice { format: f, max_height: None, want_fps: None }
+    }
+}
+
+fn chosen_from(f: &serde_json::Value) -> Option<ChosenStream> {
+    let url = f.get("url").and_then(|u| u.as_str())?;
+    let ext = fmt_ext_pub(f);
+    let mime = f
+        .get("mime_type")
+        .and_then(|m| m.as_str())
+        .map(str::to_string)
+        .unwrap_or_else(|| match ext.as_str() {
+            "webm" => "video/webm".into(),
+            "mkv" => "video/x-matroska".into(),
+            "m4a" => "audio/mp4".into(),
+            "mp3" => "audio/mpeg".into(),
+            _ => "video/mp4".into(),
+        });
+    Some(ChosenStream {
+        url: url.to_string(),
+        ext,
+        mime,
+        size: f
+            .get("filesize")
+            .and_then(|s| s.as_u64())
+            .or_else(|| f.get("filesize_approx").and_then(|s| s.as_u64())),
+        format_id: f
+            .get("format_id")
+            .and_then(|i| i.as_str())
+            .unwrap_or("unknown")
+            .to_string(),
+    })
+}
+
+fn fmt_ext_pub(f: &serde_json::Value) -> String {
+    f.get("ext").and_then(|e| e.as_str()).unwrap_or("mp4").to_string()
+}
+
+/// Pick the download plan from yt-dlp metadata honouring the user's format
+/// choice (see formats.rs for the selection model). When a format choice is
+/// given but nothing matches at the requested height, we fall back to the
+/// uncapped best set — a stale quality list must never block a download.
+fn pick_plan(meta: &serde_json::Value, choice: Option<PlanChoice>) -> Result<MediaPlan, EngineError> {
+    use crate::formats::{select_audio, select_mp4, MediaFormatChoice, StreamKind};
+
+    let formats = meta
+        .get("formats")
+        .and_then(|f| f.as_array())
+        .map(|a| a.as_slice())
+        .unwrap_or(&[]);
+
+    // MP3 path: best audio stream (audio-only preferred, else combined-audio);
+    // conversion happens in the media job after download.
+    if let Some(ch) = choice {
+        if ch.format == MediaFormatChoice::Mp3 {
+            if let Some(a) = select_audio(formats) {
+                if let Some(chosen) = chosen_from(a) {
+                    return Ok(MediaPlan { video: chosen, audio: None, to_mp3: true });
+                }
+            }
+            return Err(EngineError::new(
+                ErrorKind::UnsupportedUrl,
+                "no audio stream is available for this media — it cannot be saved as MP3",
+            ));
+        }
+    }
+
+    // MP4 path (explicit choice or legacy best-available).
+    let max_height = choice.and_then(|c| c.max_height);
+    let want_fps = choice.and_then(|c| c.want_fps);
+    let try_select = |cap: Option<u32>| -> Option<(ChosenStream, Option<ChosenStream>)> {
+        let pair = select_mp4(formats, cap, want_fps)?;
+        let video = chosen_from(pair.video)?;
+        let audio = match pair.audio {
+            Some(a) => Some(chosen_from(a)?),
+            None => None,
+        };
+        Some((video, audio))
+    };
+    if let Some((video, audio)) = try_select(max_height) {
+        return Ok(MediaPlan { video, audio, to_mp3: false });
+    }
+    if max_height.is_some() {
+        // requested height unavailable (stale list / format vanished): honest
+        // fallback to the best available set rather than failing the download
+        if let Some((video, audio)) = try_select(None) {
+            return Ok(MediaPlan { video, audio, to_mp3: false });
+        }
+    }
+    // top-level single stream (some extractors put it outside formats[])
+    if let Some(stream_url) = meta.get("url").and_then(|u| u.as_str()) {
+        let proto = meta.get("protocol").and_then(|p| p.as_str()).unwrap_or("");
+        if matches!(proto, "https" | "http") {
+            let ext = fmt_ext_pub(meta);
+            // A top-level stream is a SINGLE download regardless of codec type —
+            // an audio-only top-level stream is just a file (podcast etc.).
+            let video = ChosenStream {
+                url: stream_url.to_string(),
+                mime: match ext.as_str() {
+                    "webm" => "video/webm".into(),
+                    _ => "video/mp4".into(),
+                },
+                ext,
+                size: meta
+                    .get("filesize")
+                    .and_then(|s| s.as_u64())
+                    .or_else(|| meta.get("filesize_approx").and_then(|s| s.as_u64())),
+                format_id: meta
+                    .get("format_id")
+                    .and_then(|i| i.as_str())
+                    .unwrap_or("direct")
+                    .to_string(),
+            };
+            return Ok(MediaPlan { video, audio: None, to_mp3: false });
+        }
+    }
+    // honest failure modes
+    let has_video = formats
+        .iter()
+        .any(|f| matches!(classify_pub(f), Some(StreamKind::Progressive) | Some(StreamKind::VideoOnly)));
+    let has_audio = formats
+        .iter()
+        .any(|f| matches!(classify_pub(f), Some(StreamKind::Progressive) | Some(StreamKind::AudioOnly)));
+    if has_video && !has_audio {
+        return Err(EngineError::new(
+            ErrorKind::UnsupportedUrl,
+            "only video-only streams are available for this media — no audio stream to pair with them; the media may need authentication or is not downloadable",
+        ));
+    }
+    if !has_video && has_audio {
+        return Err(EngineError::new(
+            ErrorKind::UnsupportedUrl,
+            "only audio-only streams are available for this media — no video stream to pair with them",
+        ));
+    }
+    Err(EngineError::new(
+        ErrorKind::UnsupportedUrl,
+        "no downloadable https media stream found for this URL — only manifest formats (HLS/DASH), which are not file downloads",
+    ))
+}
+
+fn classify_pub(f: &serde_json::Value) -> Option<crate::formats::StreamKind> {
+    crate::formats::classify(f)
+}
+
+/// Probe a media page's honest format list (`media.formats` RPC): runs yt-dlp
+/// `-J` (simulate-only, nothing is downloaded) and derives the available
+/// qualities from the reported formats — nothing is fabricated.
+pub async fn probe_formats(
+    backend: &ReqwestBackend,
+    url: &str,
+    hdrs: &RequestHeaders,
+) -> Result<crate::formats::FormatSummary, EngineError> {
+    let meta = run_extractor_json(backend, url, hdrs).await?;
+    Ok(crate::formats::format_summary(&meta))
+}
+
+/// Shared yt-dlp `-J` invocation (used by resolve_media_with and probe_formats).
+async fn run_extractor_json(
+    backend: &ReqwestBackend,
+    url: &str,
+    hdrs: &RequestHeaders,
+) -> Result<serde_json::Value, EngineError> {
     let Some(program) = backend
         .engine
         .extractor_path
@@ -138,9 +433,6 @@ pub async fn resolve_media(
     // orphan process running indefinitely, one per timed-out add)
     cmd.kill_on_drop(true);
     cmd.args(["-J", "--no-playlist", "--no-warnings"]);
-    // audit D2: forward the user's session context (cookies/referer/UA/auth) — the
-    // remedy for the YouTube bot wall and age-gated media. Value order: yt-dlp applies
-    // --add-headers to every HTTP request it makes, including the media stream probe.
     for h in extractor_header_args(hdrs, &backend.engine) {
         cmd.args(["--add-headers", &h]);
     }
@@ -148,10 +440,6 @@ pub async fn resolve_media(
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
-    // Windows: yt-dlp is a console-subsystem executable; spawned from the GUI app
-    // it would flash a console window in front of Velox on EVERY media add. These
-    // flags suppress the window while stdout/stderr stay fully piped (diagnostics
-    // are still captured). No effect on other platforms.
     #[cfg(windows)]
     {
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
@@ -210,251 +498,12 @@ pub async fn resolve_media(
         ));
     }
 
-    let meta: serde_json::Value = serde_json::from_slice(&output.stdout).map_err(|e| {
+    serde_json::from_slice(&output.stdout).map_err(|e| {
         EngineError::new(
             ErrorKind::InvalidResponse,
             format!("extractor returned unparseable metadata: {e}"),
         )
-    })?;
-
-    let title = meta
-        .get("title")
-        .and_then(|t| t.as_str())
-        .unwrap_or("media")
-        .to_string();
-    let plan = pick_plan(&meta)?;
-    let info = match &plan.audio {
-        // Fast path: progressive stream (video+audio in ONE file) — download directly.
-        None => ResourceInfo {
-            final_url: plan.video.url.clone(),
-            redirect_chain: vec![url.to_string()],
-            status: 200,
-            content_length: plan.video.size,
-            range_support: engine_core::inspect::RangeSupport::Unknown,
-            mime: Some(plan.video.mime.clone()),
-            sniffed: engine_core::inspect::SniffedKind::Unknown,
-            suggested_name: Some(format!("{}.{}", title, plan.video.ext)),
-            resolve_note: Some(format!(
-                "media extractor: “{}” [{}]",
-                title, plan.video.format_id
-            )),
-            ..Default::default()
-        },
-        // Adaptive: separate video/audio https streams → two-stream media job.
-        Some(audio) => {
-            let output_ext = merge_container(&plan.video.ext, &audio.ext);
-            ResourceInfo {
-                final_url: plan.video.url.clone(),
-                redirect_chain: vec![url.to_string()],
-                status: 200,
-                content_length: plan.video.size,
-                range_support: engine_core::inspect::RangeSupport::Unknown,
-                mime: Some(plan.video.mime.clone()),
-                sniffed: engine_core::inspect::SniffedKind::Unknown,
-                suggested_name: Some(format!("{} (video stream).{}", title, plan.video.ext)),
-                resolve_note: Some(format!(
-                    "media extractor: “{}” — adaptive {}+{} → merged .{}",
-                    title, plan.video.format_id, audio.format_id, output_ext
-                )),
-                media: Some(engine_core::config::MediaMergeSpec {
-                    audio_url: audio.url.clone(),
-                    output_ext: Some(output_ext.clone()),
-                    output_name: Some(format!("{}.{}", title, output_ext)),
-                    audio_name: Some(format!("{} (audio stream).{}", title, audio.ext)),
-                }),
-                ..Default::default()
-            }
-        }
-    };
-    Ok(info)
-}
-
-/// Container choice for a merged artifact without transcoding: mp4 hosts
-/// H.264/AV1 + AAC/MP3 cleanly; VP9/Opus pairs go into Matroska (mkv), which
-/// accepts any codec stream-copy.
-fn merge_container(video_ext: &str, audio_ext: &str) -> String {
-    let mp4_video = video_ext == "mp4";
-    let mp4_audio = matches!(audio_ext, "m4a" | "aac" | "mp3");
-    if mp4_video && mp4_audio {
-        "mp4".into()
-    } else {
-        "mkv".into()
-    }
-}
-
-/// The resolved download plan for one media URL.
-///
-/// `audio: None`  → progressive: `video` already contains both streams.
-/// `audio: Some`  → adaptive: download `video` + `audio`, then merge (`-c copy`).
-#[derive(Debug)]
-struct MediaPlan {
-    video: ChosenStream,
-    audio: Option<ChosenStream>,
-}
-
-/// Pick the best stream set from yt-dlp metadata. Preference order:
-///
-/// 1. PROGRESSIVE https stream (video+audio in one file) — the fast path, no merge.
-///    mp4 preferred over webm, then highest total bitrate.
-/// 2. Best ADAPTIVE PAIR: highest-bitrate video-only stream + highest-bitrate
-///    audio-only stream (mp4/m4a preferred within each). Container compatibility is
-///    decided by `merge_container` — codecs are never transcoded.
-///
-/// HLS/DASH manifest protocols (m3u8_native, dash, …) are rejected in every branch:
-/// Velox downloads files, not segment manifests. A media with only manifest formats
-/// or only one adaptive half fails honestly.
-fn pick_plan(meta: &serde_json::Value) -> Result<MediaPlan, EngineError> {
-    let mut best_prog: Option<(usize, f64, ChosenStream)> = None;
-    let mut best_video: Option<(usize, f64, ChosenStream)> = None;
-    let mut best_audio: Option<(usize, f64, ChosenStream)> = None;
-    if let Some(formats) = meta.get("formats").and_then(|f| f.as_array()) {
-        for f in formats {
-            let Some(stream_url) = f.get("url").and_then(|u| u.as_str()) else {
-                continue;
-            };
-            let proto = f.get("protocol").and_then(|p| p.as_str()).unwrap_or("");
-            if !matches!(proto, "https" | "http") {
-                continue; // m3u8/dash manifests are not file downloads
-            }
-            let vcodec = f.get("vcodec").and_then(|c| c.as_str()).unwrap_or("none");
-            let acodec = f.get("acodec").and_then(|c| c.as_str()).unwrap_or("none");
-            let ext = f
-                .get("ext")
-                .and_then(|e| e.as_str())
-                .unwrap_or("mp4")
-                .to_string();
-            let size = f
-                .get("filesize")
-                .and_then(|s| s.as_u64())
-                .or_else(|| f.get("filesize_approx").and_then(|s| s.as_u64()));
-            let tbr = f.get("tbr").and_then(|t| t.as_f64()).unwrap_or(0.0);
-            let mime = f
-                .get("mime_type")
-                .and_then(|m| m.as_str())
-                .map(str::to_string)
-                .unwrap_or_else(|| match ext.as_str() {
-                    "webm" => "video/webm".into(),
-                    "mkv" => "video/x-matroska".into(),
-                    "m4a" => "audio/mp4".into(),
-                    _ => "video/mp4".into(),
-                });
-            let format_id = f
-                .get("format_id")
-                .and_then(|i| i.as_str())
-                .unwrap_or("unknown")
-                .to_string();
-            let chosen = ChosenStream {
-                url: stream_url.to_string(),
-                ext: ext.clone(),
-                mime,
-                size,
-                format_id,
-            };
-            if vcodec != "none" && acodec != "none" {
-                // progressive candidate
-                let pref = match ext.as_str() {
-                    "mp4" => 2,
-                    "webm" => 1,
-                    _ => 0,
-                };
-                if best_prog
-                    .as_ref()
-                    .is_none_or(|(bp, bt, _)| (pref, tbr) > (*bp, *bt))
-                {
-                    best_prog = Some((pref, tbr, chosen));
-                }
-            } else if vcodec != "none" {
-                // video-only candidate
-                let pref = match ext.as_str() {
-                    "mp4" => 2,
-                    "webm" => 1,
-                    _ => 0,
-                };
-                if best_video
-                    .as_ref()
-                    .is_none_or(|(bp, bt, _)| (pref, tbr) > (*bp, *bt))
-                {
-                    best_video = Some((pref, tbr, chosen));
-                }
-            } else if acodec != "none" {
-                // audio-only candidate: m4a pairs with mp4, then bitrate
-                let pref = match ext.as_str() {
-                    "m4a" => 3,
-                    "mp3" => 2,
-                    "aac" => 2,
-                    "webm" => 1,
-                    _ => 0,
-                };
-                let rank = f
-                    .get("abr")
-                    .and_then(|t| t.as_f64())
-                    .filter(|v| *v > 0.0)
-                    .unwrap_or(tbr);
-                if best_audio
-                    .as_ref()
-                    .is_none_or(|(bp, bt, _)| (pref, rank) > (*bp, *bt))
-                {
-                    best_audio = Some((pref, rank, chosen));
-                }
-            }
-        }
-    }
-
-    // some pages expose a single direct stream at the top level
-    if best_prog.is_none() {
-        if let Some(stream_url) = meta.get("url").and_then(|u| u.as_str()) {
-            let proto = meta.get("protocol").and_then(|p| p.as_str()).unwrap_or("");
-            if matches!(proto, "https" | "http") {
-                let ext = meta
-                    .get("ext")
-                    .and_then(|e| e.as_str())
-                    .unwrap_or("mp4")
-                    .to_string();
-                // A top-level stream is a SINGLE download regardless of codec type —
-                // an audio-only top-level stream is just a file (podcast etc.).
-                let video = ChosenStream {
-                    url: stream_url.to_string(),
-                    mime: match ext.as_str() {
-                        "webm" => "video/webm".into(),
-                        _ => "video/mp4".into(),
-                    },
-                    ext,
-                    size: meta
-                        .get("filesize")
-                        .and_then(|s| s.as_u64())
-                        .or_else(|| meta.get("filesize_approx").and_then(|s| s.as_u64())),
-                    format_id: meta
-                        .get("format_id")
-                        .and_then(|i| i.as_str())
-                        .unwrap_or("direct")
-                        .to_string(),
-                };
-                return Ok(MediaPlan { video, audio: None });
-            }
-        }
-    }
-
-    if let Some((_, _, video)) = best_prog {
-        return Ok(MediaPlan { video, audio: None });
-    }
-    match (best_video, best_audio) {
-        (Some((_, _, v)), Some((_, _, a))) => Ok(MediaPlan {
-            video: v,
-            audio: Some(a),
-        }),
-        (Some((_, _, _)), None) => Err(EngineError::new(
-            ErrorKind::UnsupportedUrl,
-            "only video-only streams are available for this media — no audio stream to              pair with them; the media may need authentication or is not downloadable",
-        )),
-        (None, Some((_, _, _))) => Err(EngineError::new(
-            ErrorKind::UnsupportedUrl,
-            "only audio-only streams are available for this media — no video stream to              pair with them",
-        )),
-        (None, None) => Err(EngineError::new(
-            ErrorKind::UnsupportedUrl,
-            "no downloadable https media stream found for this URL — only manifest              formats (HLS/DASH), which are not file downloads",
-        )),
-    }
+    })
 }
 
 #[cfg(test)]
@@ -488,7 +537,7 @@ mod tests {
                 fmt("video-only", "mp4", "https", "avc1", "none", 4000.0, 30_000_000),
             ]
         });
-        let plan = pick_plan(&meta).unwrap();
+        let plan = pick_plan(&meta, None).unwrap();
         assert!(
             plan.audio.is_none(),
             "progressive stream must keep the fast path"
@@ -513,7 +562,7 @@ mod tests {
                 fmt("hls-x", "mp4", "m3u8", "h264", "aac", 5000.0, 40_000_000),
             ]
         });
-        let plan = pick_plan(&meta).unwrap();
+        let plan = pick_plan(&meta, None).unwrap();
         let audio = plan
             .audio
             .expect("adaptive pair when no progressive stream");
@@ -533,7 +582,7 @@ mod tests {
             "title": "Test",
             "formats": [fmt("v-only", "mp4", "https", "avc1", "none", 4000.0, 1)]
         });
-        let e = pick_plan(&meta).unwrap_err();
+        let e = pick_plan(&meta, None).unwrap_err();
         assert_eq!(e.kind_code(), "UNSUPPORTED_URL");
         assert!(e.message.contains("audio"), "{e}");
     }
@@ -544,7 +593,7 @@ mod tests {
             "title": "Test",
             "formats": [fmt("hls-x", "mp4", "m3u8", "h264", "aac", 5000.0, 1)]
         });
-        let e = pick_plan(&meta).unwrap_err();
+        let e = pick_plan(&meta, None).unwrap_err();
         assert_eq!(e.kind_code(), "UNSUPPORTED_URL");
         assert!(e.message.contains("manifest"), "{e}");
     }
@@ -605,10 +654,115 @@ mod tests {
             "title": "Direct", "url": "https://media.example/v.mp4",
             "protocol": "https", "ext": "mp4", "filesize": 123
         });
-        let plan = pick_plan(&meta).unwrap();
+        let plan = pick_plan(&meta, None).unwrap();
         assert!(plan.audio.is_none());
         let c = plan.video;
         assert_eq!(c.url, "https://media.example/v.mp4");
         assert_eq!(c.size, Some(123));
+    }
+
+    // ---- format selection (MP4 quality caps, MP3, honest fallbacks) ----
+
+    fn yt_meta() -> serde_json::Value {
+        serde_json::json!({
+            "title": "Test Video",
+            "formats": [
+                {"format_id": "251", "url": "https://s/audio.webm", "protocol": "https", "ext": "webm", "vcodec": "none", "acodec": "opus", "abr": 160},
+                {"format_id": "140", "url": "https://s/audio.m4a", "protocol": "https", "ext": "m4a", "vcodec": "none", "acodec": "mp4a", "abr": 128},
+                {"format_id": "137", "url": "https://s/v1080.mp4", "protocol": "https", "ext": "mp4", "vcodec": "h264", "acodec": "none", "height": 1080, "tbr": 4000, "filesize": 100000},
+                {"format_id": "136", "url": "https://s/v720.mp4", "protocol": "https", "ext": "mp4", "vcodec": "h264", "acodec": "none", "height": 720, "tbr": 2500, "filesize": 60000},
+                {"format_id": "135", "url": "https://s/v480.mp4", "protocol": "https", "ext": "mp4", "vcodec": "h264", "acodec": "none", "height": 480, "tbr": 1200, "filesize": 30000},
+                {"format_id": "299", "url": "https://s/v1080_60.mp4", "protocol": "https", "ext": "mp4", "vcodec": "h264", "acodec": "none", "height": 1080, "fps": 60, "tbr": 5500},
+                {"format_id": "18",  "url": "https://s/prog360.mp4", "protocol": "https", "ext": "mp4", "vcodec": "h264", "acodec": "aac", "height": 360, "tbr": 600},
+                {"format_id": "94",  "url": "https://s/hls.m3u8", "protocol": "m3u8_native", "ext": "mp4", "vcodec": "h264", "acodec": "aac", "height": 480}
+            ]
+        })
+    }
+
+    #[test]
+    fn quality_list_reports_only_real_heights_desc() {
+        let q = crate::formats::quality_list(&yt_meta());
+        let labels: Vec<&str> = q.iter().map(|x| x.label.as_str()).collect();
+        // 1080 (30+60fps variants), 720, 480, 360 progressive — m3u8 excluded
+        assert_eq!(labels, vec!["1080p", "1080p60", "720p", "480p", "360p"]);
+    }
+
+    #[test]
+    fn format_summary_flags_audio_and_sizes() {
+        let sum = crate::formats::format_summary(&yt_meta());
+        assert!(sum.has_audio_only);
+        assert!(sum.has_progressive);
+        assert_eq!(sum.sizes_by_height.get(&1080), Some(&Some(100000)));\n        assert_eq!(sum.sizes_by_height.get(&720), Some(&Some(60000)));
+    }
+
+    #[test]
+    fn mp4_at_height_cap_selects_under_cap() {
+        let meta = yt_meta();
+        let plan = pick_plan(&meta, Some(PlanChoice {
+            format: crate::formats::MediaFormatChoice::Mp4,
+            max_height: Some(720),
+            want_fps: None,
+        })).unwrap();
+        // 720 pair: video 136 + best audio (webm 160abr wins by abr, m4a by ext pref → m4a pref 3 > webm 1)
+        assert_eq!(plan.video.format_id, "136");
+        let audio = plan.audio.as_ref().unwrap();
+        assert_eq!(audio.format_id, "140");
+        assert!(!plan.to_mp3);
+    }
+
+    #[test]
+    fn mp4_best_default_picks_top_quality() {
+        let plan = pick_plan(&yt_meta(), None).unwrap();
+        assert_eq!(plan.video.format_id, "299"); // 1080p60: same height, higher tbr wins
+        assert!(plan.audio.is_some());
+    }
+
+    #[test]
+    fn mp4_fps_preference_picks_60fps_variant() {
+        let plan = pick_plan(&yt_meta(), Some(PlanChoice {
+            format: crate::formats::MediaFormatChoice::Mp4,
+            max_height: Some(1080),
+            want_fps: Some(60),
+        })).unwrap();
+        assert_eq!(plan.video.format_id, "299");
+    }
+
+    #[test]
+    fn mp3_choice_takes_best_audio_only_stream() {
+        let plan = pick_plan(&yt_meta(), Some(PlanChoice {
+            format: crate::formats::MediaFormatChoice::Mp3,
+            max_height: None,
+            want_fps: None,
+        })).unwrap();
+        assert!(plan.to_mp3);
+        assert!(plan.audio.is_none());
+        assert_eq!(plan.video.format_id, "140"); // m4a ext preference wins
+    }
+
+    #[test]
+    fn stale_height_falls_back_to_best_available() {
+        let plan = pick_plan(&yt_meta(), Some(PlanChoice {
+            format: crate::formats::MediaFormatChoice::Mp4,
+            max_height: Some(4800), // 4K not offered — never blocks the download
+            want_fps: None,
+        })).unwrap();
+        assert_eq!(plan.video.format_id, "299"); // falls back to the true best
+    }
+
+    #[test]
+    fn mp3_without_any_audio_is_an_honest_error() {
+        let meta = serde_json::json!({
+            "title": "Video only",
+            "formats": [
+                {"format_id": "137", "url": "https://s/v.mp4", "protocol": "https", "ext": "mp4",
+                 "vcodec": "h264", "acodec": "none", "height": 1080, "tbr": 4000}
+            ]
+        });
+        let e = pick_plan(&meta, Some(PlanChoice {
+            format: crate::formats::MediaFormatChoice::Mp3,
+            max_height: None,
+            want_fps: None,
+        })).unwrap_err();
+        assert!(e.message.contains("no audio stream"), "{}", e.message);
     }
 }

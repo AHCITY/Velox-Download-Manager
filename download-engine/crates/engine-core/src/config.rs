@@ -120,6 +120,29 @@ pub struct DownloadConfig {
     /// stream 1 completes, then merged (`-c copy`) into the final artifact.
     /// The merge itself only runs when a MediaMergePort is configured on the manager.
     pub media_merge: Option<MediaMergeSpec>,
+    /// User's format choice for media downloads (Add dialog): MP4 (merged
+    /// video+audio) or MP3 (audio-only, converted with the bundled ffmpeg).
+    /// Absent keeps the legacy "best available" resolution.
+    #[serde(default)]
+    pub media_format: Option<MediaFormat>,
+    /// Requested video height cap in pixels (480/720/1080/…), from the honest
+    /// quality list. The extractor only offers qualities the source actually
+    /// has; this is the chosen one. `None` = best available.
+    #[serde(default)]
+    pub media_height: Option<u32>,
+    /// Preferred fps for the selected height (e.g. Some(60) for "1080p60").
+    #[serde(default)]
+    pub media_fps: Option<u32>,
+}
+
+/// Container/format choice for media downloads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum MediaFormat {
+    /// Video + audio, merged to mp4 when the source is adaptive.
+    Mp4,
+    /// Audio only, converted to mp3 (libmp3lame, `-q:a 0` VBR best).
+    Mp3,
 }
 
 /// Two-stream media job spec (DASH/HLS resolved by yt-dlp upstream — the URLs here
@@ -140,6 +163,18 @@ pub struct MediaMergeSpec {
     /// back to URL/mime-derived names.
     #[serde(default)]
     pub audio_name: Option<String>,
+    /// Post-download conversion (MP3 extraction). When set, the media job
+    /// converts the single downloaded stream instead of merging two.
+    #[serde(default)]
+    pub convert: Option<MediaConvert>,
+}
+
+/// Post-download conversion mode for media jobs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum MediaConvert {
+    /// Extract/transcode audio to MP3 (libmp3lame, VBR best `-q:a 0`).
+    Mp3,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

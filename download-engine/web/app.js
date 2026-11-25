@@ -14,6 +14,7 @@ import {
   $, el, esc, renderToasts, detailsDrawer, paintDetails, actions, contextMenu, openDialog,
 } from './assets/ui.js';
 import { openAddDialog } from './assets/screens/addDialog.js';
+import { initThemes, listInstalledThemes } from './assets/themes.js';
 
 const ROUTES = {
   downloads: { label: 'Downloads', icon: 'list', mod: () => import('./assets/screens/downloads.js') },
@@ -299,6 +300,8 @@ async function boot() {
   drawer = detailsDrawer();
   renderToasts($('#toasts'));
   await bootstrap();
+  initThemes(store.prefs.theme);
+  listInstalledThemes().then(() => { if (!store.prefs.theme) initThemes(null); });
   import('./assets/updater.js').then((m) => m.initUpdater());
   maybeBrowserSetup();
   document.body.dataset.anim = store.prefs.animations ? 'on' : 'off';

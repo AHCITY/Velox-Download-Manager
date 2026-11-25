@@ -7,6 +7,7 @@ import { checkNow, installUpdate, currentAppVersion } from '../updater.js';
 import { fmtBytes } from '../store.js';
 import { isDesktop, defaultDownloadDir, pickDirectory } from '../api.js';
 import { el, esc } from '../ui.js';
+import { BUILTIN_THEMES, customThemeList, applyTheme, registerCustomTheme, sanitizeTheme, listInstalledThemes } from '../themes.js';
 
 let built = false;
 let section = 'general';
@@ -15,6 +16,7 @@ const SECTIONS = [
   ['general', 'General', 'settings'],
   ['updates', 'Updates', 'refresh'],
   ['downloads', 'Downloads', 'download'],
+  ['media', 'Media', 'fileVideo'],
   ['network', 'Network', 'network'],
   ['browser', 'Browser', 'globe'],
   ['appearance', 'Appearance', 'eye'],
@@ -84,6 +86,7 @@ function paintShell(root) {
           ${[1, 2, 4, 8, 16].map((n) => `<option value="${n}" ${String(P.defaultConnections) === String(n) ? 'selected' : ''}>${n}</option>`).join('')}
         </select></div></div>`),
       toggleRow('defaultOverwrite', 'Overwrite existing files by default', 'Pre-checks "Overwrite existing file" in the Add dialog. Otherwise numbered names (file(1).ext) are chosen.', P.defaultOverwrite, (v) => setPrefs({ defaultOverwrite: v })),
+      toggleRow('startDownloadsImmediately', 'Start downloads immediately', 'When unchecked, new downloads are added paused so you can start them in bulk.', P.startDownloadsImmediately, (v) => setPrefs({ startDownloadsImmediately: v })),
       el(`<div class="setting-row"><div class="s-txt"><div class="s-name">Maximum concurrent downloads</div><div class="s-desc">Engine configuration — how many downloads run in parallel (fixed at startup).</div></div>
         <div class="s-ctl"><span class="tag acc">${store.engine?.max_concurrent_downloads ?? '—'}</span></div></div>`),
       el(`<div class="setting-row"><div class="s-txt"><div class="s-name">Connections per host</div><div class="s-desc">Engine ceiling for one host; per-download connection counts are clamped by it.</div></div>
@@ -118,13 +121,31 @@ function paintShell(root) {
     card.querySelector('#seGoBrowser').onclick = () => { location.hash = '#browser'; };
   } else if (section === 'appearance') {
     card.append(
-      el(`<div class="setting-row"><div class="s-txt"><div class="s-name">Theme</div><div class="s-desc">Velox is deliberately dark-only.</div></div>
-        <div class="s-ctl"><span class="tag acc">dark</span></div></div>`),
+      themeRow(),
       toggleRow('animations', 'Interface animations', 'Subtle transitions on dialogs, rows and screen changes.', P.animations, (v) => { setPrefs({ animations: v }); document.body.dataset.anim = v ? 'on' : 'off'; }),
       toggleRow('sidebarExpanded', 'Expanded sidebar', 'Show section labels; turn off for a compact icon rail.', P.sidebarExpanded, (v) => { setPrefs({ sidebarExpanded: v }); document.dispatchEvent(new CustomEvent('velox:sidebar', { detail: v })); }),
       el(`<div class="setting-row"><div class="s-txt"><div class="s-name">Keyboard shortcuts</div><div class="s-desc">
         <span class="kbd">Ctrl N</span> add download &nbsp; <span class="kbd">Ctrl V</span> paste URL &nbsp; <span class="kbd">Ctrl F</span> search &nbsp; <span class="kbd">Ctrl A</span> select all &nbsp; <span class="kbd">Space</span> pause/resume selection &nbsp; <span class="kbd">Del</span> remove selection &nbsp; <span class="kbd">Esc</span> close dialog</div></div></div>`),
     );
+  } else if (section === 'media') {
+    card.append(
+      el(`<div class="setting-row"><div class="s-txt"><div class="s-name">Default media format</div><div class="s-desc">Pre-selected in the Add dialog for YouTube and other media pages. MP4 downloads video + audio; MP3 extracts audio only (requires the bundled FFmpeg).</div></div>
+        <div class="s-ctl"><select id="seMediaFormat">
+          <option value="mp4" ${P.mediaFormat !== 'mp3' ? 'selected' : ''}>MP4 — video + audio</option>
+          <option value="mp3" ${P.mediaFormat === 'mp3' ? 'selected' : ''}>MP3 — audio only</option>
+        </select></div></div>`),
+      el(`<div class="setting-row"><div class="s-txt"><div class="s-name">Default video quality</div><div class="s-desc">Pre-selected quality for MP4 downloads. The list always shows the qualities the source actually offers — this is only the default when a higher one exists.</div></div>
+        <div class="s-ctl"><select id="seMediaQuality">
+          <option value="best" ${P.mediaQuality === 'best' ? 'selected' : ''}>Best available</option>
+          ${[2160, 1440, 1080, 720, 480, 360].map((h) => `<option value="${h}" ${String(P.mediaQuality) === String(h) ? 'selected' : ''}>${h}p${h >= 2160 ? ' (4K)' : h === 1440 ? ' (2K)' : ''}</option>`).join('')}
+        </select></div></div>`),
+      el(`<div class="setting-row"><div class="s-txt"><div class="s-name">Media tooling</div><div class="s-desc">yt-dlp resolves media pages; FFmpeg merges streams (MP4) and extracts MP3. Both are bundled with the offline installer and fetched by the online installer when selected.</div></div>
+        <div class="s-ctl"><span class="tag ${store.engine?.merge_capable ? 'ok' : 'warn'}">${store.engine?.merge_capable ? 'ready' : 'needs yt-dlp / FFmpeg'}</span></div></div>`),
+    );
+    const fmt = card.querySelector('#seMediaFormat');
+    if (fmt) fmt.onchange = (e) => setPrefs({ mediaFormat: e.target.value });
+    const q = card.querySelector('#seMediaQuality');
+    if (q) q.onchange = (e) => setPrefs({ mediaQuality: e.target.value });
   } else if (section === 'updates') {
     const st = store.update || { status: 'idle' };
     const rows = [];
@@ -197,6 +218,102 @@ function paintShell(root) {
     };
   }
 }
+// Theme picker — built-in swatches + user-installed third-party themes.
+// Custom themes are sanitized JSON manifests (assets/themes.js): they can
+// only set known color variables and are contrast-checked on install.
+function themeRow() {
+  const row = el(`<div class="setting-row"><div class="s-txt">
+      <div class="s-name">Theme</div>
+      <div class="s-desc">Applies immediately and persists across restarts. Third-party themes (.json) can be installed below — see the Themes guide in the docs folder.</div>
+      <div class="theme-swatches" id="seThemeSw" style="margin-top:10px"></div>
+      <div id="seThemeCustom" style="margin-top:10px"></div>
+      <div id="seThemeErr" class="s-desc" style="color:var(--err);margin-top:6px"></div>
+    </div>
+    <div class="s-ctl" style="flex-direction:column;align-items:flex-end;gap:8px">
+      <button class="btn sm" id="seThemeInstall">${icon('plus', 12)} Install theme…</button>
+      <button class="btn sm ghost" id="seThemeReload">${icon('refresh', 12)} Refresh list</button>
+    </div></div>`);
+
+  const swatches = row.querySelector('#seThemeSw');
+  const customBox = row.querySelector('#seThemeCustom');
+  const errBox = row.querySelector('#seThemeErr');
+
+  const swatch = (t) => {
+    const b = el(`<button class="theme-sw ${store.prefs.theme === t.id ? 'on' : ''}" data-theme-id="${esc(t.id)}"
+      title="${esc(t.name)}" aria-label="Theme ${esc(t.name)}">
+      <span class="sw-preview" style="background:${t.colors['--bg1']}">
+        <span class="sw-bar" style="background:${t.colors['--accent']}"></span>
+        <span class="sw-bar" style="background:${t.colors['--ok']};width:60%"></span>
+      </span>
+      <span class="sw-name">${esc(t.name)}</span>
+    </button>`);
+    b.onclick = () => {
+      if (applyTheme(t.id)) { setPrefs({ theme: t.id }); errBox.textContent = ''; paint(); }
+      else errBox.textContent = `“${t.name}” failed the contrast check and was not applied.`;
+    };
+    return b;
+  };
+
+  const paint = () => {
+    swatches.replaceChildren(...Object.values(BUILTIN_THEMES).map(swatch));
+    const customs = customThemeList();
+    customBox.innerHTML = customs.length
+      ? `<div class="s-desc" style="margin-bottom:6px">Installed themes</div>`
+      : `<div class="s-desc">No third-party themes installed. Install a .json theme file (structure: docs/THEMES.md).</div>`;
+    const items = customs.map(swatch);
+    for (const it of items) customBox.appendChild(it);
+    // mark selection state on freshly painted buttons
+    swatches.querySelectorAll('.theme-sw').forEach((b) =>
+      b.classList.toggle('on', b.dataset.themeId === store.prefs.theme));
+    customBox.querySelectorAll('.theme-sw').forEach((b) =>
+      b.classList.toggle('on', b.dataset.themeId === store.prefs.theme));
+  };
+  paint();
+
+  row.querySelector('#seThemeInstall').onclick = async () => {
+    // desktop: native file open via the dialog plugin; browser preview: paste
+    if (window.__TAURI__?.dialog?.open) {
+      const picked = await window.__TAURI__.dialog.open({
+        filters: [{ name: 'Velox theme', extensions: ['json'] }],
+      });
+      if (!picked) return;
+      try {
+        const txt = await window.__TAURI__.fs?.readTextFile?.(picked)
+          ?? await (await fetch(picked)).text();
+        await installThemeJson(txt, errBox, paint);
+      } catch (e) {
+        errBox.textContent = `Could not read the theme file: ${e}`;
+      }
+    } else {
+      errBox.textContent = 'Theme installation runs in the desktop app (browser preview cannot read files).';
+    }
+  };
+  row.querySelector('#seThemeReload').onclick = async () => {
+    await listInstalledThemes();
+    paint();
+  };
+  return row;
+}
+
+async function installThemeJson(txt, errBox, repaint) {
+  let manifest;
+  try { manifest = JSON.parse(txt); } catch { errBox.textContent = 'Not valid JSON.'; return; }
+  const res = sanitizeTheme(manifest);
+  if (!res.ok) { errBox.textContent = 'Theme rejected: ' + res.errors.slice(0, 3).join('; '); return; }
+  try {
+    if (window.__TAURI__?.core?.invoke) {
+      await window.__TAURI__.core.invoke('theme_install', { json: txt });
+    }
+  } catch { /* browser preview: registry-only */ }
+  registerCustomTheme(res.theme);
+  if (applyTheme(res.theme.id)) {
+    setPrefs({ theme: res.theme.id });
+    toast('ok', 'Theme installed', res.theme.name);
+  }
+  errBox.textContent = '';
+  repaint();
+}
+
 // Default download directory: a REAL native folder picker on desktop; the
 // choice becomes the pre-filled destination for NEW downloads (Add dialog)
 // and persists across restarts. The engine's startup dir remains the fallback.

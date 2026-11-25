@@ -93,13 +93,16 @@ export function pct(r) {
 export const DEFAULT_PREFS = {
   notifyCompleted: true,
   notifyFailed: true,
-  notifyStarted: false,
   confirmFileDelete: true,
   confirmRemove: false,
   density: 'comfortable',        // comfortable | compact
   animations: true,
   sidebarExpanded: true,
   openFolderOnComplete: false,
+  theme: 'dark',                 // dark | light | purple | blue | <custom theme id>
+  startDownloadsImmediately: true, // Add dialog: start right away vs add paused
+  mediaFormat: 'mp4',            // default media format: mp4 | mp3
+  mediaQuality: 'best',          // default quality: 'best' | height (480/720/…)
   defaultDir: '',               // default destination for NEW downloads (Settings → General)
   defaultConnections: '',       // '' = engine default; else int per download
   defaultOverwrite: false,      // pre-check "overwrite existing file" in the Add dialog

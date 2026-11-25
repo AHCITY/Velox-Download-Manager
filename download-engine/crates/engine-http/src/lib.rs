@@ -25,6 +25,7 @@ const SNIFF_PROBE_LEN: usize = 1024;
 const MAX_PAGE_BYTES: usize = 512 * 1024;
 
 pub mod extract;
+pub mod formats;
 pub mod gdrive;
 pub mod netscape;
 
