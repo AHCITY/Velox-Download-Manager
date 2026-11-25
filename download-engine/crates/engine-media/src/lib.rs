@@ -37,12 +37,24 @@ impl MergePort<SubprocessPort> {
     /// This is the YouTube two-files fix: bare "ffmpeg" lookup missed the
     /// bundled binaries, the merge port was never injected, and both streams
     /// finished as separate files.
-    pub async fn discover_subprocess_at(dir: Option<&std::path::Path>) -> Result<Self, engine_core::error::EngineError> {
-        let name = |n: &str| if cfg!(windows) { format!("{n}.exe") } else { n.to_string() };
+    pub async fn discover_subprocess_at(
+        dir: Option<&std::path::Path>,
+    ) -> Result<Self, engine_core::error::EngineError> {
+        let name = |n: &str| {
+            if cfg!(windows) {
+                format!("{n}.exe")
+            } else {
+                n.to_string()
+            }
+        };
         let pick = |n: &str| -> String {
             dir.and_then(|d| {
                 let p = d.join(name(n));
-                if p.exists() { Some(p.display().to_string()) } else { None }
+                if p.exists() {
+                    Some(p.display().to_string())
+                } else {
+                    None
+                }
             })
             .unwrap_or_else(|| n.to_string())
         };

@@ -155,7 +155,11 @@ impl<P: MediaPipelinePort> MediaPipeline<P> {
     /// over a bare PATH lookup, which missed the installer-shipped ffmpeg and
     /// left YouTube downloads as two separate files (merge port never injected).
     /// The LGPL gate still applies to whichever ffmpeg is selected.
-    pub async fn discover_with(port: Arc<P>, ffmpeg: PathBuf, ffprobe: PathBuf) -> Result<Self, EngineError> {
+    pub async fn discover_with(
+        port: Arc<P>,
+        ffmpeg: PathBuf,
+        ffprobe: PathBuf,
+    ) -> Result<Self, EngineError> {
         let ff_name = ffmpeg.display().to_string();
         let fp_name = ffprobe.display().to_string();
         for exe in [ff_name.as_str(), fp_name.as_str()] {
