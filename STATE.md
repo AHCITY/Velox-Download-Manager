@@ -303,21 +303,40 @@ Not in Git: `.secrets/github-token`, **`.secrets/velox-updater.key` (+ `.pub`)**
     GITHUB_SHA), ships Windows assets + latest.json + Windows-only
     SHA256SUMS, notes announce that Linux follows.
   - linux.yml (NEW): `on.push.branches: ["release/linux/**"]`. linux-desktop
-    build (smoke test hardened: DMABUF env var, dbus-run-session wrap,
-    XDG_RUNTIME_DIR fallback, asserts the engine `data` subdir, dumps the
-    app log on failure, apt +dbus +libgl1-mesa-dri) + linux-release job
-    that hard-fails unless the Windows release exists, merges SHA256SUMS
-    (strips stale linux lines, appends fresh), uploads with --clobber and
-    appends the Linux notes section idempotently.
-  - Tag v0.7.0 itself already exists at 7373ea4 (from the failed attempts);
-    the release attaches to it. NEVER move it (E-14). The release branches
-    sit on main HEAD (one CI/docs commit ahead of the tag) — product code
-    identical; cosmetic mismatch documented in the playbook.
-- **Release execution**: Push 1 = branch `release/windows/v0.7.0` from main
-  (engine gate -> desktop -> release, ~25-35 min). Push 2 = branch
-  `release/linux/v0.7.0` from main ONLY after the Windows release is green
-  (build ~15-20 min + upload ~2 min). A scheduled task automates Push 2
-  with verification + playbook-driven fallback.
+    build (smoke test FROZEN to the proven env — E-20: only
+    WEBKIT_DISABLE_COMPOSITING_MODE + LIBGL_ALWAYS_SOFTWARE, plain
+    `xvfb-run -a timeout 90`, RUST_BACKTRACE=1 for diagnosis, dumps
+    app-smoke.log on failure) + linux-release job that hard-fails unless
+    the Windows release exists, merges SHA256SUMS (strips stale linux
+    lines, appends fresh), uploads with --clobber and appends the Linux
+    notes section idempotently. Packaging verifies the embedded
+    `VER="0.7.0"` assignment (E-17), uses explicit if-form negative checks
+    (E-18), curl -fL + size gates on tool downloads (E-19).
+- **Release execution (COMPLETED, 2026-11-25 ~17:39-18:05 UTC)**:
+  stale tag v0.7.0 (from the 4 failed attempts, no release attached)
+  DELETED first, then:
+  - Push 1: branch `release/windows/v0.7.0` (sha 202fe95) → windows run
+    #77 ALL GREEN first try (~22 min): gate → desktop+desktop-online →
+    release job created tag v0.7.0 at 202fe95 + the GitHub release.
+  - Push 2: branch `release/linux/v0.7.0` (sha 202fe95) → linux run 1
+    FAILED at the smoke test: app panicked `unknown path` in the setup
+    hook (a dirs:: resolver returned None — E-20; the defensive
+    dbus-run-session/XDG_RUNTIME_DIR/DMABUF additions changed the app's
+    environment; the binary was identical to tag run #75 where smoke
+    PASSED). Fixed by freezing the smoke env to the proven set + log dump
+    + RUST_BACKTRACE=1 (commit bd49dec) → run 2 GREEN (~13 min), assets
+    uploaded into the same release.
+- **VERIFIED final release state (v0.7.0, published 17:39:37Z, not draft)**:
+  7 assets, 309.1 MB total — Velox-Setup-x64-unified.exe (140.9 MB) +
+  .exe.sig + latest.json (version 0.7.0, tag-pinned URL, signature trusted
+  comment version:0.7.0) + Velox-linux-x64-0.7.0-offline.tar.gz (162.5 MB)
+  + Velox-linux-x64-0.7.0.tar.gz (5.8 MB) + velox-setup-linux-online.sh +
+  SHA256SUMS.txt covering all 6 binary/metadata assets. Round-trip
+  checksums re-downloaded and matched (latest.json bca24716…, online.sh
+  b2dc0aa7…). Notes contain the Windows + Linux sections.
+  Playbook updated with E-20 + the linux run-1 lesson.
 - CI diagnosis trick that worked without an Actions API tool: scrape
   https://github.com/<repo>/actions HTML for run ids (rate-limited API was
-  exhausted; it resets hourly).
+  exhausted; it resets hourly). With a token: jobs + logs come straight
+  from the API (`/actions/runs/<id>/jobs`, `/actions/jobs/<id>/logs` via
+  curl -L — urllib leaks the Authorization header on the blob redirect).

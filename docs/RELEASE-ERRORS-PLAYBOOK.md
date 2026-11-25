@@ -340,6 +340,30 @@ files that are known to be megabytes (yt-dlp ~4 MB, ffmpeg tarball ~90 MB).
 `-sL` — one GitHub hiccup would have shipped a broken "yt-dlp" inside the
 offline tarball with every check green.
 
+### E-20 · The smoke HARNESS itself breaks the app ("unknown path" panic)
+**Signature:** `thread 'main' panicked ... Failed to setup app: error
+encountered during setup hook: unknown path` — the app dies before creating
+its data dir; the smoke test reports "data dir was never created".
+**Cause:** "unknown path" is `tauri::Error::UnknownPath` — a `dirs::*_dir()`
+resolver returned `None` (main.rs setup calls `app_data_dir()` and
+`download_dir()`; the latter goes through the xdg-user-dirs machinery). The
+binary was byte-identical to a run where the smoke test PASSED — the delta
+was the smoke step's own "defensive improvements": wrapping in
+`dbus-run-session`, overriding `XDG_RUNTIME_DIR`, adding
+`WEBKIT_DISABLE_DMABUF_RENDERER`. Any of these changes the environment the
+resolvers see and can flip `None`.
+**Fix (linux.yml):** the smoke env is FROZEN to the proven set —
+`WEBKIT_DISABLE_COMPOSITING_MODE=1 LIBGL_ALWAYS_SOFTWARE=1` and nothing else,
+plain `xvfb-run -a timeout 90` invocation. Diagnostics only: the app log is
+dumped on failure and `RUST_BACKTRACE=1` is exported (output-only, no
+semantics).
+**Rule:** treat the smoke harness like production config: never add
+environment "hardening" to it without a green run that proves it. Diagnose
+with logs, not with new env vars.
+**Follow-up (app, NOT a release blocker):** `download_dir()` panicking at
+setup when a Linux user lacks xdg-user-dirs is a real-world robustness bug —
+fall back to `$HOME/Downloads` in a future version instead of `?`.
+
 ---
 
 ## Quick triage table (fastest path from symptom to fix)
