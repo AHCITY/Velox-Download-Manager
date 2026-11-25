@@ -83,25 +83,24 @@ jobs:
           set -e
           ROOT="$STAGING/roots/velox-$VER"
           export HOME
-          # xvfb has no GPU. WebKitGTK needs ALL of these on current runners:
-          #  - WEBKIT_DISABLE_DMABUF_RENDERER=1: >=2.42 crashes in headless VMs without it
-          #  - WEBKIT_DISABLE_COMPOSITING_MODE=1 + LIBGL_ALWAYS_SOFTWARE=1: software GL path
-          export WEBKIT_DISABLE_DMABUF_RENDERER=1
-          export WEBKIT_DISABLE_COMPOSITING_MODE=1
-          export LIBGL_ALWAYS_SOFTWARE=1
-          export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-$(mktemp -d)}"
-          # assert the ENGINE data subdir: it is created during Tauri setup, so
-          # it proves the app actually booted (not just the window process).
-          DATA_DIR="$HOME/.local/share/io.velox.downloadmanager/data"
-          rm -rf "$HOME/.local/share/io.velox.downloadmanager"
-          if command -v dbus-run-session >/dev/null 2>&1; then
-            xvfb-run -a dbus-run-session -- timeout 120 "$ROOT/Velox" >"$STAGING/app-smoke.log" 2>&1 &
-          else
-            xvfb-run -a timeout 120 "$ROOT/Velox" >"$STAGING/app-smoke.log" 2>&1 &
-          fi
+          # PROVEN env (passed in tag run #75 with this exact binary):
+          # WEBKIT_DISABLE_COMPOSITING_MODE=1 + LIBGL_ALWAYS_SOFTWARE=1.
+          # Do NOT defensively add dbus-run-session / XDG_RUNTIME_DIR /
+          # DMABUF overrides: they CHANGE the app's environment and made
+          # the setup hook panic with "unknown path" (a dirs:: resolver
+          # returning None) in linux run 1 — see playbook E-20.
+          export WEBKIT_DISABLE_COMPOSITING_MODE=1 LIBGL_ALWAYS_SOFTWARE=1
+          # pure diagnosis, zero env semantics: pinpoints the exact failing
+          # dirs:: resolver if the setup hook ever panics again
+          export RUST_BACKTRACE=1
+          # assert the data dir: it is created during Tauri setup, so it is
+          # proof the whole app booted (not just the window process).
+          DATA_DIR="$HOME/.local/share/io.velox.downloadmanager"
+          rm -rf "$DATA_DIR"
+          xvfb-run -a timeout 90 "$ROOT/Velox" >"$STAGING/app-smoke.log" 2>&1 &
           APP_PID=$!
           ok=0
-          for i in $(seq 1 90); do
+          for i in $(seq 1 75); do
             sleep 1
             if [ -d "$DATA_DIR" ]; then ok=1; break; fi
           done
@@ -110,7 +109,7 @@ jobs:
           wait "$APP_PID" 2>/dev/null || true
           echo "--- app-smoke.log (last 40 lines, for diagnosis) ---"
           tail -n 40 "$STAGING/app-smoke.log" || true
-          [ "$ok" = 1 ] || { echo "STARTUP SMOKE TEST FAILED: engine data dir $DATA_DIR was never created"; exit 1; }
+          [ "$ok" = 1 ] || { echo "STARTUP SMOKE TEST FAILED: app data dir $DATA_DIR was never created"; exit 1; }
           echo "startup smoke test passed (engine booted, data dir created)"
 
       - name: Package distributions + online installer
