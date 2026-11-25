@@ -1056,6 +1056,7 @@ dependencies = [
  "reqwest",
  "reqwest_cookie_store",
  "rustls",
+ "serde",
  "serde_json",
  "thiserror 2.0.21",
  "time",
@@ -4966,7 +4967,7 @@ checksum = "accd4ea62f7bb7a82fe23066fb0957d48ef677f6eeb8215f372f52e48bb32426"
 
 [[package]]
 name = "velox-app"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "engine-api",
  "engine-bridge",
