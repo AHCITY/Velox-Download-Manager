@@ -229,6 +229,113 @@ jobs:
           path: download-engine/Velox-Setup-x64-unified.exe.sig
           if-no-files-found: error
 
+  # ---- Job 2b: ONLINE installer (optional YouTube component, fetched at install) ----
+  # Same core payload as the unified installer minus the ~120 MB media
+  # toolchain. The optional "YouTube Video Downloader" component page runs
+  # scripts/velox-online-fetch.ps1 at install time to download yt-dlp +
+  # LGPL ffmpeg/ffprobe from their official sources. Built alongside the
+  # unified installer so both distributions stay in lockstep.
+  desktop-online:
+    needs: windows
+    if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: download-engine
+    env:
+      STAGING: ${{ github.workspace }}\staging-online
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Resolve dependencies with the committed Cargo.lock (reproducibility gate)
+        shell: pwsh
+        run: |
+          cd app\src-tauri
+          if (-not (Test-Path Cargo.lock)) { throw "app/src-tauri/Cargo.lock is missing — commit it" }
+          cargo fetch --locked
+
+      - name: Build Velox desktop app (release, updater-enabled)
+        shell: pwsh
+        run: |
+          cd app\src-tauri
+          cargo build --release --features custom-protocol
+          $exe = "target\release\Velox.exe"
+          if (-not (Test-Path $exe)) { throw "Velox.exe was not produced — check the [[bin]] name = Velox target" }
+
+      - name: Stage core components (no media toolchain — that is the point)
+        shell: pwsh
+        run: |
+          cargo build --release -p velox-host
+          New-Item -ItemType Directory -Force "$env:STAGING" | Out-Null
+          Copy-Item "target\release\velox-browser-host.exe" "$env:STAGING\"
+          # WebView2 fallback still bundled (2 MB, required for first run)
+          Invoke-WebRequest -Uri "https://go.microsoft.com/fwlink/?LinkId=2124703" -OutFile "$env:STAGING\MicrosoftEdgeWebview2Setup.exe"
+          Copy-Item "$env:GITHUB_WORKSPACE\download-engine\extension" "$env:STAGING\extension" -Recurse
+          Copy-Item "$env:GITHUB_WORKSPACE\download-engine\docs\THIRD_PARTY_NOTICES.md" "$env:STAGING\THIRD_PARTY_NOTICES.md"
+          Copy-Item "app\src-tauri\target\release\Velox.exe" "$env:STAGING\Velox.exe"
+          # the online media fetcher the optional component executes
+          Copy-Item "$env:GITHUB_WORKSPACE\scripts\velox-online-fetch.ps1" "$env:STAGING\velox-fetch.ps1"
+          Get-ChildItem $env:STAGING | Select-Object Name, Length
+
+      - name: Install NSIS (makensis for the online installer)
+        shell: pwsh
+        run: |
+          choco install nsis -y --no-progress
+          $nsis = "C:\Program Files (x86)\NSIS\makensis.exe"
+          if (-not (Test-Path $nsis)) {
+            Write-Host "choco install did not produce makensis — direct NSIS setup fallback"
+            Invoke-WebRequest -Uri "https://downloads.sourceforge.net/nsis/nsis-3.10-setup.exe" -OutFile nsis-setup.exe
+            Start-Process -FilePath ".\nsis-setup.exe" -ArgumentList "/S" -Wait -NoNewWindow
+          }
+          if (-not (Test-Path $nsis)) { throw "makensis still missing at $nsis after install" }
+          & $nsis -VERSION
+
+      - name: Build the ONLINE NSIS installer
+        shell: pwsh
+        run: |
+          $ver = "${{ github.ref_name }}".TrimStart('v')
+          if ($ver -notmatch '^[0-9]+\.[0-9]+\.[0-9]+$') { $conf = Get-Content app\src-tauri\tauri.conf.json -Raw | ConvertFrom-Json; $ver = $conf.version }
+          $nsis = "C:\Program Files (x86)\NSIS\makensis.exe"
+          & $nsis `
+            "/DPRODUCT_VERSION=$ver" `
+            "/DBUILD_STAGING=$env:STAGING" `
+            "/DBUILD_OUTPUT=$env:STAGING\Velox-Setup-x64-Online.exe" `
+            "/DBUILD_ICON_DIR=$env:GITHUB_WORKSPACE\download-engine\app\src-tauri\icons" `
+            "$env:GITHUB_WORKSPACE\scripts\installer-online-template.nsi"
+          if ($LASTEXITCODE -ne 0) { throw "makensis failed with $LASTEXITCODE" }
+          Copy-Item "$env:STAGING\Velox-Setup-x64-Online.exe" .
+          $size = [math]::Round((Get-Item Velox-Setup-x64-Online.exe).Length / 1MB, 1)
+          Write-Host "Velox-Setup-x64-Online.exe: $size MB (media toolchain NOT bundled — downloaded at install when selected)"
+
+      - name: Verify the online installer contains the core (and no media tools)
+        shell: pwsh
+        run: |
+          $seven = "C:\Program Files\7-Zip\7z.exe"
+          $listing = (& $seven l Velox-Setup-x64-Online.exe) -replace '\\','/'
+          $required = @(
+            "Velox.exe", "velox-browser-host.exe", "velox-fetch.ps1",
+            "extension", "manifest.json", "background.js", "popup.html",
+            "popup.js", "THIRD-PARTY-NOTICES.md", "WebView2Setup"
+          )
+          $missing = @()
+          foreach ($r in $required) {
+            if (-not ($listing -match [regex]::Escape($r))) { $missing += $r }
+          }
+          if ($missing.Count) { throw "online installer is INCOMPLETE — missing: $($missing -join ', ')" }
+          # the media tools must NOT be inside the package (they are optional,
+          # downloaded at install time when the component is selected)
+          $leak = @("yt-dlp.exe", "ffmpeg.exe", "ffprobe.exe") | Where-Object { $listing -match [regex]::Escape($_) }
+          if ($leak) { throw "online installer must not bundle media tools — found: $($leak -join ', ')" }
+          Write-Host "online installer contents verified: core present, media toolchain correctly absent"
+
+      - name: Upload online installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Velox-Setup-x64-Online
+          path: download-engine/Velox-Setup-x64-Online.exe
+          if-no-files-found: error
+
   # ---- Job 3: publish the signed release (v* tags only) ----
   # The release page stays CLEAN: one obvious installer download (the unified
   # setup) plus exactly what the signed auto-updater requires — latest.json
