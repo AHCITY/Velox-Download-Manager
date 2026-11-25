@@ -937,7 +937,7 @@ fn main() {
             // MediaPipeline merge stage: discover an LGPL ffmpeg on PATH and inject
             // the port. Honest stderr line when absent — merging stays unavailable
             // instead of pretending (docs/FFMPEG_INTEGRATION.md §3).
-            match tauri::async_runtime::block_on(engine_media::MergePort::discover_subprocess()) {
+            match tauri::async_runtime::block_on(engine_media::MergePort::discover_subprocess_at(exe_dir.as_deref())) {
                 Ok(port) => {
                     manager.set_media_merge(Some(Arc::new(port)));
                     eprintln!("media merge: ready (LGPL ffmpeg found)");

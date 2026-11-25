@@ -64,6 +64,37 @@ export const engine = {
   merge: (videoId, audioId) => api('download.merge', { video_id: videoId, audio_id: audioId }),
 };
 
+/** Map a raw engine/yt-dlp message to a user-readable sentence (Windows
+ * mess-error anatomy: problem + cause + next step; raw text stays in logs).
+ * Shared by the store (failed events) and ui.js (action errors). */
+export function friendlyEngineMessage(raw) {
+  const s = String(raw || '');
+  const low = s.toLowerCase();
+  if (low.includes('ffmpeg') && (low.includes('not found') || low.includes('not installed') || low.includes('missing')))
+    return 'Velox needs FFmpeg to combine video and audio into one file. Use the unified installer (it bundles FFmpeg), or add an LGPL FFmpeg build to your PATH.';
+  if (low.includes('gpl'))
+    return 'The installed FFmpeg is a GPL build, which Velox cannot use for licensing reasons. Install an LGPL build instead.';
+  if (low.includes('merge interrupted'))
+    return 'Combining the streams was interrupted — both files are kept. Press Retry to finish the merge.';
+  if (low.includes('requested format is not available'))
+    return 'This video no longer offers the selected quality. Try a different quality in the Add dialog.';
+  if (low.includes('has already been downloaded'))
+    return 'The file already exists — Velox kept the existing copy.';
+  if (low.includes('timed out') || low.includes('timeout'))
+    return 'The connection was too slow and timed out. Retrying continues from where it stopped.';
+  if (low.includes('403') || low.includes('forbidden'))
+    return 'The server refused the download — the link may have expired. Copy a fresh link from the source page.';
+  if (low.includes('404') || low.includes('not found'))
+    return 'The file is no longer available at this address.';
+  if (low.includes('no space') || (low.includes('disk') && low.includes('full')))
+    return 'There is not enough free disk space for this download.';
+  if (low.includes('certificate'))
+    return "The site's security certificate could not be verified.";
+  if (low.includes('connection') && (low.includes('refused') || low.includes('reset')))
+    return 'The connection was cut off. Retrying usually continues from where it stopped.';
+  return s;
+}
+
 /* ---------- desktop-only helpers ---------- */
 
 /* Browser-ecosystem installer (browser-ecosystem turn): detection, one-click

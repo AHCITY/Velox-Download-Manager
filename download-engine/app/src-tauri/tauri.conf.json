@@ -12,7 +12,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "Velox \u2014 Download Manager",
+        "title": "Velox — Download Manager",
         "width": 1180,
         "height": 760,
         "minWidth": 720,
@@ -21,7 +21,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; connect-src 'self' ipc: http://ipc.localhost; style-src 'self' 'unsafe-inline'; img-src 'self' data:; script-src 'self'",
+      "csp": "default-src 'self'; connect-src 'self' ipc: http://ipc.localhost; style-src 'self' 'unsafe-inline'; img-src 'self' data: https://i.ytimg.com; script-src 'self'",
       "capabilities": [
         "main-cap"
       ]

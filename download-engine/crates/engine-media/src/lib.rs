@@ -29,8 +29,30 @@ impl MergePort<SubprocessPort> {
     /// Real subprocess pipeline with PATH binaries, LGPL-gated at discovery
     /// (honest early `MISSING_FFMPEG`/`GPL_BUILD` before any download completes).
     pub async fn discover_subprocess() -> Result<Self, engine_core::error::EngineError> {
+        Self::discover_subprocess_at(None).await
+    }
+
+    /// Prefer ffmpeg/ffprobe BUNDLED beside the app executable (the unified
+    /// installer ships them next to Velox.exe), falling back to PATH lookup.
+    /// This is the YouTube two-files fix: bare "ffmpeg" lookup missed the
+    /// bundled binaries, the merge port was never injected, and both streams
+    /// finished as separate files.
+    pub async fn discover_subprocess_at(dir: Option<&std::path::Path>) -> Result<Self, engine_core::error::EngineError> {
+        let name = |n: &str| if cfg!(windows) { format!("{n}.exe") } else { n.to_string() };
+        let pick = |n: &str| -> String {
+            dir.and_then(|d| {
+                let p = d.join(name(n));
+                if p.exists() { Some(p.display().to_string()) } else { None }
+            })
+            .unwrap_or_else(|| n.to_string())
+        };
         Ok(Self {
-            pipeline: MediaPipeline::discover(std::sync::Arc::new(SubprocessPort)).await?,
+            pipeline: MediaPipeline::discover_with(
+                std::sync::Arc::new(SubprocessPort),
+                std::path::PathBuf::from(pick("ffmpeg")),
+                std::path::PathBuf::from(pick("ffprobe")),
+            )
+            .await?,
         })
     }
 }

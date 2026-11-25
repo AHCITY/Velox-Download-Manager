@@ -229,7 +229,17 @@ async function runInstall() {
     return { ok: false, message: 'pause failed' };
   }
 
-  // 3) download + verify + run installer (it waits for this app to exit)
+  // 3) download + verify + run installer (it waits for this app to exit).
+  // Record the attempt FIRST: on the next launch we compare versions and
+  // honestly report "did not install" if the installer never completed
+  // (the tauri-plugin-updater #3514 failure mode — app exits, nothing installs).
+  try {
+    localStorage.setItem('velox.update.attempt', JSON.stringify({
+      from: (await currentAppVersion()) || '',
+      to: pendingUpdate.version,
+      at: Date.now(),
+    }));
+  } catch { /* private mode */ }
   try {
     await pendingUpdate.downloadAndInstall((ev) => {
       if (ev.event === 'Started') {
@@ -240,12 +250,16 @@ async function runInstall() {
         pushActivity(nowTs(), 'Update downloaded and verified — handing over to the installer…');
       }
     });
-    // 4) the installer is waiting for this app to exit — comply gracefully.
+    // 4) Windows: downloadAndInstall() already exited the process INSIDE the
+    // plugin command (ShellExecuteW "/P /UPDATE /R" then std::process::exit) —
+    // the JS promise never resolves there, and this code is unreachable on
+    // Windows. The old 600ms exit(0) raced the installer spawn and produced
+    // "app closes, update never installs". Reaching here means macOS/Linux:
+    // relaunch directly, no competing timer.
     setUpdateState({ status: 'restarting' });
     pushActivity(nowTs(), 'Update installing — Velox restarts when the installer finishes…');
     const proc = tauriProcess();
-    if (proc?.exit) setTimeout(() => { try { proc.exit(0); } catch { /* installer wait handles it */ } }, 600);
-    else if (proc?.relaunch) setTimeout(() => { proc.relaunch().catch(() => {}); }, 600);
+    if (proc?.relaunch) { try { await proc.relaunch(); } catch { /* already exiting */ } }
     return { ok: true };
   } catch (e) {
     await resumeRows(paused); // the install failed and the app keeps running
@@ -257,7 +271,7 @@ async function runInstall() {
   }
 }
 
-export function initUpdater() {
+export async function initUpdater() {
   // capability check is the presence of the Tauri updater global — browser
   // preview without the desktop shell reports "unavailable" honestly
   if (!tauriUpdater()) {
@@ -265,6 +279,23 @@ export function initUpdater() {
     return;
   }
   setUpdateState({ status: 'idle' });
+  // verify-on-next-launch: an attempt was recorded but this app is still the OLD
+  // version -> the installer never completed. Say so once, honestly.
+  try {
+    const raw = localStorage.getItem('velox.update.attempt');
+    if (raw) {
+      const a = JSON.parse(raw);
+      const cur = await currentAppVersion();
+      if (cur && a?.to && cur !== a.to && isNewerVersion(a.to, cur)) {
+        localStorage.removeItem('velox.update.attempt');
+        setUpdateState({ status: 'error', error: `The update to ${a.to} did not finish installing` });
+        toast('warn', 'Update not installed',
+          `Velox is still on ${cur} — the update to ${a.to} did not complete. Try again from Settings → Updates.`, [], 10000);
+      } else if (cur && a?.to && cur === a.to) {
+        localStorage.removeItem('velox.update.attempt'); // install succeeded
+      }
+    }
+  } catch { /* non-fatal */ }
   // small startup reminder window; silent on failure (offline machines)
   setTimeout(() => checkNow(false), 4500);
   setInterval(() => checkNow(false), CHECK_INTERVAL_MS);

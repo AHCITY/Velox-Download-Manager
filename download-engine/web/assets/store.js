@@ -2,7 +2,7 @@
 // this store mirrors it, patches itself from live events, and re-syncs after
 // reconnects. Screens subscribe to slices; progress events patch rows in place
 // so a moving download never rerenders the whole app.
-import { engine, subscribeEvents, loadSettings, saveSettings, EVENT_NAMES } from './api.js';
+import { engine, subscribeEvents, loadSettings, saveSettings, EVENT_NAMES, friendlyEngineMessage } from './api.js';
 import { planQueueStarts, setQueueHold } from './queue-plan.js';
 import { orderRows, becameActive } from './ordering.js';
 
@@ -179,7 +179,15 @@ const nowTs = () => new Date().toLocaleTimeString(undefined, { hour: '2-digit', 
 
 /* ---------- toasts ---------- */
 let toastSeq = 0;
+// completion burst-batcher (notification de-clutter): see the 'completed' case
+const completedBurst = { names: [], ids: [], timer: null };
 export function toast(kind, title, msg, actions = [], ttl = 6000) {
+  // anti-clutter: at most 4 toasts visible; the oldest non-error one is dropped
+  // first (errors are the ones a user may still need to act on)
+  while (store.toasts.length >= 4) {
+    const idx = store.toasts.findIndex((t) => t.kind !== 'err');
+    store.toasts.splice(idx >= 0 ? idx : 0, 1);
+  }
   const id = ++toastSeq;
   store.toasts.push({ id, kind, title, msg, actions });
   notify();
@@ -323,9 +331,24 @@ export function startEvents() {
         await refreshOne(d.id);
         pushActivity(nowTs(), `<b>${esc(shortName(row?.final_name || `#${d.id}`))}</b> completed`);
         if (store.prefs.notifyCompleted) {
-          toast('ok', 'Download completed', row?.final_name || `#${d.id}`, [
-            { label: 'Open folder', act: () => window.__veloxActions?.reveal?.(d.id) },
-          ]);
+          // burst-batching: several completions within 1.5 s collapse into ONE
+          // summary toast instead of a wall of near-identical popups
+          completedBurst.names.push(row?.final_name || `#${d.id}`);
+          completedBurst.ids.push(d.id);
+          clearTimeout(completedBurst.timer);
+          completedBurst.timer = setTimeout(() => {
+            const names = completedBurst.names, ids = completedBurst.ids;
+            completedBurst.names = []; completedBurst.ids = [];
+            if (!names.length) return;
+            if (names.length === 1) {
+              toast('ok', 'Download completed', names[0], [
+                { label: 'Open folder', act: () => window.__veloxActions?.reveal?.(ids[0]) },
+              ]);
+            } else {
+              toast('ok', `${names.length} downloads completed`,
+                names.slice(0, 5).join(', ') + (names.length > 5 ? ` +${names.length - 5} more` : ''), [], 7000);
+            }
+          }, 1500);
         }
         if (store.prefs.openFolderOnComplete) window.__veloxActions?.reveal?.(d.id);
         queueTick();
@@ -334,7 +357,7 @@ export function startEvents() {
       case 'failed': {
         store.bps.delete(d.id);
         await refreshOne(d.id);
-        const msg = d.message || 'download failed';
+        const msg = friendlyEngineMessage(d.message || 'download failed');
         pushActivity(nowTs(), `<b>${esc(shortName(row?.final_name || `#${d.id}`))}</b> failed — ${esc(msg)}`);
         if (store.prefs.notifyFailed) {
           toast('err', 'Download failed', `${row?.final_name || ''} ${msg}`.trim(), [
@@ -358,11 +381,9 @@ export function startEvents() {
           toast('err', 'Verification failed', `${name} · ${d.algo || ''} mismatch — the file may be corrupt`, [], 9000);
         } else if (matches === true) {
           pushActivity(nowTs(), `Verification passed for <b>${esc(shortName(name))}</b> (${esc(d.algo || '')})`);
-          toast('ok', 'Verification passed', `${name} · ${d.algo || ''}`);
         } else {
           pushActivity(nowTs(), `Checksum computed for <b>${esc(shortName(name))}</b> (${esc(d.algo || '')}) — no reference to compare`);
-          toast('info', 'Checksum stored', `${name} · ${d.algo || ''} — no reference hash to compare against yet`);
-        }
+        } // successes go to the activity feed only; only FAILURES interrupt
         break;
       }
       case 'retrying': {
@@ -389,8 +410,7 @@ export function startEvents() {
       case 'merged': {
         await refreshOne(d.id);
         pushActivity(nowTs(), `Merge finished for <b>${esc(shortName(row?.final_name || `#${d.id}`))}</b>`);
-        toast('ok', 'Merge complete', row?.final_name || `#${d.id}`);
-        break;
+        break; // no toast: the completion burst already announced the result
       }
       case 'removed': {
         store.rows.delete(d.id);

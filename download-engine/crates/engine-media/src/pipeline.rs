@@ -148,7 +148,17 @@ impl<P: MediaPipelinePort> MediaPipeline<P> {
     /// Discover `ffmpeg`/`ffprobe` and enforce the LGPL gate up front, so a missing
     /// or GPL-flagged install fails before any download completes (honest early error).
     pub async fn discover(port: Arc<P>) -> Result<Self, EngineError> {
-        for exe in ["ffmpeg", "ffprobe"] {
+        Self::discover_with(port, "ffmpeg".into(), "ffprobe".into()).await
+    }
+
+    /// Discovery with explicit binaries — the bundled-beside-exe layout wins
+    /// over a bare PATH lookup, which missed the installer-shipped ffmpeg and
+    /// left YouTube downloads as two separate files (merge port never injected).
+    /// The LGPL gate still applies to whichever ffmpeg is selected.
+    pub async fn discover_with(port: Arc<P>, ffmpeg: PathBuf, ffprobe: PathBuf) -> Result<Self, EngineError> {
+        let ff_name = ffmpeg.display().to_string();
+        let fp_name = ffprobe.display().to_string();
+        for exe in [ff_name.as_str(), fp_name.as_str()] {
             // Hold the sender for the whole run: dropping it closes the channel and
             // the port treats that as a cancel (kill-safe shutdown semantics).
             let (_kill_tx, kill_rx) = watch::channel(false);
@@ -161,14 +171,14 @@ impl<P: MediaPipelinePort> MediaPipeline<P> {
                     ),
                 )
             })?;
-            if exe == "ffmpeg" {
+            if exe == ff_name {
                 verify_lgpl(&version)?;
             }
         }
         Ok(Self {
             port,
-            ffmpeg: "ffmpeg".into(),
-            ffprobe: "ffprobe".into(),
+            ffmpeg: ff_name,
+            ffprobe: fp_name,
         })
     }
 

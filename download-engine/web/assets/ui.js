@@ -6,7 +6,7 @@ import {
   toast, dismissToast, refreshOne, refreshAll,
   etaState, holdQueueItem, releaseQueueItem, kickQueues, saveQueues,
 } from './store.js';
-import { engine, EngineError, openFile, revealFolder, copyText, isDesktop } from './api.js';
+import { engine, EngineError, openFile, revealFolder, copyText, isDesktop, friendlyEngineMessage } from './api.js';
 
 export const $ = (sel, root = document) => root.querySelector(sel);
 export const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
@@ -22,6 +22,21 @@ export function fileTypeIcon(name, size = 17) {
   const cat = categoryOf(name);
   const glyph = { video: 'fileVideo', audio: 'fileAudio', image: 'fileImage', archive: 'archive', document: 'fileText', software: 'package', code: 'fileCode', other: 'file' }[cat];
   return `<div class="file-ico ${cat === 'document' || cat === 'other' ? (cat === 'other' ? '' : 'doc') : cat}" title="${esc(cat)}">${icon(glyph, size)}</div>`;
+}
+
+/** YouTube video id from a media-page URL, else null. */
+export function ytThumbId(url) {
+  const m = String(url || '').match(/(?:youtube\.com\/(?:watch\?[^#]*v=|shorts\/|embed\/)|youtu\.be\/)([A-Za-z0-9_-]{11})/);
+  return m ? m[1] : null;
+}
+
+/** Row art: a real YouTube thumbnail when the source is a video page, else the
+ *  category icon. The img is attached by paintRow (CSP allows i.ytimg.com);
+ *  on load error it falls back to the icon, so a dead thumb never leaves a hole. */
+export function rowArt(r) {
+  const id = ytThumbId(r?.url);
+  if (!id) return fileTypeIcon(r?.final_name);
+  return `<div class="file-ico thumb" data-thumb="${esc(id)}" title="${esc(r?.final_name || '')}"></div>`;
 }
 
 /* ================= toasts (rendered once, patched by store) ================= */
@@ -117,8 +132,13 @@ function friendlyError(e) {
     CONNECT: 'Could not connect to the server.',
     DNS: 'Could not resolve the server address.',
     IO: 'A local file operation failed.',
+    MISSING_FFMPEG: 'FFmpeg is missing — reinstall with the unified installer (it bundles FFmpeg) so video and audio can be combined.',
+    GPL_BUILD: 'The installed FFmpeg is a GPL build; install an LGPL build instead.',
+    CORRUPT_MEDIA: 'The combined file did not validate as playable media — retry the merge.',
+    UNAVAILABLE: 'This needs the desktop app.',
   };
-  return map[code] ? `${map[code]} (${code}: ${e.message})` : e.message;
+  const friendly = map[code] ? `${map[code]}` : friendlyEngineMessage(e?.message || String(e));
+  return code === 'ENGINE' ? friendly : `${friendly} (${code})`;
 }
 export function reportError(e, context = '') {
   toast('err', context || 'Action failed', friendlyError(e), [], 9000);
@@ -299,7 +319,7 @@ export function paintRow(node, r, { selectable = true, compact = false } = {}) {
 
   node.innerHTML = `
     ${checkHtml}
-    ${fileTypeIcon(r.final_name)}
+    ${rowArt(r)}
     <div class="row-main">
       <div class="row-name">
         <span class="nm" title="${esc(r.final_name)}">${esc(r.final_name)}</span>
@@ -342,6 +362,18 @@ export function paintRow(node, r, { selectable = true, compact = false } = {}) {
     node.classList.toggle('selected', store.selection.has(r.id));
     node.dispatchEvent(new CustomEvent('selchange', { bubbles: true }));
   };
+  // YouTube thumbnail: attach after innerHTML so a load error can fall back
+  // to the category icon without inline handlers (CSP-safe)
+  const thumbBox = node.querySelector('.file-ico.thumb');
+  if (thumbBox) {
+    const img = new Image();
+    img.className = 'row-thumb';
+    img.loading = 'lazy';
+    img.alt = '';
+    img.src = `https://i.ytimg.com/vi/${thumbBox.dataset.thumb}/mqdefault.jpg`;
+    img.onerror = () => { thumbBox.classList.remove('thumb'); thumbBox.innerHTML = fileTypeIcon(r.final_name); };
+    thumbBox.appendChild(img);
+  }
   node.querySelectorAll('[data-act]').forEach((b) => {
     b.onclick = (e) => {
       e.stopPropagation();
@@ -356,9 +388,21 @@ export function paintRow(node, r, { selectable = true, compact = false } = {}) {
     };
   });
   node.oncontextmenu = (e) => { e.preventDefault(); if (!store.selection.has(r.id)) { store.selection.clear(); store.selection.add(r.id); node.dispatchEvent(new CustomEvent('selchange', { bubbles: true })); } rowMenu(e.clientX, e.clientY, r); };
+  // click = select (details are one deliberate action away), double-click =
+  // the natural verb: open a finished file, retry a failed one, else details
   node.onclick = (e) => {
     if (e.target.closest('button, input')) return;
-    window.__veloxOpenDetails?.(r.id);
+    if (!store.selection.has(r.id)) {
+      store.selection.clear();
+      store.selection.add(r.id);
+      node.dispatchEvent(new CustomEvent('selchange', { bubbles: true }));
+    }
+  };
+  node.ondblclick = (e) => {
+    if (e.target.closest('button, input')) return;
+    if (r.state === 'completed') actions.open(r.id);
+    else if (r.state === 'failed' || r.state === 'cancelled') actions.retry(r.id);
+    else window.__veloxOpenDetails?.(r.id);
   };
 }
 
@@ -378,7 +422,7 @@ export function rowMenu(x, y, r) {
   items.push({ label: 'Open file', icon: 'external', disabled: !done && st !== 'failed' && st !== 'cancelled', act: () => actions.open(r.id) });
   items.push({ label: 'Open containing folder', icon: 'folderOpen', disabled: !done && st !== 'failed' && st !== 'cancelled', act: () => actions.reveal(r.id) });
   items.push({ label: 'Copy download URL', icon: 'copy', act: () => actions.copyUrl(r.id) });
-  items.push({ label: 'View details', icon: 'eye', k: 'Enter', act: () => window.__veloxOpenDetails?.(r.id) });
+  items.push({ label: 'View details', icon: 'eye', act: () => window.__veloxOpenDetails?.(r.id) });
   // real queue assignment (queues persist; membership drives the orchestrator)
   if (store.queues.length) {
     const inQ = store.queues.filter((q) => q.itemIds.includes(r.id));
@@ -433,58 +477,67 @@ export function paintDetails(node, r) {
   const p = pct(r);
   const segs = (r.segments || []).map((s) => `<div class="seg-cell ${s.completed ? 'full' : s.pos > s.start ? 'done' : ''}" title="segment ${s.idx}: ${fmtBytes(s.pos)} / ${s.end != null ? fmtBytes(s.end - s.start + 1) : 'stream'}"></div>`).join('');
   const errs = (r.recent_errors || []).slice(0, 12).map((l) => `<div class="err-line">${esc(l)}</div>`).join('');
+  const shortUrl = (u) => { const s = String(u || ''); return s.length > 46 ? s.slice(0, 46) + '…' : s; };
+  const stateCls = { created: 'queued' }[r.state] || r.state;
+  const stateLbl = { created: 'queued', retrying: 'retrying' }[r.state] || r.state;
   body.innerHTML = `
     <div class="d-sec">
       <div class="kv">
-        ${kv('Status', `<span class="chip ${({ created: 'queued' }[r.state] || r.state)}">${({ created: 'queued', retrying: 'retrying' }[r.state] || r.state)}</span>`)}
+        ${kv('Status', `<span class="chip ${stateCls}">${stateLbl}</span>`)}
         ${r.file_missing ? kv('File', `<span class="tag warn">${icon('alertTriangle', 11)} missing on disk</span>`) : ''}
-        ${kv('URL', esc(r.url))}
-        ${r.resolved_url && r.resolved_url !== r.url ? kv('Resolved to', esc(r.resolved_url)) : ''}
-        ${kv('Destination', esc(r.dest_dir))}
-        ${kv('File name', esc(r.final_name))}
-        ${kv('Mode', esc(r.mode), true)}
-        ${r.bandwidth_limit_bps ? kv('Speed limit', fmtSpeed(r.bandwidth_limit_bps)) : ''}
-      </div>
-    </div>
-    <div class="d-sec">
-      <h4>Transfer</h4>
-      <div class="kv">
         ${kv('Progress', `${fmtBytes(r.received)} ${r.total_size ? 'of ' + fmtBytes(r.total_size) : ''} (${p == null ? 'unknown size' : p.toFixed(1) + '%'})`)}
-        ${kv('Speed (live)', fmtSpeed(r.bps_smoothed || store.bps.get(r.id) || 0), true)}
-        ${kv('Speed (session avg)', r.bps_avg ? fmtSpeed(r.bps_avg) : '—', true)}
-        ${kv('Speed (peak)', r.bps_peak ? fmtSpeed(r.bps_peak) : '—', true)}
-        ${kv('ETA', (etaState(r).label), true)}
-        ${kv('Connections', `${r.connections_active || 0} active · ${r.accept_ranges === 'yes' ? 'range support' : r.accept_ranges === 'no' ? 'no range support' : 'range unknown'}`)}
-        ${kv('Resumable', esc(r.resumable), true)}
-      </div>
-      ${segs ? `<div class="seg-line" style="margin-top:9px">${segs}</div>` : ''}
-    </div>
-    <div class="d-sec">
-      <h4>Integrity</h4>
-      <div class="kv">
-        ${r.sha256 ? kv('SHA-256', `<span style="font-family:var(--mono);font-size:11px">${esc(r.sha256)}</span>`) : kv('SHA-256', 'not provided', true)}
-        ${r.blake3 ? kv('BLAKE3', `<span style="font-family:var(--mono);font-size:11px">${esc(r.blake3)}</span>`) : ''}
-        ${kv('Verified', r.verified ? '<span class="tag ok">passed</span>' : (r.sha256 || r.blake3) ? '<span class="tag acc">has checksum</span>' : '<span class="tag">no checksum</span>')}
-        ${r.etag ? kv('ETag', esc(r.etag), true) : ''}
-        ${r.last_modified ? kv('Last-Modified', esc(r.last_modified), true) : ''}
+        ${kv('Speed', fmtSpeed(r.bps_smoothed || store.bps.get(r.id) || 0))}
+        ${kv('Saved to', esc(r.dest_dir))}
+        ${kv('File name', esc(r.final_name))}
+        ${kv('URL', `<span class="url-line"><span class="u" title="${esc(r.url)}">${esc(shortUrl(r.url))}</span><button class="icon-btn sm" data-copyurl title="Copy full URL" aria-label="Copy URL">${icon('copy', 12)}</button></span>`)}
+        ${r.state === 'failed' && (r.error_message || r.error_code) ? kv('Problem', esc(friendlyEngineMessage(r.error_message || r.error_code))) : ''}
       </div>
       ${r.state === 'completed' && !r.file_missing ? `<button class="btn sm" style="margin-top:9px" data-dverify>${icon('shieldCheck', 13)} Verify file now</button>` : ''}
     </div>
-    <div class="d-sec">
-      <h4>Timeline</h4>
-      <div class="kv">
-        ${kv('Added', fmtTime(r.created_at))}
-        ${kv('Last activity', fmtTime(r.updated_at))}
-        ${r.completed_at ? kv('Completed', fmtTime(r.completed_at)) : ''}
+    <details class="adv">
+      <summary>Advanced details</summary>
+      <div class="d-sec">
+        <div class="kv">
+          ${r.resolved_url && r.resolved_url !== r.url ? kv('Resolved to', `<span class="url-line"><span class="u" title="${esc(r.resolved_url)}">${esc(shortUrl(r.resolved_url))}</span></span>`) : ''}
+          ${kv('Mode', esc(r.mode), true)}
+          ${r.bandwidth_limit_bps ? kv('Speed limit', fmtSpeed(r.bandwidth_limit_bps)) : ''}
+          ${kv('Speed (session avg)', r.bps_avg ? fmtSpeed(r.bps_avg) : '—', true)}
+          ${kv('Speed (peak)', r.bps_peak ? fmtSpeed(r.bps_peak) : '—', true)}
+          ${kv('ETA', (etaState(r).label), true)}
+          ${kv('Connections', `${r.connections_active || 0} active · ${r.accept_ranges === 'yes' ? 'range support' : r.accept_ranges === 'no' ? 'no range support' : 'range unknown'}`)}
+          ${kv('Resumable', esc(r.resumable), true)}
+          ${segs ? `<div class="seg-line" style="margin-top:9px;grid-column:1/-1">${segs}</div>` : ''}
+        </div>
       </div>
-    </div>
-    <div class="d-sec">
-      <h4>Recent errors</h4>
-      ${errs || '<div class="kv"><div class="v dim">none recorded</div></div>'}
-    </div>
-  `;
+      <div class="d-sec">
+        <h4>Integrity</h4>
+        <div class="kv">
+          ${r.sha256 ? kv('SHA-256', `<span style="font-family:var(--mono);font-size:11px">${esc(r.sha256)}</span>`) : kv('SHA-256', 'not provided', true)}
+          ${r.blake3 ? kv('BLAKE3', `<span style="font-family:var(--mono);font-size:11px">${esc(r.blake3)}</span>`) : ''}
+          ${kv('Verified', r.verified ? '<span class="tag ok">passed</span>' : (r.sha256 || r.blake3) ? '<span class="tag acc">has checksum</span>' : '<span class="tag">no checksum</span>')}
+          ${r.etag ? kv('ETag', esc(r.etag), true) : ''}
+          ${r.last_modified ? kv('Last-Modified', esc(r.last_modified), true) : ''}
+        </div>
+      </div>
+      <div class="d-sec">
+        <h4>Timeline</h4>
+        <div class="kv">
+          ${kv('Added', fmtTime(r.created_at))}
+          ${kv('Last activity', fmtTime(r.updated_at))}
+          ${r.completed_at ? kv('Completed', fmtTime(r.completed_at)) : ''}
+        </div>
+      </div>
+      <div class="d-sec">
+        <h4>Recent errors</h4>
+        ${errs || '<div class="kv"><div class="v dim">none recorded</div></div>'}
+      </div>
+    </details>`;
   const dv = body.querySelector('[data-dverify]');
   if (dv) dv.onclick = () => actions.verify(r.id);
+  body.querySelector('[data-copyurl]')?.addEventListener('click', async () => {
+    const ok = await copyText(r.url);
+    toast(ok ? 'ok' : 'warn', ok ? 'URL copied' : 'Could not access clipboard', ok ? '' : shortUrl(r.url));
+  });
 }
 
 export { friendlyError };

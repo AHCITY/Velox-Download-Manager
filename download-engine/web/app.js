@@ -52,6 +52,15 @@ function buildSidebar() {
   }
   const foot = el(`<div class="side-foot"><span class="conn-dot"></span><span>connecting…</span></div>`);
   sideEl.appendChild(foot);
+  const tog = el(`<button class="icon-btn side-toggle" id="sideToggle" title="Toggle sidebar (Ctrl+B)" aria-label="Toggle sidebar">${icon('panelLeft', 14)}</button>`);
+  tog.onclick = toggleSidebar;
+  sideEl.appendChild(tog);
+}
+
+/** Collapse/expand the sidebar (icon-only rail). State persists via prefs. */
+function toggleSidebar() {
+  const collapsed = sideEl.classList.toggle('compact');
+  setPrefs({ sidebarExpanded: !collapsed });
 }
 
 function buildToolbar() {
@@ -150,6 +159,7 @@ document.addEventListener('keydown', (e) => {
   const typing = /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement?.tagName) || document.activeElement?.isContentEditable;
   if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'n') { e.preventDefault(); openAddDialog(); return; }
   if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'f') { e.preventDefault(); $('#tbSearch')?.focus(); return; }
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'b') { e.preventDefault(); toggleSidebar(); return; }
   if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'v' && !typing) {
     // paste-to-add: clipboard content (if it looks like a URL) prefills the dialog
     e.preventDefault();
@@ -185,7 +195,11 @@ document.addEventListener('keydown', (e) => {
     return;
   }
   if (e.key === 'Enter' && route === 'downloads' && store.selection.size === 1) {
-    window.__veloxOpenDetails?.([...store.selection][0]);
+    // Enter = the primary verb: open a finished file, otherwise inspect
+    const id = [...store.selection][0];
+    const r = store.rows.get(id);
+    if (r && r.state === 'completed') actions.open(id);
+    else window.__veloxOpenDetails?.(id);
   }
 });
 
