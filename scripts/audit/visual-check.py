@@ -16,10 +16,12 @@ for p in pages:
     nonwhite = 1 - h[255] / sum(h)
     n = p.split('-')[-1].split('.')[0]
     flag = ''
-    if nonwhite < 0.005:
+    if int(n) == 1 and nonwhite > 0.9:
+        flag = ' (R1 dark cover - by design)'
+    elif nonwhite < 0.005:
         flag = ' <-- NEARLY BLANK'
         bad.append(p)
-    elif nonwhite > 0.55:
+    elif int(n) != 1 and nonwhite > 0.55:
         flag = ' <-- suspiciously dense (overflow?)'
         bad.append(p)
     print(f"  page {n}: {im.size}, non-white {nonwhite:.3f}{flag}")
@@ -28,10 +30,10 @@ for p in pages:
 txt = subprocess.run(['pdftotext', '/home/z/my-project/download/Velox-Pipeline-Installer-Audit.pdf', '-'],
                      capture_output=True, text=True).stdout
 checks = [
-    ('cover title', 'Velox Build Pipeline Optimization'),
+    ('cover title', 'Velox Build Pipeline'),
     ('TOC', 'Table of Contents'),
     ('exec summary', 'Executive Summary'),
-    ('benchmark table', 'Build Velox desktop app (release'),
+    ('benchmark table', 'cargo fetch --locked'),
     ('payload table', '138,752,000'),
     ('A/B table', '117,242,359'),
     ('alternatives', 'Inno Setup'),

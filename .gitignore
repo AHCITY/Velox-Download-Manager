@@ -8,3 +8,4 @@ target/
 cache-manifest.json
 __pycache__/
 upload/
+release-verify/
