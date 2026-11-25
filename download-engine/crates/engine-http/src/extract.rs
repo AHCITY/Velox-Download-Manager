@@ -139,7 +139,11 @@ pub async fn resolve_media_with(
         .and_then(|t| t.as_str())
         .unwrap_or("media")
         .to_string();
-    let plan_choice = choice.map(|format| PlanChoice { format, max_height, want_fps });
+    let plan_choice = choice.map(|format| PlanChoice {
+        format,
+        max_height,
+        want_fps,
+    });
     let plan = pick_plan(&meta, plan_choice)?;
     let info = if plan.to_mp3 {
         // MP3 path: single audio-stream download; the media job converts it to
@@ -249,7 +253,11 @@ pub struct PlanChoice {
 
 impl From<crate::formats::MediaFormatChoice> for PlanChoice {
     fn from(f: crate::formats::MediaFormatChoice) -> Self {
-        PlanChoice { format: f, max_height: None, want_fps: None }
+        PlanChoice {
+            format: f,
+            max_height: None,
+            want_fps: None,
+        }
     }
 }
 
@@ -284,14 +292,20 @@ fn chosen_from(f: &serde_json::Value) -> Option<ChosenStream> {
 }
 
 fn fmt_ext_pub(f: &serde_json::Value) -> String {
-    f.get("ext").and_then(|e| e.as_str()).unwrap_or("mp4").to_string()
+    f.get("ext")
+        .and_then(|e| e.as_str())
+        .unwrap_or("mp4")
+        .to_string()
 }
 
 /// Pick the download plan from yt-dlp metadata honouring the user's format
 /// choice (see formats.rs for the selection model). When a format choice is
 /// given but nothing matches at the requested height, we fall back to the
 /// uncapped best set — a stale quality list must never block a download.
-fn pick_plan(meta: &serde_json::Value, choice: Option<PlanChoice>) -> Result<MediaPlan, EngineError> {
+fn pick_plan(
+    meta: &serde_json::Value,
+    choice: Option<PlanChoice>,
+) -> Result<MediaPlan, EngineError> {
     use crate::formats::{select_audio, select_mp4, MediaFormatChoice, StreamKind};
 
     let formats = meta
@@ -306,7 +320,11 @@ fn pick_plan(meta: &serde_json::Value, choice: Option<PlanChoice>) -> Result<Med
         if ch.format == MediaFormatChoice::Mp3 {
             if let Some(a) = select_audio(formats) {
                 if let Some(chosen) = chosen_from(a) {
-                    return Ok(MediaPlan { video: chosen, audio: None, to_mp3: true });
+                    return Ok(MediaPlan {
+                        video: chosen,
+                        audio: None,
+                        to_mp3: true,
+                    });
                 }
             }
             return Err(EngineError::new(
@@ -329,13 +347,21 @@ fn pick_plan(meta: &serde_json::Value, choice: Option<PlanChoice>) -> Result<Med
         Some((video, audio))
     };
     if let Some((video, audio)) = try_select(max_height) {
-        return Ok(MediaPlan { video, audio, to_mp3: false });
+        return Ok(MediaPlan {
+            video,
+            audio,
+            to_mp3: false,
+        });
     }
     if max_height.is_some() {
         // requested height unavailable (stale list / format vanished): honest
         // fallback to the best available set rather than failing the download
         if let Some((video, audio)) = try_select(None) {
-            return Ok(MediaPlan { video, audio, to_mp3: false });
+            return Ok(MediaPlan {
+                video,
+                audio,
+                to_mp3: false,
+            });
         }
     }
     // top-level single stream (some extractors put it outside formats[])
@@ -362,16 +388,26 @@ fn pick_plan(meta: &serde_json::Value, choice: Option<PlanChoice>) -> Result<Med
                     .unwrap_or("direct")
                     .to_string(),
             };
-            return Ok(MediaPlan { video, audio: None, to_mp3: false });
+            return Ok(MediaPlan {
+                video,
+                audio: None,
+                to_mp3: false,
+            });
         }
     }
     // honest failure modes
-    let has_video = formats
-        .iter()
-        .any(|f| matches!(classify_pub(f), Some(StreamKind::Progressive) | Some(StreamKind::VideoOnly)));
-    let has_audio = formats
-        .iter()
-        .any(|f| matches!(classify_pub(f), Some(StreamKind::Progressive) | Some(StreamKind::AudioOnly)));
+    let has_video = formats.iter().any(|f| {
+        matches!(
+            classify_pub(f),
+            Some(StreamKind::Progressive) | Some(StreamKind::VideoOnly)
+        )
+    });
+    let has_audio = formats.iter().any(|f| {
+        matches!(
+            classify_pub(f),
+            Some(StreamKind::Progressive) | Some(StreamKind::AudioOnly)
+        )
+    });
     if has_video && !has_audio {
         return Err(EngineError::new(
             ErrorKind::UnsupportedUrl,
@@ -692,17 +728,22 @@ mod tests {
         let sum = crate::formats::format_summary(&yt_meta());
         assert!(sum.has_audio_only);
         assert!(sum.has_progressive);
-        assert_eq!(sum.sizes_by_height.get(&1080), Some(&Some(100000)));\n        assert_eq!(sum.sizes_by_height.get(&720), Some(&Some(60000)));
+        assert_eq!(sum.sizes_by_height.get(&1080), Some(&Some(100000)));
+        assert_eq!(sum.sizes_by_height.get(&720), Some(&Some(60000)));
     }
 
     #[test]
     fn mp4_at_height_cap_selects_under_cap() {
         let meta = yt_meta();
-        let plan = pick_plan(&meta, Some(PlanChoice {
-            format: crate::formats::MediaFormatChoice::Mp4,
-            max_height: Some(720),
-            want_fps: None,
-        })).unwrap();
+        let plan = pick_plan(
+            &meta,
+            Some(PlanChoice {
+                format: crate::formats::MediaFormatChoice::Mp4,
+                max_height: Some(720),
+                want_fps: None,
+            }),
+        )
+        .unwrap();
         // 720 pair: video 136 + best audio (webm 160abr wins by abr, m4a by ext pref → m4a pref 3 > webm 1)
         assert_eq!(plan.video.format_id, "136");
         let audio = plan.audio.as_ref().unwrap();
@@ -719,21 +760,29 @@ mod tests {
 
     #[test]
     fn mp4_fps_preference_picks_60fps_variant() {
-        let plan = pick_plan(&yt_meta(), Some(PlanChoice {
-            format: crate::formats::MediaFormatChoice::Mp4,
-            max_height: Some(1080),
-            want_fps: Some(60),
-        })).unwrap();
+        let plan = pick_plan(
+            &yt_meta(),
+            Some(PlanChoice {
+                format: crate::formats::MediaFormatChoice::Mp4,
+                max_height: Some(1080),
+                want_fps: Some(60),
+            }),
+        )
+        .unwrap();
         assert_eq!(plan.video.format_id, "299");
     }
 
     #[test]
     fn mp3_choice_takes_best_audio_only_stream() {
-        let plan = pick_plan(&yt_meta(), Some(PlanChoice {
-            format: crate::formats::MediaFormatChoice::Mp3,
-            max_height: None,
-            want_fps: None,
-        })).unwrap();
+        let plan = pick_plan(
+            &yt_meta(),
+            Some(PlanChoice {
+                format: crate::formats::MediaFormatChoice::Mp3,
+                max_height: None,
+                want_fps: None,
+            }),
+        )
+        .unwrap();
         assert!(plan.to_mp3);
         assert!(plan.audio.is_none());
         assert_eq!(plan.video.format_id, "140"); // m4a ext preference wins
@@ -741,11 +790,15 @@ mod tests {
 
     #[test]
     fn stale_height_falls_back_to_best_available() {
-        let plan = pick_plan(&yt_meta(), Some(PlanChoice {
-            format: crate::formats::MediaFormatChoice::Mp4,
-            max_height: Some(4800), // 4K not offered — never blocks the download
-            want_fps: None,
-        })).unwrap();
+        let plan = pick_plan(
+            &yt_meta(),
+            Some(PlanChoice {
+                format: crate::formats::MediaFormatChoice::Mp4,
+                max_height: Some(4800), // 4K not offered — never blocks the download
+                want_fps: None,
+            }),
+        )
+        .unwrap();
         assert_eq!(plan.video.format_id, "299"); // falls back to the true best
     }
 
@@ -758,11 +811,15 @@ mod tests {
                  "vcodec": "h264", "acodec": "none", "height": 1080, "tbr": 4000}
             ]
         });
-        let e = pick_plan(&meta, Some(PlanChoice {
-            format: crate::formats::MediaFormatChoice::Mp3,
-            max_height: None,
-            want_fps: None,
-        })).unwrap_err();
+        let e = pick_plan(
+            &meta,
+            Some(PlanChoice {
+                format: crate::formats::MediaFormatChoice::Mp3,
+                max_height: None,
+                want_fps: None,
+            }),
+        )
+        .unwrap_err();
         assert!(e.message.contains("no audio stream"), "{}", e.message);
     }
 }

@@ -71,6 +71,20 @@ impl MergePort<SubprocessPort> {
 
 #[async_trait::async_trait]
 impl<P: MediaPipelinePort> engine_core::ports::MediaMergePort for MergePort<P> {
+    async fn convert_to_mp3(
+        &self,
+        id: i64,
+        input: &std::path::Path,
+        output: &std::path::Path,
+        bus: &engine_core::events::EventBus,
+        kill: tokio::sync::watch::Receiver<bool>,
+    ) -> Result<(), engine_core::error::EngineError> {
+        use engine_core::events::Event;
+        let _ = bus.send(Event::Merging { id });
+        self.pipeline.convert_mp3(input, output, kill).await?;
+        Ok(())
+    }
+
     async fn merge(
         &self,
         id: i64,

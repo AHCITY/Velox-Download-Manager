@@ -134,6 +134,20 @@ pub async fn handle_line(manager: &Arc<DownloadManager>, line: &str) -> Option<S
     let params = parsed.get("params").cloned().unwrap_or_else(|| json!({}));
 
     let result = match method.as_str() {
+        "media.formats" => {
+            let url = params
+                .get("url")
+                .and_then(|u| u.as_str())
+                .filter(|u| !u.is_empty());
+            let Some(url) = url else {
+                return Some(bad_params_json(id, "missing url"));
+            };
+            let headers = engine_core::ports::RequestHeaders::default();
+            manager
+                .probe_media_formats(url, &headers)
+                .await
+                .map_err(engine_err)
+        }
         "download.inspect" => {
             let p: CreateParams = match serde_json::from_value(params) {
                 Ok(p) => p,

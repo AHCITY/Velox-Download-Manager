@@ -373,6 +373,80 @@ impl DownloadManager {
         Ok(())
     }
 
+    /// Format-aware resolve (media downloads with a chosen format/quality).
+    /// Same retry/announce semantics as resolve_with_retry.
+    async fn resolve_with_retry_fmt(
+        &self,
+        url: &str,
+        headers: &RequestHeaders,
+        choice: Option<crate::config::MediaFormat>,
+        max_height: Option<u32>,
+        want_fps: Option<u32>,
+    ) -> Result<crate::inspect::ResourceInfo, EngineError> {
+        self.events
+            .send(crate::events::Event::Resolving {
+                url: url.to_string(),
+            })
+            .ok();
+        let mut attempts = 0u32;
+        loop {
+            match self
+                .http
+                .resolve_with_format(url, headers, choice, max_height, want_fps)
+                .await
+            {
+                Ok(i) if crate::inspect::probe_usable(&i) => {
+                    self.events
+                        .send(crate::events::Event::Resolved {
+                            url: url.to_string(),
+                            note: i.resolve_note.clone(),
+                        })
+                        .ok();
+                    return Ok(i);
+                }
+                Ok(i) => {
+                    let mut e = from_status(i.status, "inspection failed");
+                    if let Some(ra) = i.retry_after {
+                        e = e.with_retry_after(ra);
+                    }
+                    if e.classify() == crate::error::ErrorClass::Temporary
+                        && !self.engine.retry.exhausted(attempts)
+                    {
+                        attempts += 1;
+                        tokio::time::sleep(
+                            self.engine.retry.delay_for(attempts - 1, e.retry_after),
+                        )
+                        .await;
+                    } else {
+                        return Err(e);
+                    }
+                }
+                Err(e) => {
+                    if e.classify() == crate::error::ErrorClass::Temporary
+                        && !self.engine.retry.exhausted(attempts)
+                    {
+                        attempts += 1;
+                        tokio::time::sleep(
+                            self.engine.retry.delay_for(attempts - 1, e.retry_after),
+                        )
+                        .await;
+                    } else {
+                        return Err(e);
+                    }
+                }
+            }
+        }
+    }
+
+    /// media.formats RPC passthrough: honest quality list for a media URL.
+    pub async fn probe_media_formats(
+        &self,
+        url: &str,
+        headers: &RequestHeaders,
+    ) -> Result<serde_json::Value, EngineError> {
+        self.http.probe_media_formats(url, headers).await
+    }
+
     async fn resolve_with_retry(
         &self,
         url: &str,
@@ -470,7 +544,15 @@ impl DownloadManager {
             &cfg.auth,
             cfg.insecure_tls,
         );
-        let info = self.resolve_with_retry(url, &headers).await?;
+        let info = self
+            .resolve_with_retry_fmt(
+                url,
+                &headers,
+                cfg.media_format,
+                cfg.media_height,
+                cfg.media_fps,
+            )
+            .await?;
         if !crate::inspect::probe_usable(&info) {
             return Err(from_status(info.status, "inspection failed"));
         }
@@ -822,6 +904,15 @@ impl DownloadManager {
         });
     }
 
+    fn video_final_name(&self, id: i64) -> String {
+        self.db
+            .get_download(id)
+            .ok()
+            .flatten()
+            .map(|r| r.final_name)
+            .unwrap_or_else(|| "stream.bin".into())
+    }
+
     /// Two-stream media job (adaptive YouTube etc.): video row COMPLETED with a
     /// `media_merge` spec → download the audio half through the ordinary engine,
     /// merge via the injected MediaMergePort (`-c copy`), then remove the audio
@@ -845,6 +936,68 @@ impl DownloadManager {
             self.media_jobs.lock().unwrap().remove(&video_id);
             return;
         };
+
+        // MP3 format choice: single downloaded stream → convert in place, no
+        // audio half, no merge. The row keeps describing the final MP3.
+        if spec.convert == Some(crate::config::MediaConvert::Mp3) {
+            let row_file = std::path::Path::new(&dest_dir).join(self.video_final_name(video_id));
+            let out_name = spec
+                .output_name
+                .clone()
+                .unwrap_or_else(|| "audio.mp3".into());
+            let mut out = std::path::Path::new(&dest_dir).join(&out_name);
+            let mut n = 1u32;
+            while out.exists() {
+                let stem = out_name.trim_end_matches(".mp3");
+                out = std::path::Path::new(&dest_dir).join(format!("{stem}({n}).mp3"));
+                n += 1;
+            }
+            let (kill_tx, kill_rx) = tokio::sync::watch::channel(false);
+            self.merge_triggers
+                .lock()
+                .unwrap()
+                .insert(video_id, kill_tx);
+            let port = self.media_merge.lock().unwrap().clone();
+            let res = match port {
+                Some(port) => {
+                    port.convert_to_mp3(video_id, &row_file, &out, &self.events, kill_rx)
+                        .await
+                }
+                None => Err(crate::error::EngineError::new(
+                    crate::error::ErrorKind::InvalidConfig,
+                    "media pipeline not configured — MP3 extraction needs the bundled ffmpeg",
+                )),
+            };
+            self.merge_triggers.lock().unwrap().remove(&video_id);
+            match res {
+                Ok(()) => {
+                    // the row now describes the converted MP3
+                    if let Ok(Some(mut row)) = self.db.get_download(video_id) {
+                        if let Ok(mut cfg) =
+                            serde_json::from_str::<crate::config::DownloadConfig>(&row.config_json)
+                        {
+                            cfg.media_merge = None;
+                            if let Ok(json) = serde_json::to_string(&cfg) {
+                                row.config_json = json;
+                            }
+                        }
+                        row.final_name = out
+                            .file_name()
+                            .map(|n| n.to_string_lossy().into_owned())
+                            .unwrap_or_else(|| row.final_name.clone());
+                        row.total_size = std::fs::metadata(&out).ok().map(|m| m.len() as i64);
+                        let _ = self.db.update_download(&row);
+                    }
+                    let _ = std::fs::remove_file(&row_file);
+                    info!(video_id, "media job: MP3 extraction finalized");
+                }
+                Err(e) => {
+                    warn!(video_id, error = %e.message, "media job: MP3 conversion failed");
+                }
+            }
+            self.media_jobs.lock().unwrap().remove(&video_id);
+            return;
+        }
 
         // 1) audio half. Resume-first: a row for the same audio URL + destination +
         //    explicit name is reused WITHOUT re-probing (media URLs such as

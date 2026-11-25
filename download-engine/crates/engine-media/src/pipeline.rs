@@ -47,6 +47,25 @@ pub trait MediaPipelinePort: Send + Sync {
 
 /// The fixed argv shape (FFMPEG_INTEGRATION.md §7). Pure function so tests pin the
 /// exact contract; `-c copy` is hardcoded — callers cannot introduce transcoding.
+/// ffmpeg args for MP3 extraction (yt-dlp -x parity: `-vn -q:a 0` VBR best).
+/// libmp3lame is LGPL — allowed in the LGPL-gated builds Velox bundles.
+pub fn build_mp3_args(input: &str, output: &str) -> Vec<String> {
+    vec![
+        "-y".into(),
+        "-hide_banner".into(),
+        "-loglevel".into(),
+        "error".into(),
+        "-i".into(),
+        input.into(),
+        "-vn".into(),
+        "-acodec".into(),
+        "libmp3lame".into(),
+        "-q:a".into(),
+        "0".into(),
+        output.into(),
+    ]
+}
+
 pub fn build_merge_args(input: &MergeInput) -> Vec<String> {
     vec![
         "-y".into(),
@@ -188,6 +207,49 @@ impl<P: MediaPipelinePort> MediaPipeline<P> {
 
     /// Merge `input` (stream copy), validate with ffprobe, emit `Merging`/`Merged`.
     /// On cancel the child is killed and `Cancelled` is returned (§4).
+    /// Convert one input file to MP3 (LGPL gate + kill-safe + output check).
+    pub async fn convert_mp3(
+        &self,
+        input: &std::path::Path,
+        output: &std::path::Path,
+        kill: watch::Receiver<bool>,
+    ) -> Result<(), EngineError> {
+        // LGPL gate on every conversion (a swapped binary between runs must be caught).
+        let (_gate_tx, gate_kill) = watch::channel(false);
+        let version = self
+            .port
+            .version(&self.ffmpeg, gate_kill)
+            .await
+            .map_err(|e| {
+                EngineError::new(
+                    ErrorKind::MissingFfmpeg,
+                    format!("ffmpeg vanished before conversion: {}", e.message),
+                )
+            })?;
+        verify_lgpl(&version)?;
+        let args = build_mp3_args(&input.display().to_string(), &output.display().to_string());
+        let outcome = self.port.run(&self.ffmpeg, &args, kill).await?;
+        if outcome.cancelled {
+            return Err(EngineError::new(
+                ErrorKind::Cancelled,
+                "conversion cancelled",
+            ));
+        }
+        if !outcome.exit_ok {
+            return Err(EngineError::new(
+                ErrorKind::MergeFailed,
+                "ffmpeg failed to extract MP3 (see the download's error history)",
+            ));
+        }
+        if !output.is_file() {
+            return Err(EngineError::new(
+                ErrorKind::MergeFailed,
+                "ffmpeg reported success but the MP3 file is missing",
+            ));
+        }
+        Ok(())
+    }
+
     pub async fn merge(
         &self,
         id: i64,

@@ -317,6 +317,44 @@ impl HttpPort for ReqwestBackend {
             }
         }
     }
+    async fn resolve_with_format(
+        &self,
+        url: &str,
+        hdrs: &RequestHeaders,
+        choice: Option<engine_core::config::MediaFormat>,
+        max_height: Option<u32>,
+        want_fps: Option<u32>,
+    ) -> Result<ResourceInfo, EngineError> {
+        use engine_core::config::MediaFormat;
+        // Direct-file URLs (and Drive pages) keep plain resolve semantics; only
+        // media pages take the format-aware path.
+        if crate::gdrive::classify_url(url) != crate::gdrive::UrlKind::Media || choice.is_none() {
+            return self.resolve(url, hdrs).await;
+        }
+        let ch = match choice {
+            Some(MediaFormat::Mp4) => crate::formats::MediaFormatChoice::Mp4,
+            Some(MediaFormat::Mp3) => crate::formats::MediaFormatChoice::Mp3,
+            None => unreachable!(),
+        };
+        crate::extract::resolve_media_with(self, url, hdrs, Some(ch), max_height, want_fps).await
+    }
+
+    async fn probe_media_formats(
+        &self,
+        url: &str,
+        hdrs: &RequestHeaders,
+    ) -> Result<serde_json::Value, EngineError> {
+        if crate::gdrive::classify_url(url) != crate::gdrive::UrlKind::Media {
+            return Err(EngineError::new(
+                ErrorKind::UnsupportedUrl,
+                "this URL is not a media page — format listing applies to YouTube-style pages",
+            ));
+        }
+        let sum = crate::extract::probe_formats(self, url, hdrs).await?;
+        serde_json::to_value(&sum).map_err(|e| {
+            EngineError::new(ErrorKind::Io, format!("format summary serialization: {e}"))
+        })
+    }
 
     async fn inspect(&self, url: &str, hdrs: &RequestHeaders) -> Result<ResourceInfo, EngineError> {
         let client = self.client_for(hdrs.insecure_tls);

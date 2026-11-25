@@ -225,7 +225,9 @@ pub fn format_summary(meta: &serde_json::Value) -> FormatSummary {
 // ---------- selection ----------
 
 /// Pick the best format entry among candidates by (preference, bitrate).
-fn best_of<'a>(cands: impl Iterator<Item = (&'a serde_json::Value, usize, f64)>) -> Option<&'a serde_json::Value> {
+fn best_of<'a>(
+    cands: impl Iterator<Item = (&'a serde_json::Value, usize, f64)>,
+) -> Option<&'a serde_json::Value> {
     cands
         .max_by(|a, b| {
             (a.1, a.2.to_bits())
@@ -290,7 +292,10 @@ pub(crate) fn select_mp4<'a>(
     };
     let video_cands = formats.iter().filter(|f| {
         is_http_stream(f)
-            && matches!(classify(f), Some(StreamKind::VideoOnly) | Some(StreamKind::Progressive))
+            && matches!(
+                classify(f),
+                Some(StreamKind::VideoOnly) | Some(StreamKind::Progressive)
+            )
             && at_cap(f)
     });
     // best video-only under the cap: (fps preference, ext preference, height, tbr)
@@ -298,7 +303,12 @@ pub(crate) fn select_mp4<'a>(
         .clone()
         .filter(|f| matches!(classify(f), Some(StreamKind::VideoOnly)))
         .max_by(|a, b| {
-            (fps_rank(a), ext_pref_video(&fmt_ext(a)), fmt_height(a).unwrap_or(0), fmt_tbr(a).to_bits())
+            (
+                fps_rank(a),
+                ext_pref_video(&fmt_ext(a)),
+                fmt_height(a).unwrap_or(0),
+                fmt_tbr(a).to_bits(),
+            )
                 .partial_cmp(&(
                     fps_rank(b),
                     ext_pref_video(&fmt_ext(b)),
@@ -311,7 +321,12 @@ pub(crate) fn select_mp4<'a>(
         .clone()
         .filter(|f| matches!(classify(f), Some(StreamKind::Progressive)))
         .max_by(|a, b| {
-            (fps_rank(a), ext_pref_video(&fmt_ext(a)), fmt_height(a).unwrap_or(0), fmt_tbr(a).to_bits())
+            (
+                fps_rank(a),
+                ext_pref_video(&fmt_ext(a)),
+                fmt_height(a).unwrap_or(0),
+                fmt_tbr(a).to_bits(),
+            )
                 .partial_cmp(&(
                     fps_rank(b),
                     ext_pref_video(&fmt_ext(b)),
@@ -324,18 +339,36 @@ pub(crate) fn select_mp4<'a>(
         .iter()
         .filter(|f| is_http_stream(f) && matches!(classify(f), Some(StreamKind::AudioOnly)))
         .max_by(|a, b| {
-            (ext_pref_audio(&fmt_ext(a)), fmt_abr(a).max(fmt_tbr(a)).to_bits())
-                .partial_cmp(&(ext_pref_audio(&fmt_ext(b)), fmt_abr(b).max(fmt_tbr(b)).to_bits()))
+            (
+                ext_pref_audio(&fmt_ext(a)),
+                fmt_abr(a).max(fmt_tbr(a)).to_bits(),
+            )
+                .partial_cmp(&(
+                    ext_pref_audio(&fmt_ext(b)),
+                    fmt_abr(b).max(fmt_tbr(b)).to_bits(),
+                ))
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
 
     match (best_video_only, best_audio, best_progressive) {
         // adaptive pair (the quality path)
-        (Some(v), Some(a), _) => Some(SelectedPair { video: v, audio: Some(a), progressive: false }),
+        (Some(v), Some(a), _) => Some(SelectedPair {
+            video: v,
+            audio: Some(a),
+            progressive: false,
+        }),
         // no pair but a progressive stream → single download
-        (None, _, Some(p)) => Some(SelectedPair { video: p, audio: None, progressive: true }),
+        (None, _, Some(p)) => Some(SelectedPair {
+            video: p,
+            audio: None,
+            progressive: true,
+        }),
         // video-only without audio at the cap: try the progressive fallback
-        (Some(_), None, Some(p)) => Some(SelectedPair { video: p, audio: None, progressive: true }),
+        (Some(_), None, Some(p)) => Some(SelectedPair {
+            video: p,
+            audio: None,
+            progressive: true,
+        }),
         // last resort: uncapped retry happens in the caller (pick_plan_for)
         _ => None,
     }
@@ -355,7 +388,9 @@ pub(crate) fn select_audio<'a>(formats: &'a [serde_json::Value]) -> Option<&'a s
         best_of(
             formats
                 .iter()
-                .filter(|f| is_http_stream(f) && matches!(classify(f), Some(StreamKind::Progressive)))
+                .filter(|f| {
+                    is_http_stream(f) && matches!(classify(f), Some(StreamKind::Progressive))
+                })
                 .map(|f| (f, ext_pref_audio(&fmt_ext(f)), fmt_abr(f).max(fmt_tbr(f)))),
         )
     })

@@ -8,7 +8,7 @@ use async_trait::async_trait;
 use bytes::Bytes;
 
 use crate::config::AuthConfig;
-use crate::error::EngineError;
+use crate::error::{EngineError, ErrorKind};
 
 #[derive(Debug, Clone, Default)]
 pub struct RequestHeaders {
@@ -143,6 +143,33 @@ pub trait HttpPort: Send + Sync {
         self.inspect(url, headers).await
     }
 
+    /// Format-aware media resolution (Add dialog format/quality choice).
+    /// Backends with an extractor (engine-http) honour the format, height cap
+    /// and fps preference; the default ignores them (plain resolve).
+    async fn resolve_with_format(
+        &self,
+        url: &str,
+        headers: &RequestHeaders,
+        _choice: Option<crate::config::MediaFormat>,
+        _max_height: Option<u32>,
+        _want_fps: Option<u32>,
+    ) -> Result<crate::inspect::ResourceInfo, EngineError> {
+        self.resolve(url, headers).await
+    }
+
+    /// Probe a media page's available formats (yt-dlp -J simulate; honest
+    /// quality list). Backends without an extractor return an error.
+    async fn probe_media_formats(
+        &self,
+        _url: &str,
+        _headers: &RequestHeaders,
+    ) -> Result<serde_json::Value, EngineError> {
+        Err(EngineError::new(
+            ErrorKind::UnsupportedUrl,
+            "format listing requires the media extractor (yt-dlp) — configure it first",
+        ))
+    }
+
     /// Open a ranged GET. Backends must follow redirects manually per request (chain transparent to core),
     /// preserve Range/If-Range across hops, and only re-apply Authorization while the host is unchanged.
     async fn open_range(&self, req: RangeRequest) -> Result<RangeResponse, EngineError>;
@@ -168,6 +195,24 @@ pub trait MediaMergePort: Send + Sync {
         bus: &crate::events::EventBus,
         kill: tokio::sync::watch::Receiver<bool>,
     ) -> Result<(), EngineError>;
+
+    /// Convert a completed single-stream download to MP3 (audio extraction,
+    /// libmp3lame VBR best). Same contract as merge: LGPL-gated, kill-safe,
+    /// honest errors, never claim success without the output existing.
+    async fn convert_to_mp3(
+        &self,
+        id: i64,
+        input: &std::path::Path,
+        output: &std::path::Path,
+        bus: &crate::events::EventBus,
+        kill: tokio::sync::watch::Receiver<bool>,
+    ) -> Result<(), EngineError> {
+        let _ = (id, input, output, bus, kill);
+        Err(EngineError::new(
+            ErrorKind::MergeFailed,
+            "media pipeline does not support MP3 conversion",
+        ))
+    }
 }
 
 #[cfg(test)]
