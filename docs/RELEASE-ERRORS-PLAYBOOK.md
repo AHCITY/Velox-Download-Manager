@@ -1,6 +1,7 @@
 # RELEASE ERRORS PLAYBOOK — read BEFORE every release push
 
-Last updated: 2026-11-26 (after the 4 failed `v0.7.0` tag attempts, runs #69/#71/#73/#75).
+Last updated: 2026-11-26 — the 4 failed `v0.7.0` tag attempts (#69/#71/#73/#75)
+are now FULLY diagnosed from job logs; see the verified failure map below.
 
 Every release so far needed more than one push. This file is the accumulated,
 verified knowledge of WHY each class of release failed and the exact fix, plus
@@ -86,6 +87,37 @@ Push 2. **Never diagnose a "stuck" release before this much time has passed.**
 - `SHA256SUMS.txt` covers every asset and the numbers match a fresh
   `sha256sum` download.
 - Release notes contain both the Windows and Linux sections.
+
+---
+
+## Verified failure map — the four v0.7.0 tag runs (read this first)
+
+Pulled from the actual job logs of each run (2026-11-25). The decisive lesson:
+**the Windows side was green in #71, #73 AND #75** — every one of the four
+failures was a different Linux job, one step further each time. A shared
+release gate turned three platform fixes into four destroyed release
+attempts.
+
+| Run | windows gate | desktop | desktop-online | linux-desktop (failed step) | release | Root cause |
+|---|---|---|---|---|---|---|
+| #69 (766712e) | ✅ | ❌ lock gate ~3 min | ❌ lock gate | ❌ build (E-02) | skipped | E-10 (stale `app/Cargo.lock`) + E-2 (cfg(windows) dep table) |
+| #71 (913c906) | ✅ | ✅ | ✅ | ❌ build (E-2) | skipped | E-2 only → fixed by b7d9e78 |
+| #73 (b7d9e78) | ✅ | ✅ | ✅ | ❌ xvfb smoke test (E-3) | skipped | E-3 only → "fixed" by 7373ea4 |
+| #75 (7373ea4) | ✅ | ✅ | ✅ | ✅ smoke PASSED → ❌ **packaging** | skipped | **E-17** (untested verification grep) |
+
+Notes that rewrite earlier assumptions:
+
+- Run #75's smoke test **PASSED** with `WEBKIT_DISABLE_COMPOSITING_MODE=1 +
+  LIBGL_ALWAYS_SOFTWARE=1` (the ubuntu-22.04 WebKitGTK is pre-DMABUF). The
+  extra hardening in `linux.yml` stays — it protects against future runner
+  image bumps — but E-3 layer 1 was NOT the last blocker.
+- Run #75 died in the packaging step at a **verification grep that could
+  never match** (E-17) after 17.7 s of successful tarring, silently — with
+  no error output at all. Untested verify-checks are as dangerous as
+  untested builds.
+- The old pipeline's `release` job was skipped in every failed run: the
+  Windows installer existed as artifacts in all of #71/#73/#75 and was never
+  published because Linux kept gating it. This is E-12 in its purest form.
 
 ---
 
@@ -209,7 +241,8 @@ passed` in the desktop/desktop-online job, minutes into the run.
 as a reproducibility gate, so they refuse.
 **Fix:** after ANY version bump run `cargo update -p velox-app --precise
 <newver>` (or a build) inside `app/src-tauri` and COMMIT the lock file.
-**History:** run #71 failed in 2m50s for exactly this; fixed by 913c906.
+**History:** run #69's desktop AND desktop-online jobs both died here ~3 min
+in; fixed by 913c906 (pin velox-app 0.7.0 in app Cargo.lock).
 
 ### E-11 · Chocolatey NSIS install flaky
 **Signature:** `choco install nsis` succeeds but `makensis.exe` missing, or
@@ -263,6 +296,50 @@ playbook lives in the repo, not in the sandbox.
 **Rule:** assume the sandbox can die at any moment; never leave release
 state only in `/tmp` or the sandbox home.
 
+### E-17 · Packaging dies silently at a verification grep — the E-17 class
+**Signature:** a `run:` step prints NOTHING after the group banner and exits
+1; the commands before it (tar/sed/chmod) visibly succeeded. No error line
+anywhere in the log.
+**Cause (verified, killed run #75 after 17.7 s of successful tarring):** the
+packaging step verified the substituted online-installer script with
+`grep -q "releases/download/v$VER" file`. But
+`scripts/velox-setup-linux-online.sh` resolves the version at RUNTIME via its
+own `VER` variable — after sed the file contains the assignment
+`VER="0.7.0"`, and the URL line still reads `releases/download/v$VER` as
+literal shell source. Grep can never match the expanded URL. `set -e` killed
+the step with zero output.
+**Fix (in linux.yml):** grep the embedded assignment
+(`grep -q "VER=\"$VER\"" file`) and `bash -n` the generated script.
+**Rule:** EVERY verification grep in a release pipeline must be executed once
+locally against the real artifact/script before it ships. A check that was
+never run once is a landmine — verify-checks fail silently exactly when
+everything else works, which is the worst possible time.
+
+### E-18 · `! grep -q ...` under `set -e` can NEVER fail the step
+**Signature:** a negative check ("placeholder must be gone", "tool must NOT
+be bundled") that provably should abort does nothing.
+**Cause:** bash errexit explicitly ignores commands whose return value is
+inverted with `!`. The step sails past a violated invariant and ships it.
+**Fix:** use the explicit form in every negative check:
+`if grep -q "pattern" file; then echo "ERROR: ..."; exit 1; fi`
+(applied to the placeholder check and the "core must not bundle ffmpeg /
+yt-dlp" checks in linux.yml).
+**Rule:** audit every `! cmd` in release workflows; under `set -e` they are
+decorations, not checks.
+
+### E-19 · `curl` without `-f` ships error pages as binaries
+**Signature:** none up front — the download "succeeds" (exit 0) and the file
+exists; later verification greps like `tar -tzf | grep bin/yt-dlp` still pass
+because the FILE NAME is right even when the CONTENT is an HTML error page.
+**Cause:** transient 4xx/5xx (rate limits, asset renaming, CDN hiccups) make
+`curl -sL` write the error body to the output path and exit 0.
+**Fix:** `curl -fL --retry 3` for every binary fetched into a release
+package, plus a size sanity check (`test "$(stat -c%s f)" -gt 1000000`) for
+files that are known to be megabytes (yt-dlp ~4 MB, ffmpeg tarball ~90 MB).
+**History:** the v0.7.0 linux packaging step fetched yt-dlp/ffmpeg with bare
+`-sL` — one GitHub hiccup would have shipped a broken "yt-dlp" inside the
+offline tarball with every check green.
+
 ---
 
 ## Quick triage table (fastest path from symptom to fix)
@@ -282,6 +359,9 @@ state only in `/tmp` or the sandbox home.
 | Release red but Windows built fine | E-12 |
 | `gh release create` already exists | E-13 |
 | Release-check reports wrong tag | E-15 |
+| Packaging step exits 1 with NO output | E-17 |
+| Negative check never aborts | E-18 |
+| Downloaded tool is corrupt/error page | E-19 |
 
 ## Known non-errors (do not chase)
 

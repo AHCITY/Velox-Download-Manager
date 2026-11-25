@@ -277,17 +277,24 @@ Not in Git: `.secrets/github-token`, **`.secrets/velox-updater.key` (+ `.pub`)**
 
 ## 0.7.0 STAGED RELEASE turn (2026-11-25/26, session 3) — split pipeline + playbook
 
-- **Diagnosis of the failed v0.7.0 tag attempts**: 4 tag runs failed
-  (windows #69 766712e, #71 913c906, #73 b7d9e78, #75 7373ea4) while the
-  SAME commits ran green on main — the failures were all in the tag-only
-  jobs. #71 = stale app Cargo.lock (E-10, fixed by 913c906), #73 = velox-app
-  deps trapped in the cfg(windows) table (E-2, fixed by b7d9e78), #75 =
-  not yet log-confirmed at session start (API rate-limited); the xvfb smoke
-  test is the prime suspect (E-3 — WEBKIT_DISABLE_DMABUF_RENDERER=1 was
-  missing for WebKitGTK >= 2.42 headless; now applied in linux.yml).
+- **Diagnosis of the failed v0.7.0 tag attempts (CONFIRMED from job logs)**:
+  4 tag runs failed (windows #69 766712e, #71 913c906, #73 b7d9e78,
+  #75 7373ea4) while the SAME commits ran green on main — the failures were
+  all in the tag-only jobs, and WINDOWS WAS GREEN in #71/#73/#75. Verified
+  map: #69 = desktop+desktop-online lock gate (E-10, fixed 913c906) AND
+  linux build (E-2, fixed b7d9e78); #71 = linux build only (E-2); #73 =
+  linux xvfb smoke only (E-3, "fixed" 7373ea4); #75 = smoke PASSED, then
+  the PACKAGING step died silently at the untestable verification grep
+  `grep -q "releases/download/v$VER"` — the online installer embeds
+  VER="0.7.0" and resolves the URL at RUNTIME, so the grep could never
+  match (new E-17; fixed in linux.yml to grep `VER="$VER"` + bash -n).
+  Also fixed from the same audit: `! grep` under set -e can never abort
+  (E-18, explicit if-form now), curl without -f could ship error pages as
+  tool binaries (E-19, now -fL + size checks), printf '%s\\n' wrote literal
+  backslash-n into notes (now '%s\n').
 - **docs/RELEASE-ERRORS-PLAYBOOK.md (NEW)**: the recurring-error catalogue
-  (E-1..E-16) + staged procedure + time budget + checklists. READ IT FIRST
-  before any release work.
+  (E-1..E-19) + verified failure map for runs #69-#75 + staged procedure +
+  time budget + checklists. READ IT FIRST before any release work.
 - **Pipeline split (one push at a time, user directive)**:
   - windows.yml: `on.push.branches: [main, "release/windows/**"]`, NO tag
     trigger anymore. desktop/desktop-online run on the release branch;

@@ -63,10 +63,15 @@ jobs:
 
           # offline: bundle yt-dlp + LGPL ffmpeg INTO bin/ (identical layout to
           # the Windows offline installer — bin/ beside the app binary)
-          curl -sL --retry 3 "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_linux" -o "$ROOT/bin/yt-dlp"
+          # E-19: -f is MANDATORY — without it a transient HTTP error saves
+          # the error page AS the tool binary and exits 0 (silent garbage).
+          # The size checks are the second net.
+          curl -fL --retry 3 "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_linux" -o "$ROOT/bin/yt-dlp"
+          test "$(stat -c%s "$ROOT/bin/yt-dlp")" -gt 1000000 || { echo "yt-dlp download suspiciously small"; exit 1; }
           chmod +x "$ROOT/bin/yt-dlp"
-          curl -sL --retry 3 "https://github.com/BtbN/FFmpeg-Builds/releases/latest/download/ffmpeg-master-latest-linux64-lgpl.tar.xz" -o "$STAGING/ffmpeg.tar.xz"
-          mkdir "$STAGING/ffmpeg"
+          curl -fL --retry 3 "https://github.com/BtbN/FFmpeg-Builds/releases/latest/download/ffmpeg-master-latest-linux64-lgpl.tar.xz" -o "$STAGING/ffmpeg.tar.xz"
+          test "$(stat -c%s "$STAGING/ffmpeg.tar.xz")" -gt 10000000 || { echo "ffmpeg tarball suspiciously small"; exit 1; }
+          mkdir -p "$STAGING/ffmpeg"
           tar -xJf "$STAGING/ffmpeg.tar.xz" -C "$STAGING/ffmpeg"
           cp "$STAGING"/ffmpeg/ffmpeg-master-latest-linux64-lgpl/bin/ffmpeg "$ROOT/bin/ffmpeg"
           cp "$STAGING"/ffmpeg/ffmpeg-master-latest-linux64-lgpl/bin/ffprobe "$ROOT/bin/ffprobe"
@@ -119,12 +124,27 @@ jobs:
           sed "s/__VELOX_VERSION__/$VER/" "$GITHUB_WORKSPACE/scripts/velox-setup-linux-online.sh" \
             > "$STAGING/out/velox-setup-linux-online.sh"
           chmod +x "$STAGING/out/velox-setup-linux-online.sh"
-          grep -q "releases/download/v$VER" "$STAGING/out/velox-setup-linux-online.sh"
-          ! grep -q "__VELOX_VERSION__" "$STAGING/out/velox-setup-linux-online.sh"
-          # verification: every distribution is complete and tools are executable
+          # E-17 (killed run #75): the installer resolves the version at
+          # RUNTIME via its own VER variable, so the file contains the
+          # assignment VER="0.7.0" — NEVER the expanded URL. Grep the
+          # assignment, not a URL with the version baked in.
+          grep -q "VER=\"$VER\"" "$STAGING/out/velox-setup-linux-online.sh"
+          bash -n "$STAGING/out/velox-setup-linux-online.sh"
+          # E-18: "! grep" can NOT abort under set -e (errexit skips negated
+          # commands) — use an explicit check that actually fails the step.
+          if grep -q "__VELOX_VERSION__" "$STAGING/out/velox-setup-linux-online.sh"; then
+            echo "ERROR: __VELOX_VERSION__ placeholder survived substitution"; exit 1
+          fi
+          # verification: every distribution is complete, tools really bundled
           tar -tzf "$STAGING/out/Velox-linux-x64-$VER-offline.tar.gz" | grep -q "bin/yt-dlp"
           tar -tzf "$STAGING/out/Velox-linux-x64-$VER-offline.tar.gz" | grep -q "bin/ffmpeg"
-          tar -tzf "$STAGING/out/Velox-linux-x64-$VER.tar.gz" | grep -qv "bin/ffmpeg" || true
+          # core distribution must NOT bundle the tools (explicit E-18 form)
+          if tar -tzf "$STAGING/out/Velox-linux-x64-$VER.tar.gz" | grep -q "bin/ffmpeg"; then
+            echo "ERROR: core distribution must not bundle ffmpeg"; exit 1
+          fi
+          if tar -tzf "$STAGING/out/Velox-linux-x64-$VER.tar.gz" | grep -q "bin/yt-dlp"; then
+            echo "ERROR: core distribution must not bundle yt-dlp"; exit 1
+          fi
           ls -la "$STAGING/out"
           echo "linux distributions assembled"
 
@@ -194,10 +214,10 @@ jobs:
             echo "linux section already present — leaving notes unchanged"
           else
             {
-              printf '%s\\n' ""
-              printf '%s\\n' "### Linux x86_64 (per-user, no root)" ''
-              printf '%s\\n' "- **Velox-linux-x64-$VER-offline.tar.gz** — OFFLINE: app + yt-dlp + LGPL FFmpeg bundled in \`bin/\`; extract and run \`install.sh\` (menu entry, launcher, icons included). Uninstall: \`./install.sh --uninstall\`." "- **Velox-linux-x64-$VER.tar.gz** — app core for the online installer." "- **velox-setup-linux-online.sh** — ONLINE installer: downloads the core + the YouTube toolchain from official sources (\`--no-media\` skips it)." ''
-              printf '%s\\n' "Requirements: WebKitGTK 4.1 + GTK3 (present on current Ubuntu/Debian/Fedora/Arch). See docs/LINUX.md for install, update and troubleshooting."
+              printf '%s\n' ""
+              printf '%s\n' "### Linux x86_64 (per-user, no root)" ''
+              printf '%s\n' "- **Velox-linux-x64-$VER-offline.tar.gz** — OFFLINE: app + yt-dlp + LGPL FFmpeg bundled in \`bin/\`; extract and run \`install.sh\` (menu entry, launcher, icons included). Uninstall: \`./install.sh --uninstall\`." "- **Velox-linux-x64-$VER.tar.gz** — app core for the online installer." "- **velox-setup-linux-online.sh** — ONLINE installer: downloads the core + the YouTube toolchain from official sources (\`--no-media\` skips it)." ''
+              printf '%s\n' "Requirements: WebKitGTK 4.1 + GTK3 (present on current Ubuntu/Debian/Fedora/Arch). See docs/LINUX.md for install, update and troubleshooting."
             } >> notes.md
             gh release edit "$TAG" --notes-file notes.md
             echo "linux section added to the release notes"
