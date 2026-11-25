@@ -137,7 +137,7 @@ pub fn quality_list(meta: &serde_json::Value) -> Vec<MediaQuality> {
             None => heights.push((h, high_fps)),
         }
     }
-    heights.sort_unstable_by(|a, b| b.0.cmp(&a.0));
+    heights.sort_unstable_by_key(|&(h, _)| std::cmp::Reverse(h));
     for (h, high_fps) in heights {
         let bucket = QUALITY_BUCKETS
             .iter()
@@ -280,9 +280,8 @@ pub(crate) fn select_mp4<'a>(
     max_height: Option<u32>,
     want_fps: Option<u32>,
 ) -> Option<SelectedPair<'a>> {
-    let at_cap = |f: &serde_json::Value| {
-        max_height.map_or(true, |cap| fmt_height(f).is_none_or(|h| h <= cap))
-    };
+    let at_cap =
+        |f: &serde_json::Value| max_height.is_none_or(|cap| fmt_height(f).is_none_or(|h| h <= cap));
     // optional fps preference: 60 requested → prefer >45fps formats at equal height
     let fps_rank = |f: &serde_json::Value| -> i32 {
         match want_fps {
@@ -377,7 +376,7 @@ pub(crate) fn select_mp4<'a>(
 /// Select the stream for the MP3 (audio-only) path: best audio-only format,
 /// else the audio of the best combined format (engine-media strips the video
 /// during conversion).
-pub(crate) fn select_audio<'a>(formats: &'a [serde_json::Value]) -> Option<&'a serde_json::Value> {
+pub(crate) fn select_audio(formats: &[serde_json::Value]) -> Option<&serde_json::Value> {
     best_of(
         formats
             .iter()

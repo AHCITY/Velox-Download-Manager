@@ -2072,6 +2072,7 @@ mod merge_tests {
             output_ext: Some("mp4".into()),
             output_name: Some("T.mp4".into()),
             audio_name: Some("T (audio stream).m4a".into()),
+            convert: None,
         };
         let cfg_json = serde_json::to_string(&DownloadConfig {
             media_merge: Some(spec),
@@ -2113,6 +2114,7 @@ mod merge_tests {
             output_ext: Some("mp4".into()),
             output_name: Some("T.mp4".into()),
             audio_name: Some("T (audio stream).m4a".into()),
+            convert: None,
         };
         let cfg_json = serde_json::to_string(&DownloadConfig {
             media_merge: Some(spec),

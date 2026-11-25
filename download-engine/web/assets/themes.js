@@ -295,6 +295,7 @@ const LS_CACHE = 'velox.theme.cache';   // {id} or {id, colors} for custom
 let customThemes = new Map();           // id -> sanitized theme
 
 export function registerCustomTheme(theme) { customThemes.set(theme.id, theme); }
+export function unregisterCustomTheme(id) { customThemes.delete(id); }
 export function customThemeList() { return [...customThemes.values()]; }
 export function getTheme(id) { return BUILTIN_THEMES[id] ?? customThemes.get(id) ?? null; }
 

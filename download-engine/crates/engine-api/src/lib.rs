@@ -512,6 +512,7 @@ mod tests {
             output_ext: Some("mp4".into()),
             output_name: Some("My Video.mp4".into()),
             audio_name: Some("My Video (audio stream).m4a".into()),
+            convert: None,
         };
         let added = m
             .add(

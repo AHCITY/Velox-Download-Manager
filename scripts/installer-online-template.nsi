@@ -26,7 +26,7 @@ ManifestDPIAware true
 RequestExecutionLevel user
 
 !ifndef PRODUCT_VERSION
-  !define PRODUCT_VERSION "0.6.0"
+  !define PRODUCT_VERSION "0.7.0"
 !endif
 !ifndef BUILD_STAGING
   !define BUILD_STAGING "/tmp/installer"
@@ -129,14 +129,15 @@ done_upd:
 ; Skips the network entirely when the tools already exist (fast updates and
 ; quick re-runs). Never fatal: Velox works for direct downloads without them.
 !macro FETCH_MEDIA_TOOLS
-  IfFileExists "$INSTDIR\yt-dlp.exe" 0 do_fetch
-  IfFileExists "$INSTDIR\ffmpeg.exe" 0 do_fetch
-  IfFileExists "$INSTDIR\ffprobe.exe" 0 do_fetch
+  IfFileExists "$INSTDIR\bin\yt-dlp.exe" 0 do_fetch
+  IfFileExists "$INSTDIR\bin\ffmpeg.exe" 0 do_fetch
+  IfFileExists "$INSTDIR\bin\ffprobe.exe" 0 do_fetch
     DetailPrint "YouTube tooling already present — skipping the download."
     Goto fetch_done
 do_fetch:
   DetailPrint "Downloading the YouTube toolchain (yt-dlp + LGPL FFmpeg, ~120 MB)..."
-  nsExec::ExecToLog 'powershell -NoProfile -ExecutionPolicy Bypass -File "$INSTDIR\velox-fetch.ps1" -DestDir "$INSTDIR"'
+  CreateDirectory "$INSTDIR\bin"
+  nsExec::ExecToLog 'powershell -NoProfile -ExecutionPolicy Bypass -File "$INSTDIR\velox-fetch.ps1" -DestDir "$INSTDIR\bin"'
   Pop $0
   IntCmp $0 0 fetch_done 0 fetch_done
     StrCmp $UpdateMode 1 0 fetch_ui
@@ -262,10 +263,10 @@ Section "YouTube Video Downloader (yt-dlp + FFmpeg, downloaded at install)" SEC_
 
   ; verify what the fetcher produced (informational: failures are already
   ; reported honestly by the macro; this only annotates the log)
-  IfFileExists "$INSTDIR\yt-dlp.exe" +2 0
-    DetailPrint "note: yt-dlp.exe not present (component failed or skipped)"
-  IfFileExists "$INSTDIR\ffmpeg.exe" +2 0
-    DetailPrint "note: ffmpeg.exe not present (component failed or skipped)"
+  IfFileExists "$INSTDIR\bin\yt-dlp.exe" +2 0
+    DetailPrint "note: bin\yt-dlp.exe not present (component failed or skipped)"
+  IfFileExists "$INSTDIR\bin\ffmpeg.exe" +2 0
+    DetailPrint "note: bin\ffmpeg.exe not present (component failed or skipped)"
 SectionEnd
 
 Section -Post
@@ -311,6 +312,10 @@ un_wait:
   IntCmp $1 60 un_wait un_done un_done          ; ~30 s, then proceed anyway
 un_done:
   Delete "$INSTDIR\Velox.exe"
+  Delete "$INSTDIR\bin\yt-dlp.exe"
+  Delete "$INSTDIR\bin\ffmpeg.exe"
+  Delete "$INSTDIR\bin\ffprobe.exe"
+  RMDir "$INSTDIR\bin"
   Delete "$INSTDIR\yt-dlp.exe"
   Delete "$INSTDIR\ffmpeg.exe"
   Delete "$INSTDIR\ffprobe.exe"

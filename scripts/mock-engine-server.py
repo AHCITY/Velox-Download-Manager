@@ -108,6 +108,25 @@ def _status(p):
 @method('download.inspect')
 def _inspect(p):
     return dict(name='preview.bin', size=1024, accept_ranges='yes', resumable='yes')
+@method('media.formats')
+def _media_formats(p):
+    url = p.get('url', '')
+    vid = 'dQw4w9WgXcQ' if 'youtu' in url else 'mock'
+    return dict(
+        title='Mock Media — Format Selection Demo',
+        qualities=[
+            dict(label='2160p', height=2160, fps=None),
+            dict(label='1440p', height=1440, fps=None),
+            dict(label='1080p', height=1080, fps=None),
+            dict(label='1080p60', height=1080, fps=60),
+            dict(label='720p', height=720, fps=None),
+            dict(label='480p', height=480, fps=None),
+        ],
+        has_audio_only=True,
+        has_progressive=True,
+        sizesByHeight={'2160': 412000000, '1440': 198000000, '1080': 134000000, '720': 72000000, '480': 38000000},
+        video_id=vid,
+    )
 @method('download.create')
 def _create(p): return dict(id=99)
 @method('download.start')
@@ -184,7 +203,8 @@ class Handler(BaseHTTPRequestHandler):
         else:
             self._send(404, b'{}')
     def do_GET(self):
-        if self.path == '/events':
+        path = self.path.split('?', 1)[0]  # browser previews append cache-busting queries
+        if path == '/events':
             self.send_response(200)
             self.send_header('Content-Type', 'text/event-stream')
             self.send_header('Cache-Control', 'no-cache')
@@ -204,10 +224,10 @@ class Handler(BaseHTTPRequestHandler):
             finally:
                 with clients_lock:
                     if entry in clients: clients.remove(entry)
-        elif self.path == '/' or self.path == '/index.html':
+        elif path == '/' or path == '/index.html':
             self._send(200, (WEB / 'index.html').read_bytes(), 'text/html')
         else:
-            f = WEB / self.path.lstrip('/')
+            f = WEB / path.lstrip('/')
             if f.is_file() and WEB in f.resolve().parents:
                 ctype = 'application/javascript' if f.suffix == '.js' else 'text/css' if f.suffix == '.css' else 'text/plain'
                 self._send(200, f.read_bytes(), ctype + '; charset=utf-8')

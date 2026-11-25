@@ -7,7 +7,7 @@ import { checkNow, installUpdate, currentAppVersion } from '../updater.js';
 import { fmtBytes } from '../store.js';
 import { isDesktop, defaultDownloadDir, pickDirectory } from '../api.js';
 import { el, esc } from '../ui.js';
-import { BUILTIN_THEMES, customThemeList, applyTheme, registerCustomTheme, sanitizeTheme, listInstalledThemes } from '../themes.js';
+import { BUILTIN_THEMES, customThemeList, applyTheme, registerCustomTheme, unregisterCustomTheme, sanitizeTheme, listInstalledThemes, getTheme } from '../themes.js';
 
 let built = false;
 let section = 'general';
@@ -260,8 +260,21 @@ function themeRow() {
     customBox.innerHTML = customs.length
       ? `<div class="s-desc" style="margin-bottom:6px">Installed themes</div>`
       : `<div class="s-desc">No third-party themes installed. Install a .json theme file (structure: docs/THEMES.md).</div>`;
-    const items = customs.map(swatch);
-    for (const it of items) customBox.appendChild(it);
+    for (const t of customs) {
+      const b = swatch(t);
+      const rm = el(`<button class="theme-rm" title="Remove theme" aria-label="Remove ${esc(t.name)}">${icon('x', 11)}</button>`);
+      rm.onclick = async (e) => {
+        e.stopPropagation();
+        try { if (window.__TAURI__?.core?.invoke) await window.__TAURI__.core.invoke('theme_uninstall', { id: t.id }); } catch { /* browser preview */ }
+        if (store.prefs.theme === t.id) setPrefs({ theme: 'dark' });
+        unregisterCustomTheme(t.id);
+        await listInstalledThemes();
+        if (applyTheme(store.prefs.theme || 'dark')) { /* refreshed */ }
+        paint();
+      };
+      b.style.position = 'relative';
+      b.appendChild(rm);
+    }
     // mark selection state on freshly painted buttons
     swatches.querySelectorAll('.theme-sw').forEach((b) =>
       b.classList.toggle('on', b.dataset.themeId === store.prefs.theme));

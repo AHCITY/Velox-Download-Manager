@@ -25,7 +25,7 @@ ManifestDPIAware true
 RequestExecutionLevel user
 
 !ifndef PRODUCT_VERSION
-  !define PRODUCT_VERSION "0.6.0"
+  !define PRODUCT_VERSION "0.7.0"
 !endif
 !ifndef BUILD_STAGING
   !define BUILD_STAGING "/tmp/installer"
@@ -184,10 +184,12 @@ files:
   nsExec::ExecToLog '"$INSTDIR\velox-browser-host.exe" --register'
   Pop $0
 
-  ; --- media tooling: bundled yt-dlp + LGPL ffmpeg (YouTube etc.) ---
-  File "/oname=yt-dlp.exe" "${BUILD_STAGING}${SEP}yt-dlp.exe"
-  File "/oname=ffmpeg.exe" "${BUILD_STAGING}${SEP}ffmpeg.exe"
-  File "/oname=ffprobe.exe" "${BUILD_STAGING}${SEP}ffprobe.exe"
+  ; --- media tooling: bundled yt-dlp + LGPL ffmpeg in bin/ (organized,
+      ;     identifiable, never mixed with app binaries) ---
+  CreateDirectory "$INSTDIR\bin"
+  File "/oname=bin\yt-dlp.exe" "${BUILD_STAGING}${SEP}bin${SEP}yt-dlp.exe"
+  File "/oname=bin\ffmpeg.exe" "${BUILD_STAGING}${SEP}bin${SEP}ffmpeg.exe"
+  File "/oname=bin\ffprobe.exe" "${BUILD_STAGING}${SEP}bin${SEP}ffprobe.exe"
 
   ; --- licenses & notices (LGPL compliance) ---
   File "/oname=THIRD-PARTY-NOTICES.md" "${BUILD_STAGING}${SEP}THIRD_PARTY_NOTICES.md"
@@ -197,11 +199,11 @@ files:
   StrCpy $3 0
   IfFileExists "$INSTDIR\Velox.exe" +2 0
     StrCpy $3 1
-  IfFileExists "$INSTDIR\yt-dlp.exe" +2 0
+  IfFileExists "$INSTDIR\bin\yt-dlp.exe" +2 0
     StrCpy $3 1
-  IfFileExists "$INSTDIR\ffmpeg.exe" +2 0
+  IfFileExists "$INSTDIR\bin\ffmpeg.exe" +2 0
     StrCpy $3 1
-  IfFileExists "$INSTDIR\ffprobe.exe" +2 0
+  IfFileExists "$INSTDIR\bin\ffprobe.exe" +2 0
     StrCpy $3 1
   IfFileExists "$INSTDIR\velox-browser-host.exe" +2 0
     StrCpy $3 1
@@ -275,6 +277,11 @@ un_wait:
   IntCmp $1 60 un_wait un_done un_done          ; ~30 s, then proceed anyway
 un_done:
   Delete "$INSTDIR\Velox.exe"
+  Delete "$INSTDIR\bin\yt-dlp.exe"
+  Delete "$INSTDIR\bin\ffmpeg.exe"
+  Delete "$INSTDIR\bin\ffprobe.exe"
+  RMDir "$INSTDIR\bin"
+  ; legacy flat layout (0.6.x in-place updates)
   Delete "$INSTDIR\yt-dlp.exe"
   Delete "$INSTDIR\ffmpeg.exe"
   Delete "$INSTDIR\ffprobe.exe"

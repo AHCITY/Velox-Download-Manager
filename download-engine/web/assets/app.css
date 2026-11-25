@@ -637,3 +637,9 @@ details.adv > summary:hover { color: var(--t1); }
 .theme-sw .sw-bar { height: 5px; width: 80%; border-radius: 999px; }
 .theme-sw .sw-name { font-size: 11px; color: var(--t2); font-weight: 600; text-align: center; }
 .theme-sw.on .sw-name { color: var(--accent-h); }
+.theme-sw .theme-rm {
+  position: absolute; top: -7px; right: -7px; width: 18px; height: 18px;
+  border-radius: 50%; background: var(--err); color: var(--on-accent);
+  display: flex; align-items: center; justify-content: center;
+}
+.theme-sw .theme-rm:hover { filter: brightness(1.15); }

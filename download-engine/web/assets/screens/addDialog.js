@@ -3,7 +3,7 @@
 import { icon } from '../icons.js';
 import { store, fmtBytes, categoryOf, refreshAll, toast } from '../store.js';
 import { engine, defaultDownloadDir, EngineError } from '../api.js';
-import { openDialog, esc, reportError, actions } from '../ui.js';
+import { openDialog, el, esc, reportError, actions } from '../ui.js';
 
 let lastDest = null;
 
@@ -115,9 +115,16 @@ export function openAddDialog(prefillUrl = '') {
   $('#adAdvBtn').onclick = () => $('#adAdv').classList.toggle('open');
 
   // ---- media format selection (YouTube): real qualities from the engine ----
-  let mediaChoice = { format: store.prefs.mediaFormat || 'mp4', height: null, fps: null };
+  // The picker only appears after the engine's media.formats probe returns;
+  // every quality shown comes from that response — nothing is fabricated.
+  const mediaChoice = {
+    active: false,
+    format: store.prefs.mediaFormat === 'mp3' ? 'mp3' : 'mp4',
+    height: null, fps: null,
+  };
+  let mediaSummary = null; // last probe result; format toggles re-render, not re-probe
   const fmtRow = el(`<div class="field" id="adMediaFmt" style="display:none">
-    <label>Format</label>
+    <label>Media format</label>
     <div class="seg" id="adFmtSeg">
       <button type="button" data-f="mp4">MP4 · video + audio</button>
       <button type="button" data-f="mp3">MP3 · audio only</button>
@@ -125,45 +132,70 @@ export function openAddDialog(prefillUrl = '') {
     <div id="adQualityWrap" style="margin-top:8px"></div>
     <div class="hint" id="adFmtNote"></div>
   </div>`);
-  const urlField = $('#adUrl').closest('.field');
-  if (urlField && urlField.nextSibling) urlField.parentNode.insertBefore(fmtRow, urlField.nextSibling);
-  else $('#adUrl').closest('.dialog-body').appendChild(fmtRow);
+  {
+    const urlField = $('#adUrl').closest('.field');
+    if (urlField && urlField.nextSibling) urlField.parentNode.insertBefore(fmtRow, urlField.nextSibling);
+    else dlg.querySelector('.dialog-body').appendChild(fmtRow);
+  }
+
+  function renderMediaFormats() {
+    const seg = $('#adFmtSeg'), qw = $('#adQualityWrap'), note = $('#adFmtNote');
+    if (!mediaSummary) return;
+    const qualities = mediaSummary.qualities || [];
+    seg.querySelectorAll('button').forEach((b) => {
+      b.classList.toggle('on', b.dataset.f === mediaChoice.format);
+      b.disabled = b.dataset.f === 'mp3' && !mediaSummary.has_audio_only && !mediaSummary.has_progressive;
+    });
+    if (mediaChoice.format === 'mp4' && qualities.length) {
+      qw.innerHTML = `<select id="adQuality" aria-label="Video quality">
+        <option value="best">Best available</option>
+        ${qualities.map((q) => {
+          const size = mediaSummary.sizesByHeight ? mediaSummary.sizesByHeight[q.height] : null;
+          const sel = String(store.prefs.mediaQuality) === String(q.height) ? 'selected' : '';
+          return `<option value="${q.height}${q.fps ? ':' + q.fps : ''}" ${sel}>${esc(q.label)}${size != null ? ' · ≈' + fmtBytes(size) : ''}</option>`;
+        }).join('')}
+      </select>`;
+      const sel = qw.querySelector('#adQuality');
+      sel.onchange = () => {
+        if (sel.value === 'best') { mediaChoice.height = null; mediaChoice.fps = null; }
+        else {
+          const [h, fps] = sel.value.split(':').map(Number);
+          mediaChoice.height = h; mediaChoice.fps = fps || null;
+        }
+      };
+      // honour the Settings → Media default when the source offers it
+      const prefHit = [...sel.options].find((o) =>
+        o.value !== 'best' && o.value.split(':')[0] === String(store.prefs.mediaQuality));
+      if (prefHit) { sel.value = prefHit.value; sel.onchange(); }
+    } else {
+      qw.innerHTML = '';
+    }
+    note.textContent = qualities.length
+      ? 'Only qualities this source actually offers are listed.'
+      : 'No video qualities reported — best available will be used.';
+  }
 
   async function probeMediaFormats(url) {
-    const box = $('#adMediaFmt'); if (!box) return;
-    const seg = $('#adFmtSeg'), qw = $('#adQualityWrap'), note = $('#adFmtNote');
-    note.textContent = 'Checking available formats…';
+    const box = $('#adMediaFmt');
+    if (!box) return;
     box.style.display = 'block';
+    $('#adFmtNote').textContent = 'Checking available formats…';
     try {
-      const f = await engine.mediaFormats(url);
-      const qualities = f.qualities || [];
-      note.textContent = qualities.length ? 'Qualities offered by this source:' : 'No selectable video qualities — best available will be used.';
-      seg.querySelectorAll('button').forEach((b) => {
-        b.classList.toggle('on', b.dataset.f === mediaChoice.format);
-        b.disabled = b.dataset.f === 'mp3' && f.has_progressive === false && f.has_audio_only === false;
-      });
-      qw.innerHTML = mediaChoice.format === 'mp3' ? '' :
-        `<select id="adQuality">
-          <option value="best">Best available</option>
-          ${qualities.map((q) => `<option value="${q.height}${q.fps ? ':' + q.fps : ''}" ${store.prefs.mediaQuality !== 'best' && String(store.prefs.mediaQuality) === String(q.height) ? 'selected' : ''}>${esc(q.label)}${f.sizesByHeight && f.sizesByHeight[q.height] ? ' · ' + fmtBytes(f.sizesByHeight[q.height]) : ''}</option>`).join('')}
-        </select>`;
-      const sel = qw.querySelector('#adQuality');
-      if (sel) sel.onchange = () => {
-        const [h, fps] = sel.value === 'best' ? [null, null] : sel.value.split(':').map(Number);
-        mediaChoice.height = h || null; mediaChoice.fps = fps || null;
-      };
-      seg.querySelectorAll('button').forEach((b) => {
-        b.onclick = () => {
-          mediaChoice.format = b.dataset.f;
-          seg.querySelectorAll('button').forEach((x) => x.classList.toggle('on', x === b));
-          probeMediaFormats.lastUrl && probeMediaFormats(probeMediaFormats.lastUrl);
-        };
-      });
-      probeMediaFormats.lastUrl = url;
+      mediaSummary = await engine.mediaFormats(url);
+      mediaChoice.active = true;
+      renderMediaFormats();
     } catch (e) {
-      note.textContent = 'Format listing unavailable (' + friendly(e) + ') — best available will be used.';
+      mediaChoice.active = false;
+      $('#adFmtNote').textContent =
+        'Format listing unavailable — best available will be used. (' + esc(friendly(e)) + ')';
     }
   }
+  $('#adFmtSeg').onclick = (e) => {
+    const b = e.target.closest('[data-f]');
+    if (!b || b.disabled) return;
+    mediaChoice.format = b.dataset.f;
+    renderMediaFormats();
+  };
 
   let inspecting = false;
   let lastInspected = '';
@@ -194,12 +226,11 @@ export function openAddDialog(prefillUrl = '') {
     } catch (e) {
       prev.className = 'preview bad';
       prev.innerHTML = `<div class="p-row"><span class="p-v" style="color:var(--err)">${esc(friendly(e))}</span></div>`;
-    }
-    // media page (YouTube etc.): offer honest format + quality selection
-    if (/youtube\.com|youtu\.be/i.test(url)) probeMediaFormats(url);
     } finally {
       inspecting = false;
     }
+    // media page (YouTube etc.): offer honest format + quality selection
+    if (/youtube\.com|youtu\.be/i.test(url)) probeMediaFormats(url);
   }
   function showUrlError(msg) { urlErr.textContent = msg; urlErr.style.display = 'block'; }
   function friendly(e) {
@@ -276,10 +307,25 @@ export function openAddDialog(prefillUrl = '') {
 
     const built = buildCfg();
     if (built.error) { showUrlError(built.error); return; }
+    // chosen media format (YouTube etc.) — only when the probe succeeded
+    if (mediaChoice.active) {
+      built.cfg.media_format = mediaChoice.format;
+      if (mediaChoice.format === 'mp4' && mediaChoice.height) {
+        built.cfg.media_height = mediaChoice.height;
+        if (mediaChoice.fps) built.cfg.media_fps = mediaChoice.fps;
+      }
+    }
     goBtn.disabled = true;
     goBtn.innerHTML = `<span class="btn-spinner"></span> Adding…`;
     try {
       const added = await engine.create(url, built.cfg);
+      // "start paused" preference: add without starting (user starts in bulk)
+      if (store.prefs.startDownloadsImmediately === false) {
+        await refreshAll();
+        toast('ok', 'Download added (paused)', added.final_name || url);
+        close();
+        return;
+      }
       try { await engine.start(added.id); } catch (e) {
         if (!/ALREADY/i.test(String(e.message))) throw e;
       }

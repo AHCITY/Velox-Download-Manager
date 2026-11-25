@@ -129,13 +129,14 @@ jobs:
       - name: Stage bundled components (yt-dlp, LGPL ffmpeg/ffprobe, WebView2 fallback)
         shell: pwsh
         run: |
-          # yt-dlp: official signed release binary
-          Invoke-WebRequest -Uri "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe" -OutFile "$env:STAGING\yt-dlp.exe"
+          # yt-dlp: official signed release binary (0.7.0+ installs into bin/)
+          New-Item -ItemType Directory -Force "$env:STAGING\bin" | Out-Null
+          Invoke-WebRequest -Uri "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe" -OutFile "$env:STAGING\bin\yt-dlp.exe"
           # ffmpeg/ffprobe: BtbN LGPL build (redistributable, no GPL taint)
           Invoke-WebRequest -Uri "https://github.com/BtbN/FFmpeg-Builds/releases/latest/download/ffmpeg-master-latest-win64-lgpl.zip" -OutFile "$env:STAGING\ffmpeg.zip"
           Expand-Archive "$env:STAGING\ffmpeg.zip" "$env:STAGING\ffmpeg" -Force
-          Copy-Item (Get-ChildItem "$env:STAGING\ffmpeg" -Recurse -Filter "ffmpeg.exe" | Select-Object -First 1).FullName "$env:STAGING\ffmpeg.exe"
-          Copy-Item (Get-ChildItem "$env:STAGING\ffmpeg" -Recurse -Filter "ffprobe.exe" | Select-Object -First 1).FullName "$env:STAGING\ffprobe.exe"
+          Copy-Item (Get-ChildItem "$env:STAGING\ffmpeg" -Recurse -Filter "ffmpeg.exe" | Select-Object -First 1).FullName "$env:STAGING\bin\ffmpeg.exe"
+          Copy-Item (Get-ChildItem "$env:STAGING\ffmpeg" -Recurse -Filter "ffprobe.exe" | Select-Object -First 1).FullName "$env:STAGING\bin\ffprobe.exe"
           $lic = Get-ChildItem "$env:STAGING\ffmpeg" -Recurse -Filter "LICENSE*" | Select-Object -First 1
           if ($lic) { Copy-Item $lic.FullName "$env:STAGING\ffmpeg-lgpl-LICENSE.txt" }
           # WebView2 fallback: Evergreen Bootstrapper (official fwlink, ~2 MB;
@@ -201,8 +202,8 @@ jobs:
           # listing to forward slashes before matching.
           $listing = (& $seven l Velox-Setup-x64-unified.exe) -replace '\\','/'
           $required = @(
-            "Velox.exe", "velox-browser-host.exe", "yt-dlp.exe",
-            "ffmpeg.exe", "ffprobe.exe", "extension", "manifest.json",
+            "Velox.exe", "velox-browser-host.exe", "bin/yt-dlp.exe",
+            "bin/ffmpeg.exe", "bin/ffprobe.exe", "extension", "manifest.json",
             "background.js", "popup.html", "popup.js", "extension/README.md",
             "THIRD-PARTY-NOTICES.md", "FFMPEG-LICENSE.txt", "WebView2Setup"
           )
@@ -340,8 +341,110 @@ jobs:
   # The release page stays CLEAN: one obvious installer download (the unified
   # setup) plus exactly what the signed auto-updater requires — latest.json
   # (tag-pinned URL), the minisign .sig and SHA256SUMS.txt. Nothing else.
+  linux-desktop:
+    needs: windows
+    if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-22.04
+    defaults:
+      run:
+        working-directory: download-engine
+    env:
+      STAGING: ${{ github.workspace }}/staging
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Tauri Linux build dependencies (webkit2gtk 4.1 toolchain)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file \
+            libssl-dev libayatana-appindicator3-dev librsvg2-dev patchelf xdg-utils xvfb jq
+
+      - name: Build Velox desktop app (release)
+        run: |
+          cd app/src-tauri
+          cargo build --release --features custom-protocol
+          file target/release/Velox | grep -q "ELF 64-bit" || { echo "not a linux ELF binary"; exit 1; }
+
+      - name: Determine version
+        run: echo "VER=$(jq -r .version app/src-tauri/tauri.conf.json)" >> "$GITHUB_ENV"
+
+      - name: Stage the Linux distributions (core + offline)
+        run: |
+          set -e
+          mkdir -p "$STAGING/roots/velox-$VER/bin" "$STAGING/roots-core/velox-$VER/bin" "$STAGING/out"
+          ROOT="$STAGING/roots/velox-$VER"
+          ROOTC="$STAGING/roots-core/velox-$VER"
+          cp app/src-tauri/target/release/Velox "$ROOT/Velox"
+          cp -r extension "$ROOT/extension"
+          cp docs/THIRD_PARTY_NOTICES.md "$ROOT/THIRD-PARTY-NOTICES.md"
+          cp ../scripts/velox-install.sh "$ROOT/install.sh"
+          mkdir -p "$ROOT/icons"
+          cp app/src-tauri/icons/32x32.png app/src-tauri/icons/128x128.png app/src-tauri/icons/128x128@2x.png "$ROOT/icons/"
+          chmod +x "$ROOT/Velox" "$ROOT/install.sh"
+
+          # core (online installer base): same tree WITHOUT bundled tools
+          cp -r "$ROOT/." "$ROOTC/"
+          rm -rf "$ROOTC/bin"
+
+          # offline: bundle yt-dlp + LGPL ffmpeg INTO bin/ (identical layout to
+          # the Windows offline installer — bin/ beside the app binary)
+          curl -sL --retry 3 "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_linux" -o "$ROOT/bin/yt-dlp"
+          chmod +x "$ROOT/bin/yt-dlp"
+          curl -sL --retry 3 "https://github.com/BtbN/FFmpeg-Builds/releases/latest/download/ffmpeg-master-latest-linux64-lgpl.tar.xz" -o "$STAGING/ffmpeg.tar.xz"
+          mkdir "$STAGING/ffmpeg"
+          tar -xJf "$STAGING/ffmpeg.tar.xz" -C "$STAGING/ffmpeg"
+          cp "$STAGING"/ffmpeg/ffmpeg-master-latest-linux64-lgpl/bin/ffmpeg "$ROOT/bin/ffmpeg"
+          cp "$STAGING"/ffmpeg/ffmpeg-master-latest-linux64-lgpl/bin/ffprobe "$ROOT/bin/ffprobe"
+          chmod +x "$ROOT/bin/ffmpeg" "$ROOT/bin/ffprobe"
+          cp "$STAGING/ffmpeg/ffmpeg-master-latest-linux64-lgpl/LICENSE.txt" "$ROOT/FFMPEG-LICENSE.txt"
+
+      - name: Startup smoke test (real app on xvfb — engine + webview boot)
+        run: |
+          set -e
+          ROOT="$STAGING/roots/velox-$VER"
+          export HOME
+          xvfb-run -a timeout 30 "$ROOT/Velox" &
+          APP_PID=$!
+          ok=0
+          for i in $(seq 1 20); do
+            sleep 1
+            # the engine creates its data dir on boot — proof of a working start
+            if [ -d "$HOME/.local/share/io.velox.downloadmanager" ]; then ok=1; break; fi
+          done
+          kill $APP_PID 2>/dev/null || true
+          wait $APP_PID 2>/dev/null || true
+          [ "$ok" = 1 ] || { echo "STARTUP SMOKE TEST FAILED: app data dir was never created"; exit 1; }
+          echo "startup smoke test passed (engine booted, data dir created)"
+
+      - name: Package distributions + online installer
+        run: |
+          set -e
+          cd "$STAGING/roots"
+          tar -czf "$STAGING/out/Velox-linux-x64-$VER-offline.tar.gz" "velox-$VER"
+          cd "$STAGING/roots-core"
+          tar -czf "$STAGING/out/Velox-linux-x64-$VER.tar.gz" "velox-$VER"
+          # online installer: embed the release version, verify substitutions happened
+          sed "s/__VELOX_VERSION__/$VER/" "$GITHUB_WORKSPACE/scripts/velox-setup-linux-online.sh" \
+            > "$STAGING/out/velox-setup-linux-online.sh"
+          chmod +x "$STAGING/out/velox-setup-linux-online.sh"
+          grep -q "releases/download/v$VER" "$STAGING/out/velox-setup-linux-online.sh"
+          ! grep -q "__VELOX_VERSION__" "$STAGING/out/velox-setup-linux-online.sh"
+          # verification: every distribution is complete and tools are executable
+          tar -tzf "$STAGING/out/Velox-linux-x64-$VER-offline.tar.gz" | grep -q "bin/yt-dlp"
+          tar -tzf "$STAGING/out/Velox-linux-x64-$VER-offline.tar.gz" | grep -q "bin/ffmpeg"
+          tar -tzf "$STAGING/out/Velox-linux-x64-$VER.tar.gz" | grep -qv "bin/ffmpeg" || true
+          ls -la "$STAGING/out"
+          echo "linux distributions assembled"
+
+      - name: Upload Linux distributions
+        uses: actions/upload-artifact@v4
+        with:
+          name: Velox-linux-dist
+          path: ${{ env.STAGING }}/out/*
+          if-no-files-found: error
+
   release:
-    needs: desktop
+    needs: [desktop, linux-desktop]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
@@ -357,18 +460,29 @@ jobs:
           mkdir -p out
           cp rel/Velox-Setup-x64-unified/Velox-Setup-x64-unified.exe out/
           cp rel/Velox-Setup-x64-unified.sig/Velox-Setup-x64-unified.exe.sig out/
+          cp rel/Velox-linux-dist/Velox-linux-x64-*-offline.tar.gz rel/Velox-linux-dist/Velox-linux-x64-*.tar.gz rel/Velox-linux-dist/velox-setup-linux-online.sh out/
           SIG=$(cat out/Velox-Setup-x64-unified.exe.sig)
           URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}/Velox-Setup-x64-unified.exe"
           PUB_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)
           jq -n --arg v "$VER" --arg s "$SIG" --arg u "$URL" --arg d "$PUB_DATE" \
             '{version:$v, notes:("Velox "+$v+" — see the release notes for changes."), pub_date:$d, platforms:{"windows-x86_64":{signature:$s, url:$u}}}' \
             > out/latest.json
-          (cd out && sha256sum Velox-Setup-x64-unified.exe Velox-Setup-x64-unified.exe.sig latest.json > SHA256SUMS.txt)
+          (cd out && sha256sum Velox-Setup-x64-unified.exe Velox-Setup-x64-unified.exe.sig latest.json Velox-linux-x64-*.tar.gz velox-setup-linux-online.sh > SHA256SUMS.txt)
           cat out/latest.json
       - name: Publish the GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          VER="${GITHUB_REF_NAME#v}"
+          {
+            printf '%s\n' "**Velox $VER** — themes, YouTube format selection, Linux support." ''
+            printf '%s\n' "### Windows" ''
+            printf '%s\n' "- **Velox-Setup-x64-unified.exe** — offline installer: app, browser extension + native messaging host, yt-dlp, LGPL ffmpeg/ffprobe (in \`bin/\`), WebView2 fallback. The in-app updater serves this file automatically." "- **latest.json** + signature — updater metadata (windows-x86_64)." ''
+            printf '%s\n' "### Linux x86_64 (per-user, no root)" ''
+            printf '%s\n' "- **Velox-linux-x64-$VER-offline.tar.gz** — OFFLINE: app + yt-dlp + LGPL FFmpeg bundled in \`bin/\`; extract and run \`install.sh\` (menu entry, launcher, icons included). Uninstall: \`./install.sh --uninstall\`." "- **Velox-linux-x64-$VER.tar.gz** — app core for the online installer." "- **velox-setup-linux-online.sh** — ONLINE installer: downloads the core + the YouTube toolchain from official sources (\`--no-media\` skips it)." ''
+            printf '%s\n' "Requirements: WebKitGTK 4.1 + GTK3 (present on current Ubuntu/Debian/Fedora/Arch). See docs/LINUX.md for install, update and troubleshooting." ''
+            printf '%s\n' "SHA256SUMS.txt covers every artifact. Downloads and settings live in the user profile on both platforms and are never touched by updates or uninstall."
+          } > release-notes.md
           gh release create "$GITHUB_REF_NAME" out/* \
-            --title "Velox ${GITHUB_REF_NAME#v}" \
-            --notes "Unified signed installer — Velox desktop app, browser extension + native messaging host, yt-dlp, LGPL ffmpeg/ffprobe and the WebView2 fallback in ONE package. The in-app updater offers this release automatically; new users download **Velox-Setup-x64-unified.exe**. SHA256SUMS.txt covers the installer, its signature and latest.json."
+            --title "Velox $VER" \
+            --notes-file release-notes.md

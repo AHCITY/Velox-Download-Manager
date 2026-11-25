@@ -156,7 +156,8 @@ pub async fn resolve_media_with(
             range_support: engine_core::inspect::RangeSupport::Unknown,
             mime: Some("audio/mpeg".into()),
             sniffed: engine_core::inspect::SniffedKind::Unknown,
-            suggested_name: Some(format!("{}.mp3", title)),
+            // the DOWNLOAD is the raw audio stream; conversion renames to .mp3
+            suggested_name: Some(format!("{} (audio).{}", title, plan.video.ext)),
             resolve_note: Some(format!(
                 "media extractor: “{}” — best audio [{}] → MP3",
                 title, plan.video.format_id

@@ -33,8 +33,29 @@ struct AppState {
     downloads_root: PathBuf,
     /// Persisted UI preferences (JSON; written by settings_set).
     settings_path: PathBuf,
+    /// User-installed third-party themes (JSON manifests; docs/THEMES.md).
+    themes_dir: PathBuf,
     /// Set by the first CloseRequested; makes repeated close requests safe.
     shutting_down: AtomicBool,
+}
+
+/// Locate a bundled tool or sidecar: `bin/` beside the executable FIRST (the
+/// 0.7.0+ install layout keeps dependencies separated and identifiable), then
+/// beside the exe (0.6.x flat layout — updates over old installs keep working),
+/// then PATH.
+fn bundled_tool_path(name: &str) -> Option<PathBuf> {
+    let exe_name = if cfg!(windows) { format!("{name}.exe") } else { name.to_string() };
+    if let Some(d) = exe_dir() {
+        let b = d.join("bin").join(&exe_name);
+        if b.exists() {
+            return Some(b);
+        }
+        let flat = d.join(&exe_name);
+        if flat.exists() {
+            return Some(flat);
+        }
+    }
+    find_on_path(name)
 }
 
 /// Route a JSON-RPC 2.0 request through the EXISTING engine API (engine-api).
@@ -148,6 +169,103 @@ fn settings_set(state: State<'_, AppState>, json: String) -> Result<(), String> 
     std::fs::write(&state.settings_path, json).map_err(|e| e.to_string())
 }
 
+/* ================= third-party themes (Settings → Appearance) =================
+ * Themes are DATA, never code: JSON manifests of CSS custom properties
+ * (docs/THEMES.md). The full security/contrast validation lives in the
+ * frontend sanitizer (assets/themes.js); these commands only gate what the
+ * filesystem touches: a sane id, a colors object, a size cap.
+ * ==================================================================== */
+const THEMES_MAX_BYTES: usize = 100 * 1024;
+
+#[tauri::command]
+fn themes_dir(state: State<'_, AppState>) -> Result<String, String> {
+    std::fs::create_dir_all(&state.themes_dir).map_err(|e| e.to_string())?;
+    Ok(state.themes_dir.display().to_string())
+}
+
+/// List installed third-party themes (raw manifests; the UI validates each).
+#[tauri::command]
+fn themes_list(state: State<'_, AppState>) -> Vec<serde_json::Value> {
+    let mut out = Vec::new();
+    let rd = match std::fs::read_dir(&state.themes_dir) {
+        Ok(rd) => rd,
+        Err(_) => return out,
+    };
+    for entry in rd.flatten() {
+        let p = entry.path();
+        if p.extension().and_then(|e| e.to_str()) != Some("json") {
+            continue;
+        }
+        let Ok(txt) = std::fs::read_to_string(&p) else { continue };
+        if txt.len() > THEMES_MAX_BYTES {
+            continue;
+        }
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(&txt) else { continue };
+        let id = v.get("id").and_then(|i| i.as_str()).unwrap_or("").to_string();
+        if id.is_empty() {
+            continue;
+        }
+        let name = v.get("name").and_then(|n| n.as_str()).unwrap_or("").to_string();
+        out.push(serde_json::json!({ "id": id, "name": name, "theme": v }));
+    }
+    out
+}
+
+fn valid_theme_id(id: &str) -> Result<(), String> {
+    if id.is_empty() || id.len() > 32 {
+        return Err("theme id must be 1-32 characters".into());
+    }
+    if !id.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
+        return Err("theme id allows letters, digits, '_' and '-' only".into());
+    }
+    if matches!(id, "dark" | "light" | "purple" | "blue") {
+        return Err("this id collides with a built-in theme".into());
+    }
+    Ok(())
+}
+
+/// Install (persist) a third-party theme manifest from its JSON text.
+#[tauri::command]
+fn theme_install(state: State<'_, AppState>, json: String) -> Result<serde_json::Value, String> {
+    if json.len() > THEMES_MAX_BYTES {
+        return Err("theme file too large (100 KB limit)".into());
+    }
+    let v: serde_json::Value =
+        serde_json::from_str(&json).map_err(|e| format!("not valid JSON: {e}"))?;
+    let id = v
+        .get("id")
+        .and_then(|i| i.as_str())
+        .ok_or("theme manifest needs an id")?;
+    valid_theme_id(id)?;
+    let colors = v.get("colors").ok_or("theme manifest needs a colors object")?;
+    if !colors.is_object() {
+        return Err("colors must be an object of variable → color".into());
+    }
+    for (k, val) in colors.as_object().unwrap() {
+        if !k.starts_with("--") {
+            return Err(format!("unexpected key '{k}' in colors (variables start with --)"));
+        }
+        if !val.is_string() {
+            return Err(format!("value for {k} must be a string color"));
+        }
+    }
+    std::fs::create_dir_all(&state.themes_dir).map_err(|e| e.to_string())?;
+    let path = state.themes_dir.join(format!("{id}.json"));
+    std::fs::write(&path, &json).map_err(|e| e.to_string())?;
+    Ok(serde_json::json!({ "id": id, "path": path.display().to_string() }))
+}
+
+/// Remove an installed third-party theme.
+#[tauri::command]
+fn theme_uninstall(state: State<'_, AppState>, id: String) -> Result<(), String> {
+    valid_theme_id(&id)?;
+    let p = state.themes_dir.join(format!("{id}.json"));
+    if p.exists() {
+        std::fs::remove_file(&p).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
 /* ================= browser-extension installer (in-app setup) =================
  * The desktop app drives the FULL browser integration setup: it stages the
  * bundled extension into a stable per-user location, registers the native
@@ -237,6 +355,56 @@ fn edge_exe_candidates(pf86: &str, lad: &str) -> Vec<String> {
 fn detect_browsers() -> Vec<BrowserInfo> {
     #[allow(unused_mut)]
     let mut out = Vec::new();
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        // Filesystem discovery: well-known binary names on PATH + per-user
+        // config directories (Chromium NM manifests live under ~/.config/<dir>).
+        let home = std::env::var("HOME").unwrap_or_default();
+        let which = |n: &str| -> bool {
+            let Ok(path) = std::env::var("PATH") else { return false };
+            path.split(':')
+                .map(|d| std::path::Path::new(d).join(n))
+                .any(|p| p.exists())
+        };
+        struct Probe {
+            id: &'static str,
+            name: &'static str,
+            bins: &'static [&'static str],
+            cfg_dir: &'static str,
+            page: &'static str,
+        }
+        let probes = [
+            Probe { id: "chrome", name: "Google Chrome", bins: &["google-chrome-stable", "google-chrome"], cfg_dir: "google-chrome", page: "chrome://extensions" },
+            Probe { id: "edge", name: "Microsoft Edge", bins: &["microsoft-edge-stable", "microsoft-edge"], cfg_dir: "microsoft-edge", page: "edge://extensions" },
+            Probe { id: "brave", name: "Brave", bins: &["brave-browser", "brave"], cfg_dir: "BraveSoftware/Brave-Browser", page: "brave://extensions" },
+            Probe { id: "vivaldi", name: "Vivaldi", bins: &["vivaldi", "vivaldi-stable"], cfg_dir: "vivaldi", page: "vivaldi://extensions" },
+            Probe { id: "chromium", name: "Chromium", bins: &["chromium", "chromium-browser"], cfg_dir: "chromium", page: "chrome://extensions" },
+            Probe { id: "opera", name: "Opera", bins: &["opera"], cfg_dir: "opera", page: "opera://extensions" },
+        ];
+        for p in &probes {
+            let bin = p.bins.iter().find(|b| which(b));
+            let cfg_present =
+                std::path::Path::new(&home).join(".config").join(p.cfg_dir).exists();
+            if bin.is_some() || cfg_present {
+                out.push(BrowserInfo {
+                    id: p.id.to_string(),
+                    name: p.name.to_string(),
+                    family: "chromium".into(),
+                    exe: bin.map(|b| b.to_string()).unwrap_or_default(),
+                    extensions_page: p.page.to_string(),
+                });
+            }
+        }
+        if which("firefox") {
+            out.push(BrowserInfo {
+                id: "firefox".into(),
+                name: "Firefox".into(),
+                family: "firefox".into(),
+                exe: "firefox".into(),
+                extensions_page: "about:debugging#/runtime/this-firefox".into(),
+            });
+        }
+    }
     #[cfg(windows)]
     {
         use winreg::enums::{HKEY_LOCAL_MACHINE, KEY_READ};
@@ -552,11 +720,7 @@ fn extension_setup(browser: String, mode: String) -> Result<serde_json::Value, S
 
     // 2) register the native messaging host (sidecar beside the app exe)
     let mut notes: Vec<String> = Vec::new();
-    let host = exe_dir()
-        .map(|d| {
-            d.join(if cfg!(windows) { "velox-browser-host.exe" } else { "velox-browser-host" })
-        })
-        .filter(|p| p.exists());
+    let host = bundled_tool_path("velox-browser-host");
     let mut registered = match host {
         Some(h) => {
             let mut cmd = std::process::Command::new(&h);
@@ -662,15 +826,17 @@ fn extension_status() -> serde_json::Value {
     let reg = probe_host_registration();
 
     let ext_dir = extension_install_dir();
-    // bundled-extractor probes: beside-exe wins, PATH fallback reported as "path"
+    // bundled-extractor probes: bin/ (or flat legacy) beside-exe wins, PATH
+    // fallback reported as "path"
     let exe_name = |n: &str| if cfg!(windows) { format!("{n}.exe") } else { n.to_string() };
     let probe_tool = |n: &str| -> &'static str {
-        exe_dir()
-            .map(|d| d.join(exe_name(n)))
-            .filter(|p| p.exists())
-            .map(|_| "bundled")
-            .or_else(|| find_on_path(&exe_name(n)).map(|_| "path"))
-            .unwrap_or("missing")
+        if bundled_tool_path(n).is_some() {
+            "bundled"
+        } else if find_on_path(&exe_name(n)).is_some() {
+            "path"
+        } else {
+            "missing"
+        }
     };
     let ytdlp = probe_tool("yt-dlp");
     let ffmpeg = probe_tool("ffmpeg");
@@ -686,9 +852,7 @@ fn extension_status() -> serde_json::Value {
         "ext_installed": ext_dir.join("manifest.json").exists(),
         "ext_dir": ext_dir.display().to_string(),
         "extension_id": EXTENSION_ID,
-        "host_exe_present": exe_dir()
-            .map(|d| d.join(if cfg!(windows) { "velox-browser-host.exe" } else { "velox-browser-host" }).exists())
-            .unwrap_or(false),
+        "host_exe_present": bundled_tool_path("velox-browser-host").is_some(),
         "ytdlp": ytdlp,
         "ffmpeg": ffmpeg,
         "browsers": detect_browsers(),
@@ -905,17 +1069,23 @@ fn main() {
             // exe): prepend the install dir to PATH so the bundled binaries win
             // over whatever happens to be on PATH. The extractor config then uses
             // the absolute path when present.
-            let exe_dir = std::env::current_exe().ok().and_then(|e| e.parent().map(PathBuf::from));
-            if let Some(d) = &exe_dir {
-                let bundled = d.join(if cfg!(windows) { "yt-dlp.exe" } else { "yt-dlp" }).exists()
-                    || d.join(if cfg!(windows) { "ffmpeg.exe" } else { "ffmpeg" }).exists();
-                if bundled {
-                    let sep = if cfg!(windows) { ';' } else { ':' };
-                    let old_path = std::env::var("PATH").unwrap_or_default();
-                    std::env::set_var("PATH", format!("{}{sep}{}", d.display(), old_path));
-                }
+            // 0.7.0+ layout: bundled dependencies live in bin/ beside the exe
+            // (flat 0.6.x layout stays discoverable for in-place updates).
+            let tools_dir = exe_dir()
+                .map(|d| {
+                    let bin = d.join("bin");
+                    let has = |p: &PathBuf| {
+                        p.join(if cfg!(windows) { "yt-dlp.exe" } else { "yt-dlp" }).exists()
+                            || p.join(if cfg!(windows) { "ffmpeg.exe" } else { "ffmpeg" }).exists()
+                    };
+                    if has(&bin) { bin } else { d.to_path_buf() }
+                });
+            if let Some(d) = &tools_dir {
+                let sep = if cfg!(windows) { ';' } else { ':' };
+                let old_path = std::env::var("PATH").unwrap_or_default();
+                std::env::set_var("PATH", format!("{}{sep}{}", d.display(), old_path));
             }
-            let extractor = exe_dir
+            let extractor = tools_dir
                 .as_ref()
                 .map(|d| d.join(if cfg!(windows) { "yt-dlp.exe" } else { "yt-dlp" }))
                 .filter(|p| p.exists())
@@ -937,7 +1107,7 @@ fn main() {
             // MediaPipeline merge stage: discover an LGPL ffmpeg on PATH and inject
             // the port. Honest stderr line when absent — merging stays unavailable
             // instead of pretending (docs/FFMPEG_INTEGRATION.md §3).
-            match tauri::async_runtime::block_on(engine_media::MergePort::discover_subprocess_at(exe_dir.as_deref())) {
+            match tauri::async_runtime::block_on(engine_media::MergePort::discover_subprocess_at(tools_dir.as_deref())) {
                 Ok(port) => {
                     manager.set_media_merge(Some(Arc::new(port)));
                     eprintln!("media merge: ready (LGPL ffmpeg found)");
@@ -949,10 +1119,13 @@ fn main() {
             }
 
             let settings_path = data_dir.join("ui-settings.json");
+            let themes_dir = app.path().app_data_dir()?.join("themes");
+            std::fs::create_dir_all(&themes_dir).map_err(|e| e.to_string())?;
             app.manage(AppState {
                 manager: manager.clone(),
                 downloads_root: downloads_root.clone(),
                 settings_path,
+                themes_dir,
                 shutting_down: AtomicBool::new(false),
             });
 
@@ -1016,7 +1189,11 @@ fn main() {
         settings_set,
         browser_detect,
         extension_setup,
-        extension_status
+        extension_status,
+        themes_dir,
+        themes_list,
+        theme_install,
+        theme_uninstall
     ])
         .run(tauri::generate_context!())
         .expect("error while running Velox");

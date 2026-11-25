@@ -246,3 +246,31 @@ HONEST LIMITS: no real-Windows machine available → installer run/install, cons
 ## Recovery after sandbox reset (checked once, then ask the user)
 
 Not in Git: `.secrets/github-token`, **`.secrets/velox-updater.key` (+ `.pub`)**, `.cargo/`, `.rustup/`, `.xwin-cache/`, `/tmp/*` (llvm debs, nsisx makensis, installer staging, e2e servers, `/tmp/msv` verify crate). Rebuild per `scripts/TOOLCHAIN-SETUP.md` (+ `rustup target add x86_64-pc-windows-msvc` + `cargo install cargo-xwin --version 0.23.1 --locked` + clang-19 debs + nsis 3.13 debs + `npm i -g @tauri-apps/cli`). After `rm -rf download-engine/target` the suite needs a ~10 min rebuild. The updater key is the single most critical secret — losing it means shipping a NEW pubkey with the next release and updating `tauri.conf.json`.
+
+
+## 0.7.0 turn (2026-11-25, session 2) — themes + YouTube formats + Linux, released
+
+- **Themes**: themes.js (4 built-ins, WCAG 2.1 AA checker, JSON third-party themes
+  with sanitizer + base inheritance), app.css [data-theme] blocks (sync-tested),
+  theme-boot.js no-flash restore, Settings→Appearance picker with install/remove.
+- **YouTube format selection**: media.formats RPC (honest qualities from
+  yt-dlp -J), resolve_media_with (MP4 height cap + fps pref, MP3 audio path),
+  engine-media convert_mp3 (libmp3lame -q:a 0, LGPL-gated), Add dialog
+  format/quality picker wired to create cfg. media_height/media_fps/
+  media_format in DownloadConfig.
+- **Settings audit**: dead notifyStarted removed; theme/startImmediately/
+  mediaFormat/mediaQuality added (all functional).
+- **bin/ layout**: bundled tools in $INSTDIR\bin (both NSIS templates + CI
+  staging + bundled_tool_path discovery in main.rs, flat 0.6.x fallback kept).
+- **Linux**: linux-desktop CI job (ubuntu-22.04, webkit2gtk-4.1, xvfb startup
+  smoke test asserting the data dir is created), offline tar.gz (bundled tools
+  + install.sh, per-user ~/.local), online velox-setup-linux-online.sh (arch
+  detect, official tool sources), Linux browser detect + NM registration
+  (velox-host already supported), XDG paths (pre-existing cfg(unix) branches).
+- **0.7.0** in tauri.conf.json + app Cargo.toml + NSIS PRODUCT_VERSION;
+  THIRD_PARTY_NOTICES: yt-dlp (GPLv3+ binary) + FFmpeg LGPL-3.0 sections.
+- **Docs**: docs/THEMES.md (manifest spec + security model), docs/LINUX.md
+  (install/update/uninstall/troubleshooting).
+- Tests: 213 cargo workspace + 32 node --test green locally; clippy clean.
+- Known caveat: velox-app compiles only in CI (webkit2gtk) — main.rs unix
+  branches verified by the linux-desktop job build.
