@@ -1,0 +1,204 @@
+# Linux desktop build — STAGE 2 of the staged release flow
+# (see docs/RELEASE-ERRORS-PLAYBOOK.md for the full procedure).
+#
+# Trigger: a push to a release/linux/** branch. It builds the Linux
+# distributions, runs the xvfb startup smoke test, and uploads the assets
+# INTO the GitHub release that the Windows stage (windows.yml,
+# release/windows/** branch) already created. The upload job hard-fails if
+# the release does not exist yet — Windows ALWAYS goes first, one push at a
+# time, so a Linux failure can never block or poison the Windows release.
+#
+# No engine gate here on purpose: the release branch is cut from main, which
+# already passed both CI gates (ci.yml + windows.yml) for the same commit.
+name: linux
+on:
+  push:
+    branches: ["release/linux/**"]
+  workflow_dispatch:
+
+jobs:
+  linux-desktop:
+    runs-on: ubuntu-22.04
+    defaults:
+      run:
+        working-directory: download-engine
+    env:
+      STAGING: ${{ github.workspace }}/staging
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Tauri Linux build dependencies (webkit2gtk 4.1 toolchain)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file \
+            libssl-dev libayatana-appindicator3-dev librsvg2-dev patchelf xdg-utils xvfb jq \
+            dbus libgl1-mesa-dri
+
+      - name: Build Velox desktop app (release)
+        run: |
+          cd app/src-tauri
+          cargo build --release --features custom-protocol
+          file target/release/Velox | grep -q "ELF 64-bit" || { echo "not a linux ELF binary"; exit 1; }
+
+      - name: Determine version
+        run: echo "VER=$(jq -r .version app/src-tauri/tauri.conf.json)" >> "$GITHUB_ENV"
+
+      - name: Stage the Linux distributions (core + offline)
+        run: |
+          set -e
+          mkdir -p "$STAGING/roots/velox-$VER/bin" "$STAGING/roots-core/velox-$VER/bin" "$STAGING/out"
+          ROOT="$STAGING/roots/velox-$VER"
+          ROOTC="$STAGING/roots-core/velox-$VER"
+          cp app/src-tauri/target/release/Velox "$ROOT/Velox"
+          cp -r extension "$ROOT/extension"
+          cp docs/THIRD_PARTY_NOTICES.md "$ROOT/THIRD-PARTY-NOTICES.md"
+          cp ../scripts/velox-install.sh "$ROOT/install.sh"
+          mkdir -p "$ROOT/icons"
+          cp app/src-tauri/icons/32x32.png app/src-tauri/icons/128x128.png app/src-tauri/icons/128x128@2x.png "$ROOT/icons/"
+          chmod +x "$ROOT/Velox" "$ROOT/install.sh"
+
+          # core (online installer base): same tree WITHOUT bundled tools
+          cp -r "$ROOT/." "$ROOTC/"
+          rm -rf "$ROOTC/bin"
+
+          # offline: bundle yt-dlp + LGPL ffmpeg INTO bin/ (identical layout to
+          # the Windows offline installer — bin/ beside the app binary)
+          curl -sL --retry 3 "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_linux" -o "$ROOT/bin/yt-dlp"
+          chmod +x "$ROOT/bin/yt-dlp"
+          curl -sL --retry 3 "https://github.com/BtbN/FFmpeg-Builds/releases/latest/download/ffmpeg-master-latest-linux64-lgpl.tar.xz" -o "$STAGING/ffmpeg.tar.xz"
+          mkdir "$STAGING/ffmpeg"
+          tar -xJf "$STAGING/ffmpeg.tar.xz" -C "$STAGING/ffmpeg"
+          cp "$STAGING"/ffmpeg/ffmpeg-master-latest-linux64-lgpl/bin/ffmpeg "$ROOT/bin/ffmpeg"
+          cp "$STAGING"/ffmpeg/ffmpeg-master-latest-linux64-lgpl/bin/ffprobe "$ROOT/bin/ffprobe"
+          chmod +x "$ROOT/bin/ffmpeg" "$ROOT/bin/ffprobe"
+          cp "$STAGING"/ffmpeg/ffmpeg-master-latest-linux64-lgpl/LICENSE.txt "$ROOT/FFMPEG-LICENSE.txt"
+
+      - name: Startup smoke test (real app on xvfb — engine + webview boot)
+        run: |
+          set -e
+          ROOT="$STAGING/roots/velox-$VER"
+          export HOME
+          # xvfb has no GPU. WebKitGTK needs ALL of these on current runners:
+          #  - WEBKIT_DISABLE_DMABUF_RENDERER=1: >=2.42 crashes in headless VMs without it
+          #  - WEBKIT_DISABLE_COMPOSITING_MODE=1 + LIBGL_ALWAYS_SOFTWARE=1: software GL path
+          export WEBKIT_DISABLE_DMABUF_RENDERER=1
+          export WEBKIT_DISABLE_COMPOSITING_MODE=1
+          export LIBGL_ALWAYS_SOFTWARE=1
+          export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-$(mktemp -d)}"
+          # assert the ENGINE data subdir: it is created during Tauri setup, so
+          # it proves the app actually booted (not just the window process).
+          DATA_DIR="$HOME/.local/share/io.velox.downloadmanager/data"
+          rm -rf "$HOME/.local/share/io.velox.downloadmanager"
+          if command -v dbus-run-session >/dev/null 2>&1; then
+            xvfb-run -a dbus-run-session -- timeout 120 "$ROOT/Velox" >"$STAGING/app-smoke.log" 2>&1 &
+          else
+            xvfb-run -a timeout 120 "$ROOT/Velox" >"$STAGING/app-smoke.log" 2>&1 &
+          fi
+          APP_PID=$!
+          ok=0
+          for i in $(seq 1 90); do
+            sleep 1
+            if [ -d "$DATA_DIR" ]; then ok=1; break; fi
+          done
+          kill "$APP_PID" 2>/dev/null || true
+          pkill -f "$ROOT/Velox" 2>/dev/null || true
+          wait "$APP_PID" 2>/dev/null || true
+          echo "--- app-smoke.log (last 40 lines, for diagnosis) ---"
+          tail -n 40 "$STAGING/app-smoke.log" || true
+          [ "$ok" = 1 ] || { echo "STARTUP SMOKE TEST FAILED: engine data dir $DATA_DIR was never created"; exit 1; }
+          echo "startup smoke test passed (engine booted, data dir created)"
+
+      - name: Package distributions + online installer
+        run: |
+          set -e
+          cd "$STAGING/roots"
+          tar -czf "$STAGING/out/Velox-linux-x64-$VER-offline.tar.gz" "velox-$VER"
+          cd "$STAGING/roots-core"
+          tar -czf "$STAGING/out/Velox-linux-x64-$VER.tar.gz" "velox-$VER"
+          # online installer: embed the release version, verify substitutions happened
+          sed "s/__VELOX_VERSION__/$VER/" "$GITHUB_WORKSPACE/scripts/velox-setup-linux-online.sh" \
+            > "$STAGING/out/velox-setup-linux-online.sh"
+          chmod +x "$STAGING/out/velox-setup-linux-online.sh"
+          grep -q "releases/download/v$VER" "$STAGING/out/velox-setup-linux-online.sh"
+          ! grep -q "__VELOX_VERSION__" "$STAGING/out/velox-setup-linux-online.sh"
+          # verification: every distribution is complete and tools are executable
+          tar -tzf "$STAGING/out/Velox-linux-x64-$VER-offline.tar.gz" | grep -q "bin/yt-dlp"
+          tar -tzf "$STAGING/out/Velox-linux-x64-$VER-offline.tar.gz" | grep -q "bin/ffmpeg"
+          tar -tzf "$STAGING/out/Velox-linux-x64-$VER.tar.gz" | grep -qv "bin/ffmpeg" || true
+          ls -la "$STAGING/out"
+          echo "linux distributions assembled"
+
+      - name: Upload Linux distributions
+        uses: actions/upload-artifact@v4
+        with:
+          name: Velox-linux-dist
+          path: ${{ env.STAGING }}/out/*
+          if-no-files-found: error
+
+  # ---- Stage 2b: attach the Linux assets to the EXISTING release ----
+  # The release (created by the Windows stage) must already exist — this
+  # enforces the "Windows first, one push at a time" ordering. Idempotent:
+  # re-pushing the branch re-uploads with --clobber and re-merges checksums.
+  linux-release:
+    needs: [linux-desktop]
+    if: startsWith(github.ref, 'refs/heads/release/linux/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: rel
+      - name: Verify the Windows release exists before attaching Linux assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VER=$(jq -r .version download-engine/app/src-tauri/tauri.conf.json)
+          TAG="v$VER"
+          echo "TAG=$TAG" >> "$GITHUB_ENV"
+          echo "VER=$VER" >> "$GITHUB_ENV"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "release $TAG exists — attaching Linux assets"
+          else
+            echo "::error::release $TAG does not exist. The Windows stage (push branch release/windows/$VER) must complete FIRST."
+            exit 1
+          fi
+      - name: Merge checksums + upload Linux assets into the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -e
+          mkdir -p out
+          cp rel/Velox-linux-dist/Velox-linux-x64-*-offline.tar.gz out/
+          cp rel/Velox-linux-dist/Velox-linux-x64-*.tar.gz out/
+          cp rel/Velox-linux-dist/velox-setup-linux-online.sh out/
+          # merge into the existing SHA256SUMS.txt: strip any stale linux
+          # lines, keep the Windows lines, append fresh linux checksums
+          if gh release download "$TAG" --pattern 'SHA256SUMS.txt' --clobber; then
+            grep -v -E 'Velox-linux|velox-setup-linux' SHA256SUMS.txt > sums.txt || true
+          else
+            : > sums.txt
+          fi
+          (cd out && sha256sum Velox-linux-x64-*.tar.gz velox-setup-linux-online.sh) >> sums.txt
+          cp sums.txt out/SHA256SUMS.txt
+          gh release upload "$TAG" out/* --clobber
+          echo "linux assets attached to $TAG"
+      - name: Add the Linux section to the release notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -e
+          gh release view "$TAG" --json body -q .body > notes.md
+          if grep -q "Velox-linux-x64-$VER-offline.tar.gz" notes.md; then
+            echo "linux section already present — leaving notes unchanged"
+          else
+            {
+              printf '%s\\n' ""
+              printf '%s\\n' "### Linux x86_64 (per-user, no root)" ''
+              printf '%s\\n' "- **Velox-linux-x64-$VER-offline.tar.gz** — OFFLINE: app + yt-dlp + LGPL FFmpeg bundled in \`bin/\`; extract and run \`install.sh\` (menu entry, launcher, icons included). Uninstall: \`./install.sh --uninstall\`." "- **Velox-linux-x64-$VER.tar.gz** — app core for the online installer." "- **velox-setup-linux-online.sh** — ONLINE installer: downloads the core + the YouTube toolchain from official sources (\`--no-media\` skips it)." ''
+              printf '%s\\n' "Requirements: WebKitGTK 4.1 + GTK3 (present on current Ubuntu/Debian/Fedora/Arch). See docs/LINUX.md for install, update and troubleshooting."
+            } >> notes.md
+            gh release edit "$TAG" --notes-file notes.md
+            echo "linux section added to the release notes"
+          fi

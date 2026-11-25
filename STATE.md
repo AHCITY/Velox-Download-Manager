@@ -1,6 +1,6 @@
 # STATE.md — Velox Download Manager mission state
 
-Last updated: 2026-11-25 — **UX/RELIABILITY + ONLINE INSTALLER TURN**: extension install fixed at the packaging root cause, unified installer restored as THE release, UI refined, updater-at-launch polished. Keep current; commit before ending every turn.
+Last updated: 2026-11-26 — **STAGED RELEASE TURN (session 3)**: v0.7.0 tag run had failed 4x (runs #69/#71/#73/#75) — pipeline split into windows-first/linux-second, release errors playbook written, both stages driven by release/* branch pushes. Keep current; commit before ending every turn.
 
 ## Where things are
 
@@ -274,3 +274,43 @@ Not in Git: `.secrets/github-token`, **`.secrets/velox-updater.key` (+ `.pub`)**
 - Tests: 213 cargo workspace + 32 node --test green locally; clippy clean.
 - Known caveat: velox-app compiles only in CI (webkit2gtk) — main.rs unix
   branches verified by the linux-desktop job build.
+
+## 0.7.0 STAGED RELEASE turn (2026-11-25/26, session 3) — split pipeline + playbook
+
+- **Diagnosis of the failed v0.7.0 tag attempts**: 4 tag runs failed
+  (windows #69 766712e, #71 913c906, #73 b7d9e78, #75 7373ea4) while the
+  SAME commits ran green on main — the failures were all in the tag-only
+  jobs. #71 = stale app Cargo.lock (E-10, fixed by 913c906), #73 = velox-app
+  deps trapped in the cfg(windows) table (E-2, fixed by b7d9e78), #75 =
+  not yet log-confirmed at session start (API rate-limited); the xvfb smoke
+  test is the prime suspect (E-3 — WEBKIT_DISABLE_DMABUF_RENDERER=1 was
+  missing for WebKitGTK >= 2.42 headless; now applied in linux.yml).
+- **docs/RELEASE-ERRORS-PLAYBOOK.md (NEW)**: the recurring-error catalogue
+  (E-1..E-16) + staged procedure + time budget + checklists. READ IT FIRST
+  before any release work.
+- **Pipeline split (one push at a time, user directive)**:
+  - windows.yml: `on.push.branches: [main, "release/windows/**"]`, NO tag
+    trigger anymore. desktop/desktop-online run on the release branch;
+    `release` job needs ONLY [desktop], derives TAG=v<tauri.conf version>,
+    creates the release idempotently (create || upload --clobber, --target
+    GITHUB_SHA), ships Windows assets + latest.json + Windows-only
+    SHA256SUMS, notes announce that Linux follows.
+  - linux.yml (NEW): `on.push.branches: ["release/linux/**"]`. linux-desktop
+    build (smoke test hardened: DMABUF env var, dbus-run-session wrap,
+    XDG_RUNTIME_DIR fallback, asserts the engine `data` subdir, dumps the
+    app log on failure, apt +dbus +libgl1-mesa-dri) + linux-release job
+    that hard-fails unless the Windows release exists, merges SHA256SUMS
+    (strips stale linux lines, appends fresh), uploads with --clobber and
+    appends the Linux notes section idempotently.
+  - Tag v0.7.0 itself already exists at 7373ea4 (from the failed attempts);
+    the release attaches to it. NEVER move it (E-14). The release branches
+    sit on main HEAD (one CI/docs commit ahead of the tag) — product code
+    identical; cosmetic mismatch documented in the playbook.
+- **Release execution**: Push 1 = branch `release/windows/v0.7.0` from main
+  (engine gate -> desktop -> release, ~25-35 min). Push 2 = branch
+  `release/linux/v0.7.0` from main ONLY after the Windows release is green
+  (build ~15-20 min + upload ~2 min). A scheduled task automates Push 2
+  with verification + playbook-driven fallback.
+- CI diagnosis trick that worked without an Actions API tool: scrape
+  https://github.com/<repo>/actions HTML for run ids (rate-limited API was
+  exhausted; it resets hourly).

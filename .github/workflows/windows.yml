@@ -1,11 +1,16 @@
 # Windows compatibility gate — verifies the COMPLETE workspace on a real Windows runner,
 # and builds the desktop application + NSIS installer as a separate, gated job.
 # NO Windows-support claim may be made before these run green on a push/PR.
+#
+# STAGED RELEASES (see docs/RELEASE-ERRORS-PLAYBOOK.md): a push to a
+# release/windows/** branch builds AND PUBLISHES the Windows release.
+# The tag v<version> is created by the release job itself. Linux is built
+# separately in linux.yml (release/linux/** branches) and uploaded into the
+# SAME release afterwards — one push at a time, independent failure domains.
 name: windows
 on:
   push:
-    branches: [main]
-    tags: ["v*"]
+    branches: [main, "release/windows/**"]
   pull_request:
   workflow_dispatch:
 
@@ -83,14 +88,15 @@ jobs:
           cargo test -p engine-cli --test crash_resume -- --test-threads=1
 
   # ---- Job 2: desktop application + UNIFIED installer ----
-  # Manual dispatch for development builds; every v* tag builds the RELEASE
-  # artifacts. The unified NSIS template (scripts/installer-unified-template.nsi)
-  # installs EVERYTHING — Velox.exe, browser extension, velox-browser-host.exe,
-  # yt-dlp, LGPL ffmpeg/ffprobe, WebView2 fallback, licenses — one complete
-  # installer, which is also the signed auto-updater payload.
+  # Manual dispatch for development builds; every release/windows/** branch push
+  # builds the RELEASE artifacts. The unified NSIS template
+  # (scripts/installer-unified-template.nsi) installs EVERYTHING — Velox.exe,
+  # browser extension, velox-browser-host.exe, yt-dlp, LGPL ffmpeg/ffprobe,
+  # WebView2 fallback, licenses — one complete installer, which is also the
+  # signed auto-updater payload.
   desktop:
     needs: windows
-    if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
+    if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/heads/release/windows/')
     runs-on: windows-latest
     defaults:
       run:
@@ -238,7 +244,7 @@ jobs:
   # unified installer so both distributions stay in lockstep.
   desktop-online:
     needs: windows
-    if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
+    if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/heads/release/windows/')
     runs-on: windows-latest
     defaults:
       run:
@@ -337,117 +343,14 @@ jobs:
           path: download-engine/Velox-Setup-x64-Online.exe
           if-no-files-found: error
 
-  # ---- Job 3: publish the signed release (v* tags only) ----
-  # The release page stays CLEAN: one obvious installer download (the unified
-  # setup) plus exactly what the signed auto-updater requires — latest.json
-  # (tag-pinned URL), the minisign .sig and SHA256SUMS.txt. Nothing else.
-  linux-desktop:
-    needs: windows
-    if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
-    runs-on: ubuntu-22.04
-    defaults:
-      run:
-        working-directory: download-engine
-    env:
-      STAGING: ${{ github.workspace }}/staging
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install Tauri Linux build dependencies (webkit2gtk 4.1 toolchain)
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file \
-            libssl-dev libayatana-appindicator3-dev librsvg2-dev patchelf xdg-utils xvfb jq
-
-      - name: Build Velox desktop app (release)
-        run: |
-          cd app/src-tauri
-          cargo build --release --features custom-protocol
-          file target/release/Velox | grep -q "ELF 64-bit" || { echo "not a linux ELF binary"; exit 1; }
-
-      - name: Determine version
-        run: echo "VER=$(jq -r .version app/src-tauri/tauri.conf.json)" >> "$GITHUB_ENV"
-
-      - name: Stage the Linux distributions (core + offline)
-        run: |
-          set -e
-          mkdir -p "$STAGING/roots/velox-$VER/bin" "$STAGING/roots-core/velox-$VER/bin" "$STAGING/out"
-          ROOT="$STAGING/roots/velox-$VER"
-          ROOTC="$STAGING/roots-core/velox-$VER"
-          cp app/src-tauri/target/release/Velox "$ROOT/Velox"
-          cp -r extension "$ROOT/extension"
-          cp docs/THIRD_PARTY_NOTICES.md "$ROOT/THIRD-PARTY-NOTICES.md"
-          cp ../scripts/velox-install.sh "$ROOT/install.sh"
-          mkdir -p "$ROOT/icons"
-          cp app/src-tauri/icons/32x32.png app/src-tauri/icons/128x128.png app/src-tauri/icons/128x128@2x.png "$ROOT/icons/"
-          chmod +x "$ROOT/Velox" "$ROOT/install.sh"
-
-          # core (online installer base): same tree WITHOUT bundled tools
-          cp -r "$ROOT/." "$ROOTC/"
-          rm -rf "$ROOTC/bin"
-
-          # offline: bundle yt-dlp + LGPL ffmpeg INTO bin/ (identical layout to
-          # the Windows offline installer — bin/ beside the app binary)
-          curl -sL --retry 3 "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_linux" -o "$ROOT/bin/yt-dlp"
-          chmod +x "$ROOT/bin/yt-dlp"
-          curl -sL --retry 3 "https://github.com/BtbN/FFmpeg-Builds/releases/latest/download/ffmpeg-master-latest-linux64-lgpl.tar.xz" -o "$STAGING/ffmpeg.tar.xz"
-          mkdir "$STAGING/ffmpeg"
-          tar -xJf "$STAGING/ffmpeg.tar.xz" -C "$STAGING/ffmpeg"
-          cp "$STAGING"/ffmpeg/ffmpeg-master-latest-linux64-lgpl/bin/ffmpeg "$ROOT/bin/ffmpeg"
-          cp "$STAGING"/ffmpeg/ffmpeg-master-latest-linux64-lgpl/bin/ffprobe "$ROOT/bin/ffprobe"
-          chmod +x "$ROOT/bin/ffmpeg" "$ROOT/bin/ffprobe"
-          cp "$STAGING/ffmpeg/ffmpeg-master-latest-linux64-lgpl/LICENSE.txt" "$ROOT/FFMPEG-LICENSE.txt"
-
-      - name: Startup smoke test (real app on xvfb — engine + webview boot)
-        run: |
-          set -e
-          ROOT="$STAGING/roots/velox-$VER"
-          export HOME
-          # xvfb has no GPU: WebKitGTK needs software rendering or it stalls
-          export WEBKIT_DISABLE_COMPOSITING_MODE=1 LIBGL_ALWAYS_SOFTWARE=1
-          xvfb-run -a timeout 90 "$ROOT/Velox" &
-          APP_PID=$!
-          ok=0
-          for i in $(seq 1 60); do
-            sleep 1
-            # the engine creates its data dir on boot — proof of a working start
-            if [ -d "$HOME/.local/share/io.velox.downloadmanager" ]; then ok=1; break; fi
-          done
-          kill $APP_PID 2>/dev/null || true
-          wait $APP_PID 2>/dev/null || true
-          [ "$ok" = 1 ] || { echo "STARTUP SMOKE TEST FAILED: app data dir was never created"; exit 1; }
-          echo "startup smoke test passed (engine booted, data dir created)"
-
-      - name: Package distributions + online installer
-        run: |
-          set -e
-          cd "$STAGING/roots"
-          tar -czf "$STAGING/out/Velox-linux-x64-$VER-offline.tar.gz" "velox-$VER"
-          cd "$STAGING/roots-core"
-          tar -czf "$STAGING/out/Velox-linux-x64-$VER.tar.gz" "velox-$VER"
-          # online installer: embed the release version, verify substitutions happened
-          sed "s/__VELOX_VERSION__/$VER/" "$GITHUB_WORKSPACE/scripts/velox-setup-linux-online.sh" \
-            > "$STAGING/out/velox-setup-linux-online.sh"
-          chmod +x "$STAGING/out/velox-setup-linux-online.sh"
-          grep -q "releases/download/v$VER" "$STAGING/out/velox-setup-linux-online.sh"
-          ! grep -q "__VELOX_VERSION__" "$STAGING/out/velox-setup-linux-online.sh"
-          # verification: every distribution is complete and tools are executable
-          tar -tzf "$STAGING/out/Velox-linux-x64-$VER-offline.tar.gz" | grep -q "bin/yt-dlp"
-          tar -tzf "$STAGING/out/Velox-linux-x64-$VER-offline.tar.gz" | grep -q "bin/ffmpeg"
-          tar -tzf "$STAGING/out/Velox-linux-x64-$VER.tar.gz" | grep -qv "bin/ffmpeg" || true
-          ls -la "$STAGING/out"
-          echo "linux distributions assembled"
-
-      - name: Upload Linux distributions
-        uses: actions/upload-artifact@v4
-        with:
-          name: Velox-linux-dist
-          path: ${{ env.STAGING }}/out/*
-          if-no-files-found: error
-
+  # ---- Job 3: publish the signed Windows release ----
+  # Runs ONLY on release/windows/** branch pushes. Creates the v<version> tag
+  # and the GitHub release (idempotent: re-push re-uploads with --clobber).
+  # Linux distributions are built by linux.yml afterwards and uploaded INTO
+  # this same release — the platforms must not block each other.
   release:
-    needs: [desktop, linux-desktop]
-    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [desktop]
+    if: startsWith(github.ref, 'refs/heads/release/windows/')
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -458,33 +361,39 @@ jobs:
           path: rel
       - name: Assemble release assets (latest.json + checksums)
         run: |
-          VER="${GITHUB_REF_NAME#v}"
+          VER=$(jq -r .version download-engine/app/src-tauri/tauri.conf.json)
+          TAG="v$VER"
+          echo "TAG=$TAG" >> "$GITHUB_ENV"
+          echo "VER=$VER" >> "$GITHUB_ENV"
           mkdir -p out
           cp rel/Velox-Setup-x64-unified/Velox-Setup-x64-unified.exe out/
           cp rel/Velox-Setup-x64-unified.sig/Velox-Setup-x64-unified.exe.sig out/
-          cp rel/Velox-linux-dist/Velox-linux-x64-*-offline.tar.gz rel/Velox-linux-dist/Velox-linux-x64-*.tar.gz rel/Velox-linux-dist/velox-setup-linux-online.sh out/
           SIG=$(cat out/Velox-Setup-x64-unified.exe.sig)
-          URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}/Velox-Setup-x64-unified.exe"
+          URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/Velox-Setup-x64-unified.exe"
           PUB_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)
           jq -n --arg v "$VER" --arg s "$SIG" --arg u "$URL" --arg d "$PUB_DATE" \
             '{version:$v, notes:("Velox "+$v+" — see the release notes for changes."), pub_date:$d, platforms:{"windows-x86_64":{signature:$s, url:$u}}}' \
             > out/latest.json
-          (cd out && sha256sum Velox-Setup-x64-unified.exe Velox-Setup-x64-unified.exe.sig latest.json Velox-linux-x64-*.tar.gz velox-setup-linux-online.sh > SHA256SUMS.txt)
+          (cd out && sha256sum Velox-Setup-x64-unified.exe Velox-Setup-x64-unified.exe.sig latest.json > SHA256SUMS.txt)
           cat out/latest.json
-      - name: Publish the GitHub release
+      - name: Publish the GitHub release (Windows assets)
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          VER="${GITHUB_REF_NAME#v}"
           {
             printf '%s\n' "**Velox $VER** — themes, YouTube format selection, Linux support." ''
             printf '%s\n' "### Windows" ''
             printf '%s\n' "- **Velox-Setup-x64-unified.exe** — offline installer: app, browser extension + native messaging host, yt-dlp, LGPL ffmpeg/ffprobe (in \`bin/\`), WebView2 fallback. The in-app updater serves this file automatically." "- **latest.json** + signature — updater metadata (windows-x86_64)." ''
-            printf '%s\n' "### Linux x86_64 (per-user, no root)" ''
-            printf '%s\n' "- **Velox-linux-x64-$VER-offline.tar.gz** — OFFLINE: app + yt-dlp + LGPL FFmpeg bundled in \`bin/\`; extract and run \`install.sh\` (menu entry, launcher, icons included). Uninstall: \`./install.sh --uninstall\`." "- **Velox-linux-x64-$VER.tar.gz** — app core for the online installer." "- **velox-setup-linux-online.sh** — ONLINE installer: downloads the core + the YouTube toolchain from official sources (\`--no-media\` skips it)." ''
-            printf '%s\n' "Requirements: WebKitGTK 4.1 + GTK3 (present on current Ubuntu/Debian/Fedora/Arch). See docs/LINUX.md for install, update and troubleshooting." ''
-            printf '%s\n' "SHA256SUMS.txt covers every artifact. Downloads and settings live in the user profile on both platforms and are never touched by updates or uninstall."
+            printf '%s\n' "SHA256SUMS.txt covers every artifact (Linux entries are appended when the Linux build lands, shortly after this one)." ''
+            printf '%s\n' "### Linux x86_64" ''
+            printf '%s\n' "Linux distributions are published separately right after this Windows release — the \`Velox-linux-x64-*\` assets will appear on this page automatically. See docs/LINUX.md in the repository meanwhile."
           } > release-notes.md
-          gh release create "$GITHUB_REF_NAME" out/* \
-            --title "Velox $VER" \
-            --notes-file release-notes.md
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "release $TAG already exists — refreshing assets (idempotent retry)"
+            gh release upload "$TAG" out/* --clobber
+          else
+            gh release create "$TAG" out/* \
+              --target "$GITHUB_SHA" \
+              --title "Velox $VER" \
+              --notes-file release-notes.md
+          fi
