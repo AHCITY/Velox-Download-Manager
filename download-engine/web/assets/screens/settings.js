@@ -285,16 +285,12 @@ function themeRow() {
 
   row.querySelector('#seThemeInstall').onclick = async () => {
     // desktop: native file open via the dialog plugin; browser preview: paste
-    if (window.__TAURI__?.dialog?.open) {
-      const picked = await window.__TAURI__.dialog.open({
-        filters: [{ name: 'Velox theme', extensions: ['json'] }],
-      });
-      if (!picked) return;
+    if (window.__TAURI__?.core?.invoke) {
       try {
-        if (typeof picked !== 'string') throw new Error('The file picker did not return a single file path.');
-        // Tauri's dialog plugin returns a native path. Read it through the
-        // narrow theme-only command; local filesystem paths are not fetch URLs.
-        const txt = await window.__TAURI__.core.invoke('theme_read_file', { path: picked });
+        // The native picker and file read stay inside Rust. The renderer never
+        // passes an arbitrary local path into a filesystem-reading command.
+        const txt = await window.__TAURI__.core.invoke('theme_pick_file');
+        if (txt == null) return;
         await installThemeJson(txt, errBox, paint);
       } catch (e) {
         errBox.textContent = `Could not read the theme file: ${e}`;

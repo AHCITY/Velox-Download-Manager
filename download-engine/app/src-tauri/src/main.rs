@@ -224,26 +224,23 @@ fn valid_theme_id(id: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Read a selected JSON theme file through a narrow, size-limited command.
-/// Tauri's dialog plugin returns a native path; it is not a fetchable URL.
-#[tauri::command]
-fn theme_read_file(path: String) -> Result<String, String> {
-    let selected = PathBuf::from(&path);
-    if !selected.is_file() {
+/// Validate and read a theme manifest from a path selected by the native picker.
+fn read_theme_file(path: &std::path::Path) -> Result<String, String> {
+    if !path.is_file() {
         return Err("selected theme file does not exist or is not a file".into());
     }
-    if !selected
+    if !path
         .extension()
         .and_then(|e| e.to_str())
         .is_some_and(|e| e.eq_ignore_ascii_case("json"))
     {
         return Err("theme file must use the .json extension".into());
     }
-    let metadata = std::fs::metadata(&selected).map_err(|e| format!("cannot inspect theme file: {e}"))?;
+    let metadata = std::fs::metadata(path).map_err(|e| format!("cannot inspect theme file: {e}"))?;
     if metadata.len() > THEMES_MAX_BYTES as u64 {
         return Err("theme file too large (100 KB limit)".into());
     }
-    let json = std::fs::read_to_string(&selected)
+    let json = std::fs::read_to_string(path)
         .map_err(|e| format!("cannot read theme file as UTF-8 text: {e}"))?;
     let value: serde_json::Value =
         serde_json::from_str(&json).map_err(|e| format!("not valid JSON: {e}"))?;
@@ -255,6 +252,26 @@ fn theme_read_file(path: String) -> Result<String, String> {
         return Err("JSON is not a Velox theme manifest (expected id, name and colors object)".into());
     }
     Ok(json)
+}
+
+/// Open the native file picker and read the selected theme inside Rust.
+/// The renderer never supplies an arbitrary filesystem path to this command.
+#[tauri::command]
+async fn theme_pick_file(app: AppHandle) -> Result<Option<String>, String> {
+    use tauri_plugin_dialog::DialogExt;
+    let picked = tauri::async_runtime::spawn_blocking(move || {
+        app.dialog()
+            .file()
+            .add_filter("Velox theme", &["json"])
+            .blocking_pick_file()
+    })
+    .await
+    .map_err(|e| format!("theme file picker failed: {e}"))?;
+    let Some(picked) = picked else { return Ok(None) };
+    let path = picked
+        .into_path()
+        .map_err(|e| format!("cannot resolve selected theme file: {e}"))?;
+    read_theme_file(&path).map(Some)
 }
 
 /// Install (persist) a third-party theme manifest from its JSON text.
@@ -1225,7 +1242,7 @@ fn main() {
         extension_status,
         themes_dir,
         themes_list,
-        theme_read_file,
+        theme_pick_file,
         theme_install,
         theme_uninstall
     ])
@@ -1237,6 +1254,35 @@ fn main() {
 mod tests {
     use super::{edge_exe_candidates, validate_host_manifest, HOST_REG_BROWSERS};
     use engine_core::extension::EXTENSION_ID;
+
+
+    #[test]
+    fn theme_file_reader_accepts_valid_manifest_and_rejects_wrong_file_types() {
+        let dir = std::env::temp_dir().join(format!("velox-theme-reader-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("create test dir");
+        let json_path = dir.join("sample.json");
+        std::fs::write(
+            &json_path,
+            r#"{"id":"sample","name":"Sample","colors":{}}"#,
+        )
+        .expect("write theme");
+        assert!(read_theme_file(&json_path).is_ok());
+        let txt_path = dir.join("sample.txt");
+        std::fs::write(&txt_path, r#"{"id":"sample","name":"Sample","colors":{}}"#)
+            .expect("write wrong extension");
+        assert!(read_theme_file(&txt_path).unwrap_err().contains(".json"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn theme_file_reader_rejects_oversized_manifests() {
+        let dir = std::env::temp_dir().join(format!("velox-theme-size-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("create test dir");
+        let path = dir.join("large.json");
+        std::fs::write(&path, vec![b' '; THEMES_MAX_BYTES + 1]).expect("write large file");
+        assert!(read_theme_file(&path).unwrap_err().contains("100 KB limit"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
 
     /// A manifest pointing at a REAL file (path existence is part of the check).
     fn valid_manifest() -> (String, std::path::PathBuf) {
