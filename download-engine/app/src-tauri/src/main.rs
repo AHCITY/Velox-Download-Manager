@@ -1252,7 +1252,7 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
-    use super::{edge_exe_candidates, validate_host_manifest, HOST_REG_BROWSERS};
+    use super::{edge_exe_candidates, validate_host_manifest, HOST_REG_BROWSERS, read_theme_file, THEMES_MAX_BYTES};
     use engine_core::extension::EXTENSION_ID;
 
 
