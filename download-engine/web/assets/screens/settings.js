@@ -291,8 +291,10 @@ function themeRow() {
       });
       if (!picked) return;
       try {
-        const txt = await window.__TAURI__.fs?.readTextFile?.(picked)
-          ?? await (await fetch(picked)).text();
+        if (typeof picked !== 'string') throw new Error('The file picker did not return a single file path.');
+        // Tauri's dialog plugin returns a native path. Read it through the
+        // narrow theme-only command; local filesystem paths are not fetch URLs.
+        const txt = await window.__TAURI__.core.invoke('theme_read_file', { path: picked });
         await installThemeJson(txt, errBox, paint);
       } catch (e) {
         errBox.textContent = `Could not read the theme file: ${e}`;
@@ -313,11 +315,11 @@ async function installThemeJson(txt, errBox, repaint) {
   try { manifest = JSON.parse(txt); } catch { errBox.textContent = 'Not valid JSON.'; return; }
   const res = sanitizeTheme(manifest);
   if (!res.ok) { errBox.textContent = 'Theme rejected: ' + res.errors.slice(0, 3).join('; '); return; }
-  try {
-    if (window.__TAURI__?.core?.invoke) {
-      await window.__TAURI__.core.invoke('theme_install', { json: txt });
-    }
-  } catch { /* browser preview: registry-only */ }
+  if (window.__TAURI__?.core?.invoke) {
+    // In the desktop app, persistence must succeed before the theme is
+    // registered or selected; never report a theme as installed on failure.
+    await window.__TAURI__.core.invoke('theme_install', { json: txt });
+  }
   registerCustomTheme(res.theme);
   if (applyTheme(res.theme.id)) {
     setPrefs({ theme: res.theme.id });

@@ -218,10 +218,43 @@ fn valid_theme_id(id: &str) -> Result<(), String> {
     if !id.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
         return Err("theme id allows letters, digits, '_' and '-' only".into());
     }
-    if matches!(id, "dark" | "light" | "purple" | "blue") {
+    if matches!(id, "dark" | "light" | "purple" | "blue" | "soft-canopy") {
         return Err("this id collides with a built-in theme".into());
     }
     Ok(())
+}
+
+/// Read a selected JSON theme file through a narrow, size-limited command.
+/// Tauri's dialog plugin returns a native path; it is not a fetchable URL.
+#[tauri::command]
+fn theme_read_file(path: String) -> Result<String, String> {
+    let selected = PathBuf::from(&path);
+    if !selected.is_file() {
+        return Err("selected theme file does not exist or is not a file".into());
+    }
+    if !selected
+        .extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| e.eq_ignore_ascii_case("json"))
+    {
+        return Err("theme file must use the .json extension".into());
+    }
+    let metadata = std::fs::metadata(&selected).map_err(|e| format!("cannot inspect theme file: {e}"))?;
+    if metadata.len() > THEMES_MAX_BYTES as u64 {
+        return Err("theme file too large (100 KB limit)".into());
+    }
+    let json = std::fs::read_to_string(&selected)
+        .map_err(|e| format!("cannot read theme file as UTF-8 text: {e}"))?;
+    let value: serde_json::Value =
+        serde_json::from_str(&json).map_err(|e| format!("not valid JSON: {e}"))?;
+    if !value.is_object()
+        || value.get("id").and_then(|v| v.as_str()).is_none()
+        || value.get("name").and_then(|v| v.as_str()).is_none()
+        || !value.get("colors").is_some_and(serde_json::Value::is_object)
+    {
+        return Err("JSON is not a Velox theme manifest (expected id, name and colors object)".into());
+    }
+    Ok(json)
 }
 
 /// Install (persist) a third-party theme manifest from its JSON text.
@@ -1192,6 +1225,7 @@ fn main() {
         extension_status,
         themes_dir,
         themes_list,
+        theme_read_file,
         theme_install,
         theme_uninstall
     ])
