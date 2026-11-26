@@ -7,7 +7,7 @@
     const c = JSON.parse(localStorage.getItem('velox.theme.cache') || 'null');
     const root = document.documentElement;
     if (c && typeof c.id === 'string' && /^[\w-]{1,32}$/.test(c.id)
-        && ['dark', 'light', 'purple', 'blue'].includes(c.id)) {
+        && ['dark', 'light', 'purple', 'blue', 'soft-canopy'].includes(c.id)) {
       root.dataset.theme = c.id;
       root.style.colorScheme = c.id === 'light' ? 'light' : 'dark';
     }

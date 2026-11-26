@@ -1,7 +1,7 @@
 # Velox Themes
 
-Velox ships four built-in themes — **Dark** (default), **Light**, **Purple** and
-**Blue** — and supports **user-installed third-party themes**.
+Velox ships five built-in themes — **Dark** (default), **Light**, **Purple**,
+**Blue** and **Soft Canopy** — and supports **user-installed third-party themes**.
 
 ## How it works
 
