@@ -1,6 +1,6 @@
 # STATE.md — Velox Download Manager mission state
 
-Last updated: 2026-11-26 — **STAGED RELEASE TURN (session 3)**: v0.7.0 tag run had failed 4x (runs #69/#71/#73/#75) — pipeline split into windows-first/linux-second, release errors playbook written, both stages driven by release/* branch pushes. Keep current; commit before ending every turn.
+Last updated: 2026-11-26 — **RELEASE-PAGE CLEANUP (session 4)**: v0.7.0 page restructured per user feedback — numbered/sequenced downloads (1-4 + metadata), unified renamed to Velox Setup (Offline), the CI-built online installer finally published (release job had skipped it), formal notes template (scripts/release-notes.sh) shared by all three stages, docs/LINUX.md created (release linked to a non-existent file). release-page.yml self-heals the page on every main push. Keep current; commit before ending every turn.
 
 ## Where things are
 
@@ -340,3 +340,65 @@ Not in Git: `.secrets/github-token`, **`.secrets/velox-updater.key` (+ `.pub`)**
   exhausted; it resets hourly). With a token: jobs + logs come straight
   from the API (`/actions/runs/<id>/jobs`, `/actions/jobs/<id>/logs` via
   curl -L — urllib leaks the Authorization header on the blob redirect).
+
+## 0.7.0 release-page cleanup turn (2026-11-26, session 4) — sequenced downloads + Velox Setup naming
+
+User feedback on the published v0.7.0 page: downloads not sequenced, only the
+offline (unified) installer for Windows, wrong naming ("unified" vs "(Offline)",
+"Online" vs "Velox Setup"), notes too messy/over-detailed. Changes:
+
+- **Download policy** (numbered names make GitHub's alphabetical asset listing
+  show downloads in order, then metadata; display labels carry the numbers):
+  1-Velox-Setup-x64.exe (label "1. Velox Setup") — online installer,
+  2-Velox-Setup-x64-Offline.exe (label "2. Velox Setup (Offline)") — offline +
+  updater payload, 3-Velox-linux-x64-<ver>-offline.tar.gz, 4-velox-setup-linux-online.sh,
+  then latest.json / SHA256SUMS.txt / .sig / core tar.gz unnumbered.
+- **New CI: release-page.yml + scripts/fix-release-page.sh** — self-healing page
+  conformance on every main push (idempotent early-exit): renames+labels assets,
+  fetches the Velox-Setup-x64-Online artifact from the release run and uploads it
+  as 1-Velox-Setup-x64.exe, retargets latest.json at the renamed payload WITHOUT
+  re-signing (signature covers payload bytes; a rename changes none), regenerates
+  SHA256SUMS.txt and VERIFIES it against freshly downloaded assets (E-19
+  discipline), rewrites the notes.
+- **scripts/release-notes.sh** — single source of truth for the formal page text;
+  windows.yml, linux.yml and release-page.yml all write the SAME body.
+- **windows.yml**: desktop job builds Velox-Setup-x64-Offline.exe (+sig), release
+  job needs [desktop, desktop-online] and publishes BOTH installers numbered.
+- **linux.yml**: emits 3-/4- numbered names; core tarball name UNCHANGED
+  (velox-setup-linux-online.sh embeds its URL — renaming would break the online
+  installer); notes step rewrites with the shared template.
+- **docs/LINUX.md created** — the release notes linked to it but the file did not
+  exist on origin (dead link). Real paths/flags taken from velox-install.sh +
+  velox-setup-linux-online.sh.
+- README install section: both Windows installers + Linux distributions; roadmap
+  updated (online/offline variants shipped).
+
+## v0.7.0 release-page cleanup — EXECUTED (2026-11-26)
+
+The download policy above is now LIVE on the published v0.7.0 page, verified
+end-to-end against the real release:
+
+- Assets renamed + labelled: `1-Velox-Setup-x64.exe` (label "1. Velox Setup"),
+  `2-Velox-Setup-x64-Offline.exe` ("2. Velox Setup (Offline)"),
+  `3-Velox-linux-x64-0.7.0-offline.tar.gz` ("3. Velox 0.7.0 for Linux
+  (Offline)"), `4-velox-setup-linux-online.sh` ("4. Velox Online Installer for
+  Linux"); metadata (latest.json / SHA256SUMS.txt / .sig / core tar.gz)
+  unnumbered and rendered after the downloads.
+- The Windows ONLINE installer (7.8 MB) is attached, sourced from CI artifact
+  `Velox-Setup-x64-Online` of the official release/windows/v0.7.0 run
+  (45663549916) — same provenance as the shipped offline installer.
+- latest.json retargeted at `2-Velox-Setup-x64-Offline.exe` WITHOUT re-signing
+  (signature covers payload bytes; renames change none). Updater URL verified
+  resolving (HTTP 200).
+- SHA256SUMS.txt regenerated from freshly downloaded bytes and verified:
+  all 7 checksums OK.
+- Release notes replaced with the formal shared template
+  (scripts/release-notes.sh) — no babysitting text.
+- New pitfalls recorded as playbook E-21 (GitHub strips spaces/parens from
+  asset names), E-22 (page order is alphabetical; sequence via numbered
+  names; labels render as display text), E-23 (rename → retarget
+  latest.json + regenerate sums + rename .sig), E-24 (authenticate all API
+  calls).
+- All repo-side changes (workflows, release-page.yml guard, notes template,
+  fix-release-page.sh, docs/LINUX.md, README) committed to main so the NEXT
+  release produces conforming pages natively.

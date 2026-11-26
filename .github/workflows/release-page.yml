@@ -1,0 +1,29 @@
+# Release-page conformance — brings the PUBLISHED release for the version in
+# tauri.conf.json to the download policy (numbered, sequenced downloads,
+# Velox Setup naming, the online installer attached, formal notes).
+#
+# Safe to run at any time: scripts/fix-release-page.sh exits 0 without any
+# change when the page already conforms, so this is cheap on every main push
+# and doubles as a self-healing guard for future releases.
+#
+# Docs: scripts/fix-release-page.sh (policy map) + scripts/release-notes.sh
+# (the formal notes template — single source of truth for the page text).
+name: release-page
+on:
+  push:
+    branches: [main, "release/page/**"]
+  workflow_dispatch:
+
+jobs:
+  conform:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Bring the release page to the download policy
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash scripts/fix-release-page.sh

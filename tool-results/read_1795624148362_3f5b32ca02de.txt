@@ -1,0 +1,277 @@
+     1→# STATE.md — Velox Download Manager mission state
+     2→
+     3→Last updated: 2026-11-25 — **UX/RELIABILITY + ONLINE INSTALLER TURN**: extension install fixed at the packaging root cause, unified installer restored as THE release, UI refined, updater-at-launch polished. Keep current; commit before ending every turn.
+     4→
+     5→## Where things are
+     6→
+     7→| Path | Purpose |
+     8→|---|---|
+     9→| `download-engine/web/` | **THE PRODUCT UI** — Tauri loads it via `frontendDist: "../../web"`. `index.html` + `app.js` shell + `assets/{app.css, icons.js, api.js, store.js, ui.js}` + `assets/screens/{home,downloads,addDialog,queues,network,browser,devices,history,vault,settings}.js` |
+    10→| `download-engine/docs/IMPLEMENTATION_MAP.md` | UI-overhaul audit → screen/contract map (read this first next session) |
+    11→| `download-engine/crates/engine-core/src/manager.rs` | `remove(id, delete_file)` (any state incl. completed), StatusView.bandwidth_limit_bps |
+    12→| `download-engine/crates/engine-api/src/lib.rs` | download.remove = record removal (NOT the old cancel alias); delete_file param |
+    13→| `download-engine/crates/engine-state/src/lib.rs` | delete_download cascades segments + errors |
+    14→| `download-engine/app/src-tauri/src/main.rs` | Tauri shell: rpc/open_path (DB-record-scoped)/default_download_dir/settings_get/settings_set; engine in-process; bounded close-pause |
+    15→| `download-engine/crates/engine-core/tests/remove.rs` | removal semantics tests (5) |
+    16→| `scripts/installer-online-template.nsi` | NSIS installer template (online bootstrapper variant) |
+    17→| `scripts/build-velox-msvc.sh` / `scripts/github-release-refresh.sh` / `scripts/github-push.sh` | build / publish / push |
+    18→| `scripts/slow-server.py` | throttled HTTP server for UI e2e (on :8392) |
+    19→| `scripts/rust-env.sh` / `scripts/TOOLCHAIN-SETUP.md` | toolchain env + rebuild recipe |
+    20→| `.secrets/github-token` | token (0600, gitignored) — recreate from chat if wiped |
+    21→| `download/windows-build-20261122-a/` | current installer staging (this session) |
+    22→| `download/mission-reports/` | copies of mission docs |
+    23→| GitHub release `v0.1.0` | durable artifact copies |
+    24→
+    25→## Progress
+    26→
+    27→- **UX/reliability + online installer session (2026-11-25)**:
+    28→  - YouTube two-files root cause FIXED: `MergePort::discover_subprocess()` missed the bundled ffmpeg beside Velox.exe; now `discover_subprocess_at(exe_dir)` prefers bundled binaries (LGPL gate unchanged).
+    29→  - Updater race FIXED: removed the competing 600 ms `exit(0)` (tauri-plugin-updater exits inside `downloadAndInstall()` on Windows — the JS promise never resolves there); macOS/Linux path relaunches directly; added verify-on-next-launch (`velox.update.attempt` in localStorage; boot compares versions and reports "update did not install" honestly).
+    30→  - UI batch: YouTube mqdefault thumbnails (CSP +i.ytimg.com, icon fallback), sidebar collapse toggle + Ctrl+B (persisted), notification de-clutter (max 4 toasts, completion burst-batching 1.5 s, verification/merge successes → activity feed only), `friendlyEngineMessage` mapper shared by failure events + action toasts + details drawer, double-click = open/retry/details by state, compact details drawer (truncated URL + copy button, Advanced disclosure), Enter opens completed files.
+    31→  - ONLINE INSTALLER: `scripts/installer-online-template.nsi` (MUI components page; optional "YouTube Video Downloader" section fetches yt-dlp + BtbN win64-lgpl ffmpeg/ffprobe at install time via `velox-fetch.ps1`; skips network when tools exist; never fatal) + `scripts/velox-online-fetch.ps1` (official sources, TLS 1.2, 3 retries, exit 0/2) + `desktop-online` CI job (builds Velox-Setup-x64-Online.exe; verifies core present AND media tools absent).
+    32→  - `scripts/mock-engine-server.py`: browser-transport mock engine (POST /rpc + SSE /events) for UI preview/screenshots; 8 UI screenshots in `download/ui-screenshots/`.
+    33→  - Research: `download/RESEARCH-FINDINGS.md` (10 topics, primary sources).
+    34→
+    35→- Engine cycles 1–7: complete (see `docs/AUTONOMOUS_CYCLE_PROGRESS.md`).
+    36→- **UI overhaul session (this one)**:
+    37→  - Audited the real stack: Tauri serves `web/`; one JSON-RPC contract over Tauri IPC (desktop) or HTTP POST /rpc + SSE /events (browser preview); events = DB state names + progress/resolving/resolved/merging/merged; the engine already tracked `file_missing` (audit M5) but the old 532-line UI ignored it.
+    38→  - Rebuilt the frontend: 9 screens, dark-only design system, real backend integration everywhere. The user's core complaint (can't manage deleted/missing downloads) fixed by surfacing `file_missing` + the new remove/delete-file APIs.
+    39→  - Backend additions (minimal, UI-integration only): `manager.remove(id, delete_file)` for ANY state incl. completed (artifact deleted BEFORE record; cascades segments/errors; emits `removed` event); `download.remove` re-routed to it (cancel keeps its semantics); StatusView exposes `bandwidth_limit_bps`; Tauri `settings_get`/`settings_set`; `open_path` trust anchor extended to engine-DB-recorded destinations. Gates green (fmt, clippy -D warnings, remove+api tests).
+    40→  - E2E in headless browser against `velox serve-http` + real file servers: dialog add with inspect preview, completion, resume wiring, live progress (speed/ETA/connections), file-missing badge, delete-file with confirmation (disk + DB verified), settings persistence across reload, Ctrl+A bulk bar, invalid-URL inline errors, context menus. Screenshots reviewed (Home/Downloads/Settings).
+    41→  - **Recorded gotcha**: rAF is throttled to zero in background/headless webviews — `store.notify` uses `setTimeout(0)`.
+    42→  - Commit `9cffc19` pushed + remote verified. Windows build launched after it; installer refresh + publish + round-trip follow.
+    43→
+    44→## Pipeline audit turn (2026-11-24, later)
+    45→- **CI repairs (3 bugs found+fixed, each verified by a real run):**
+    46→  1. a816ebf — windows-latest has NO NSIS preinstalled → choco install step (+sourceforge fallback).
+    47→  2. 3e6e7b7 — desktop job cwd is download-engine/; makensis template path must be $env:GITHUB_WORKSPACE-absolute.
+    48→  3. eec7c6f — NSIS BUGBUG (util.cpp get_dir_name splits File paths on the host separator only): mixed `staging/Velox.exe` paths → "no files found" on Windows makensis. Template now joins via ${SEP} (default backslash; local Linux builds pass -DSEP=/). Local rebuild byte-identical (sha256 f369b184...).
+    49→- **Audit measurements** (scripts/audit/, report: download/Velox-Pipeline-Installer-Audit.docx):
+    50→  - Cold desktop job 491 s: app build 412 s (deps 294 crates 149-206 s + velox-app fat-LTO link 157-210 s), fetch 48 s. NO CI caching at all.
+    51→  - Warm local incremental rebuild: 134 s (app crate + link only).
+    52→  - Installer payload: ffmpeg+ffprobe = 277.3 MB of 323.9 MB (86.7%). NSIS default zlib (no SetCompressor). makensis A/B on real payload: zlib 31 s → 147.77 MB; /SOLID lzma 149 s → 117.24 MB (−30.5 MB, −20.7%). Signature unaffected (signs final bytes).
+    53→  - ffmpeg.zip 179 MB downloaded+extracted+discarded every CI run.
+    54→  - Alternatives: Tauri NSIS bundler / Inno / WiX-Burn all rejected (no measurable gain; rewrite of updater contract RC7/RC8 + NM registration). KEEP custom NSIS.
+    55→  - Recommended (NOT yet applied — release in flight): SetCompressor /SOLID lzma; Swatinem/rust-cache on app/src-tauri Cargo.lock; actions/cache for staged yt-dlp/ffmpeg/WebView2; keep fat LTO+cu1+strip for release.
+    56→
+    57→## v0.6.0 turn (2026-11-24) — extension root cause + unified installer + UI refinement
+    58→
+    59→Root causes found & fixed (user screenshots were the evidence):
+    60→- **RC-1 "bundled extension assets missing (installation layout)"**: the v0.5.0 CI release
+    61→  shipped the BARE tauri-bundled NSIS (tauri.conf.json has no resources/externalBin) —
+    62→  no `extension/`, no `velox-browser-host.exe` beside the exe → `extension_setup` failed
+    63→  on every installed machine. Fix: the UNIFIED NSIS template is now what CI builds and
+    64→  ships (it bundles extension+host+yt-dlp+ffmpeg/ffprobe+WebView2 fallback+licenses) and
+    65→  it is the SIGNED UPDATER PAYLOAD (`Velox-Setup-x64-unified.exe`, signed with
+    66→  `tauri signer sign --app-version`, trusted-comment version:0.6.0 verified).
+    67→- **RC-2 stale "registered"**: extension_status now READS the registration (registry
+    68→  default value / unix manifest file), validates the manifest content (name, type,
+    69→  exe exists, allowed_origins = DERIVED extension ID) and reports
+    70→  host_manifest_valid + host_issues; extension_setup verifies post-conditions.
+    71→  Browser screen shows "needs repair" + a Repair button (re-stage + re-register).
+    72→- **RC-3 Edge per-user installs missed**: msedge.exe discovery now also probes
+    73→  %LOCALAPPDATA%\Microsoft\Edge (unit-tested).
+    74→- **RC-4 onboarding boolean**: maybeBrowserSetup is a VERSION-AWARE state machine
+    75→  (prefs browserSetupStateVersion/browserSetupDismissedFor): healthy = silent;
+    76→  broken = repair prompt once per app version; fresh = install prompt once per
+    77→  version; dismissal remembered per version; update = one recheck.
+    78→- **RC-5 context menus duplicated on reload**: removeAll() before create (mocked-SW
+    79→  regression test).
+    80→
+    81→Unified installer verified LOCALLY end-to-end: xwin cross-compiled Velox.exe (16 MB,
+    82→custom-protocol) + velox-browser-host.exe (371 KB), real yt-dlp.exe / BtbN LGPL
+    83→ffmpeg+ffprobe / WebView2 bootstrapper staged, makensis 3.13 built
+    84→Velox-Setup-x64-unified.exe (147 MB, 22 files — contents verified with 7zz), signed,
+    85→latest.json URL points at the unified exe. Template is parameterized
+    86→(/DPRODUCT_VERSION, BUILD_STAGING, BUILD_OUTPUT, BUILD_ICON_DIR — POSIX makensis
+    87→needs FORWARD slashes in File source paths).
+    88→
+    89→Release page policy (CI): unified installer + .sig + latest.json + SHA256SUMS.txt ONLY.
+    90→v0.5.0 page cleaned manually (Velox-app-x64.exe + Velox-Extension.zip deleted; its own
+    91→updater trio stays intact). velox-host now also registers google-chrome-for-testing
+    92→(CfT probes its own config dir; Linux NM lookup follows the ACTIVE user-data-dir).
+    93→
+    94→UI: top-left "Velox" text removed (icon-only branding); speed counter → "Active
+    95→downloads N" pill (ACTIVE_STATES = downloading/retrying/resolving/merging; paused/
+    96→queued/completed never counted); Downloads header buttons are contextual; activity-first
+    97→ordering via pure ordering.js (active rows on top by lastActive, user sort below —
+    98→7 node tests) + lastActive stamped from live events AND resyncs; Browser screen got
+    99→manifest-issue display + Repair + FFmpeg row; `.grid-2` minmax(0,1fr) + `.path`
+   100→word-break (Browser screen no longer overflows — 0px overflow-x at 720px on every
+   101→screen); Settings nav responsive; Settings→Updates now repaints via a real
+   102→'velox:update' event (was a dead listener).
+   103→
+   104→Icons: curated 66-glyph set from Iconoir (MIT, primary) + Coolicons (MIT, gap fills),
+   105→same 24×24 stroke-1.5 renderer — scripts/build-icons.py regenerates assets/icons.js
+   106→(24.8 KB); attribution in THIRD_PARTY_NOTICES.md.
+   107→
+   108→Tests: engine fmt ✓ clippy ✓ 191 tests ✓ (26 suites); web node 21+8 mocked-SW tests ✓;
+   109→UI E2E 34/34 ✓ (speed-pill check replaced by Active-Downloads + icon-only-branding
+   110→checks); REAL-CHROME E2E PASSED (CfT 157 under Xvfb: derived ID ✓ hello_ack 6 ms ✓
+   111→capture 15 ms ✓ big.bin BYTE-EXACT via extension→host→bridge→REAL engine ✓);
+   112→6 new velox-app Rust tests (manifest validation, Edge paths, probe coverage) run in
+   113→the Windows CI gate (sandbox has no GTK — cannot build the Tauri app locally).
+   114→makensis path gotcha: POSIX makensis wants -D defines and forward-slash File sources;
+   115→CI (windows makensis) keeps /D.
+   116→
+   117→## v0.5.0 release turn (2026-11-23) — CI-driven signed release
+   118→
+   119→- Pushed the extension-fix + release-pipeline stack (3 commits) and tagged v0.5.0;
+   120→  windows.yml builds the signed NSIS installer on the tag and a release job publishes
+   121→  installer + .sig + latest.json + Velox-Extension.zip + SHA256SUMS.txt.
+   122→- CI bug found on the first tag run: the desktop job read the updater key via ..\..
+   123→  relative to working-directory download-engine → one level ABOVE the repo root
+   124→  ("Cannot find path 'D:\a\Velox-Download-Manager\scripts\...'"). Fixed by resolving
+   125→  via $env:GITHUB_WORKSPACE (commit f1a84b3); the tag was moved onto it
+   126→  (delete remote tag → retag → push — no release existed yet, so safe).
+   127→- Second tag run hit the known Windows flake class in crash_resume: parent opened the
+   128→  manifest right after SIGKILL → SQLITE_BUSY, and the row-insert-before-segment-plan
+   129→  window tripped "segments planned". Fixed in tests (commit 818f01b): db() retries
+   130→  busy opens ~5s; empty segments accepted while received==0. Tag moved again.
+   131→- SHIPPED + VERIFIED (run 45219262512, all jobs green): release v0.5.0 contains
+   132→  latest.json (version 0.5.0; sig trusted-comment version:0.5.0 — require_signed_version
+   133→  satisfied; tag-pinned asset URL), Velox-Setup-x64.exe 4.3 MB + .sig, Velox-app-x64.exe,
+   134→  Velox-Extension.zip, SHA256SUMS.txt.
+   135→- Push flow: scripts/publish-release.sh with the token at .secrets/github-token
+   136→  (0600, gitignored). CI watch: scripts/ci-poll.sh; release verify: scripts/release-check.sh.
+   137→- The GitHub connector (account AHCITY) can read + create branches but CANNOT
+   138→  git-push/tag — token-based push is the reliable path. Temporary connector probe
+   139→  branch deleted after the push.
+   140→- CAVEAT: 0.4.0 and older installs pin the pre-recycle updater key (lost) — they
+   141→  cannot auto-update to 0.5.0; one manual install of Velox-Setup-x64.exe required.
+   142→
+   143→## Auto-updater (added 2026-11-22, v0.3.0)
+   144→
+   145→- **Mechanism**: official `tauri-plugin-updater` 2.14.1 + `tauri-plugin-process` (relaunch), registered in `app/src-tauri/src/main.rs`. Endpoints: `releases/latest/download/latest.json`. Passive NSIS install mode. Permissions in `capabilities/main.json`: `updater:default`, `process:default`.
+   146→- **Signing**: `.secrets/velox-updater.key` (+ `.pub`) — **if lost, existing installs can never receive updates again**. Build/packaging must pass the RAW base64 (last line of the key file) via `TAURI_SIGNING_PRIVATE_KEY` (paths are NOT accepted; the "untrusted comment" line breaks decoding).
+   147→- **CRITICAL**: the plugin cross-checks the signature's trusted-comment `version:` against latest.json's announced version (`require_signed_version`) — ALWAYS sign with `tauri signer sign --app-version "$VERSION"` (done in `scripts/package-update-release.sh`).
+   148→- **Release flow**: bump version in `tauri.conf.json` + app `Cargo.toml` + NSIS template → `build-velox-msvc.sh` → copy NEW exe to `/tmp/installer/Velox.exe` (the NSIS template embeds THAT path, not target/) → `makensis` → `package-update-release.sh <installer> <staging>` (signs + generates latest.json + SHA256SUMS) → write INSTALL-AND-VERIFY.md → `github-release-refresh.sh <staging> v<version>` (creates the release if missing).
+   149→- **GOTCHA**: changing `web/` does NOT re-embed assets on rebuild — `touch app/src-tauri/src/main.rs` before `build-velox-msvc.sh`, or the exe ships the OLD frontend (this bit us once; v0.3.0 published binaries are the fixed ones).
+   150→- **Verification**: `/tmp/msv` crate replicates `verify_signature` 1:1 (main+global sig + version cross-check); used to validate the published artifacts. Frontend flow E2E-tested with a mock `__TAURI__` (check → toast+badge → progress → relaunch).
+   151→- `docs/UPDATES.md` documents the whole flow.
+   152→
+   153→## UX Overhaul 2.0 (v0.3.1, 2026-11-22) — done + gotchas
+   154→
+   155→- Implemented + pushed (commit da81f07). Downloads-first shell, unified filter list, search bug fixed
+   156→  (missing `notify()`), full-width rows, Settings with real default-dir picker (tauri-plugin-dialog,
+   157→  `dialog:default` capability — only backend change), network screen absorbed Home content.
+   158→- E2E: `scripts/e2e-ui.sh` — 33 checks vs the REAL engine (`velox serve-http`, random ports, self-contained
+   159→  slow fixture). 33/33 on 4 of last 5 runs. GOTCHAS (all bit us): (1) the slow-server reads
+   160→  `/tmp/vlx-e2e/files/slow.bin` — it now self-creates the fixture; (2) the makensis template embeds
+   161→  `/tmp/installer/Velox.exe` — COPY THE FRESH EXE THERE BEFORE makensis (bit us: v0.3.1 first package had a stale exe);
+   162→  (3) tauri-build does not re-embed changed web/ assets unless `main.rs` is touched (see updater section);
+   163→  (4) engine `download.cancel` REMOVES the partial record (row leaves the list — UI asserts that, not a chip);
+   164→  (5) dead-URL create/inspect takes ~31s (3x10s connect retries) before the honest CONNECT error — slow, not hung;
+   165→  (6) E2E port guard: pkill stale servers before starting (a leftover server hijacking the fixed port caused
+   166→  phantom failures); ports are now randomized per run.
+   167→- Release v0.3.1 published + verified (endpoint 0.3.1, minisign main+global VALID, version-bound, hash round-trip).
+   168→
+   169→## Browser ecosystem turn (2026-11-22, post-v0.3.1) — done + gotchas
+   170→
+   171→- Reference repo audited (cloned to /tmp, deleted after) → docs/FEATURE_COMPARISON.md + docs/THIRD_PARTY_NOTICES.md.
+   172→- Browser extension: download-engine/extension/ (MV3, plain JS, pinned key → ID `ffnpjmbhfmaamhlbohbmamnmoaikpdmc`, re-derived from the shipped key — the old `hpaxoarvxcmmqijm` literal was WRONG and broke every connectNative; fixed in the 2026-11-23 extension audit).
+   173→- Native host: crates/velox-host (`velox-browser-host`) — NM stdio ⇄ loopback HTTP JSON-RPC; 5 stdio E2E tests.
+   174→- App: loopback bridge in app/src-tauri/src/main.rs (random 127.0.0.1 port + token in app_data/data/bridge.json, 0600; whitelist engine.info/list/status/create/pause/cancel).
+   175→- P2 intelligence: SpeedStats tap (mirror broadcast subscriber) → StatusView bps_smoothed/avg/peak; UI details drawer shows avg/peak + etaState labels. Verified live (slow download: smoothed 1.8 / avg 2.1 / peak 4.2 MiB/s).
+   176→- Benchmark: docs/BENCHMARK.md — real before/after (0.02s vs 0.03s loopback, throttled 29.03s both) = no regression.
+   177→- NOT implemented (designed only): browser-assisted transfers (§4 of comparison), tray/taskbar/notifications (§5).
+   178→- GOTCHAS: (1) app crate can NOT build natively on Linux (no GTK) — always build it via scripts/build-velox-msvc.sh (xwin); (2) engine target/debug regrows fast — wipe when disk full, rebuild is ~1 min; (3) NO release publishing this turn (spec §13 forbids without authorization) — Velox.exe with the bridge saved at /tmp/Velox-exe-with-bridge.exe (host-local, not a deliverable).
+   179→
+   180→## v0.4.0 turn (2026-11-22) — in-app extension installer + offline setup
+   181→
+   182→- App drives browser setup: browser_detect / extension_setup / extension_status commands (main.rs); bridge last-activity timestamp drives "extension connected".
+   183→- Chromium allows NO silent unpacked install — app stages extension to %LOCALAPPDATA%\Velox\extension, registers the NM host (velox-browser-host --register), opens chrome://-extensions page; Quick start = --load-extension session load. Firefox honestly unsupported.
+   184→- Browser screen rewritten (was "not implemented"); first-launch dialog gated by prefs.browserSetupSeen.
+   185→- Installers: NSIS v0.4.0 templates bundle extension+host both variants; offline adds yt-dlp.exe + LGPL ffmpeg/ffprobe (BtbN win64-lgpl). makensis from debs: NSISDIR=/tmp/nsisroot/usr/share/nsis /tmp/nsisroot/usr/bin/makensis (sandbox recycle wipes apt).
+   186→- GOTCHA: shell cwd RESETS to /home/z/my-project between commands — always absolute paths or cd first (caused the "Velox.exe missing" scare).
+   187→- GOTCHA: cargo xwin needed for ANY msvc cross-target build (plain cargo build --target msvc lacks link.exe).
+   188→- Released v0.4.0 (user-authorized): online 6.0MB + offline 147.5MB + portable exe + latest.json (signed) + SHA256SUMS.
+   189→
+   190→## Maintenance turn (2026-11-22, user away) — checks + small fixes
+   191→
+   192→- FULL workspace gates: fmt clean, 26 suites / **193 tests ALL CLEAN** (`--no-fail-fast`; earlier fail-fast pass had hidden the rest behind one flake).
+   193→- FIXED flaky `crash_resume::kill_before_first_checkpoint` (full-workspace run): a fast download can COMPLETE before the kill lands under parallel load; `check_manifest_consistency` now skips completed manifests (segments are cleared on completion by design; final byte-exactness is hash-checked elsewhere). Kill windows widened (test 3: 2→4 MiB, test D: 2→8 MiB). 6 pre-fix runs couldn't reproduce standalone — fix is by-construction correct.
+   194→- FOUND+FIXED UI bug: `location.hash` was read only at boot — no `hashchange` listener, so browser back/forward and pasted deep links (#settings) never re-rendered. Now the hash is the single navigation source of truth (verified live in headless browser: hash nav re-renders without reload).
+   195→- QOL: Browser screen's 3s status-poll timer now stops on nav-away (screens can export stop* hooks, called by the router); first-launch dialog dynamic-import dedupe.
+   196→- Docs: README finally documents the extension + installers; INSTALLER-TEST-RESULTS.md refreshed (installers ARE built+published; real-machine install + real update hop still honestly pending); STATE "Remaining" un-staled (clipboard monitor ≠ extension's own opt-in clipboard).
+   197→- Verified clean: UI⇄engine method contract (11 methods, start/resume are engine-side aliases), event contract (DownloadState passes DB state strings through), settings.js "not implemented" rows are honest (global limit/proxy genuinely absent), headless renders of Downloads/Browser(preview note)/Settings all clean, E2E 33/33 after all frontend edits.
+   198→
+   199→## Phase 0-7 production-reliability round (2026-11-22)
+   200→
+   201→Root causes (full report: download-engine/docs/PHASE0-ROOT-CAUSES.md, RC1-RC10):
+   202→- RC1/2: `pick_stream` progressive-only + `MediaMergeSpec.audio_url` consumed NOWHERE at runtime (merge machinery existed but manual-only).
+   203→- RC5: no CREATE_NO_WINDOW on yt-dlp (extract.rs), ffmpeg/ffprobe (pipeline.rs), velox-browser-host --register (main.rs) → console flashes on Windows.
+   204→- RC7: updater.js relaunched 500ms after downloadAndInstall → installer/relaunch race → same update re-offered; installer taskkill /F force-closed the app.
+   205→- RC8: updater downloaded the CUSTOM NSIS installer that ignored Tauri /P /S /R /UPDATE flags (full wizard popped mid-"passive" update).
+   206→- RC6 (non-cause): live latest.json verified CORRECT (0.4.0, valid sig).
+   207→
+   208→Fixes shipped (all tests green):
+   209→- extract.rs: `pick_plan` — progressive fast path kept; best video-only + best audio-only pair (m4a-pref) with `merge_container` (h264+aac→mp4, vp9/opus→mkv, never transcode); ResourceInfo.media carries MediaMergeSpec {audio_url, output_ext, output_name, audio_name}.
+   210→- manager.rs: add() threads info.media into cfg; runner spawns media job on Completed; run_media_job = resume-first audio reuse (find_same_destination, no re-probe — googlevideo URLs expire) → auto audio download → merge_streams → audio row+file removed → spec cleared. Honest failures (audio fail keeps video completed + spec; video removed mid-job cancels audio). merge_streams honors spec.output_name (clean final title).
+   211→- CREATE_NO_WINDOW (0x08000000) on all three Windows spawn sites.
+   212→- updater.js rewrite: strict semver guard (never offer equal/older — the false-update fix), once-per-install announce (localStorage), active-download count + confirm dialog → pause-and-await → downloadAndInstall → graceful self-exit (installer waits) → installer restarts app; postponing keeps the offer. update-version.js extracted pure + node:test suite (4/4).
+   213→- installer-unified-template.nsi replaces the online/offline pair (both deleted): ONE Velox-Setup-x64.exe; UPDATE MODE (/P /S /UPDATE) waits for app exit (no taskkill), silent install, auto-restart; interactive upgrade = graceful WM_CLOSE close + bounded wait + prompt (never force-kill); bundled-file verification (exit code 3); LGPL notices + ffmpeg LICENSE bundled; WebView2 Evergreen STANDALONE (294MB, true offline).
+   214→- BUILT + VERIFIED: unified installer 440,026,140 B, NSIS-3 Unicode; extracted via 7zz 26.06 — 23 files, Velox.exe + ffmpeg.exe byte-exact vs staging (old p7zip 16.02 parser fails on NSIS-3 Unicode — use 7zz).
+   215→- B2 dev cache (GLM-Z.AI, eu-central-003): verified auth+bucket+round-trip; scripts/b2cache.py (idempotent, large-file parts, retries); cached 1.05GB (installer + all bundled exes) + tools/win64; xwin-cache upload in flight.
+   216→
+   217→Gates at round end: cargo fmt ✓, clippy workspace 0 issues, JS tests 4/4, E2E 33/33 (current frontend), engine-core 57/57 (incl. media-job resume + failure), engine-http adaptive suites ✓, engine-api 8/8 (incl. REAL-HTTP media-job e2e), full workspace suite running at log time.
+   218→
+   219→HONEST LIMITS: no real-Windows machine available → installer run/install, console-window invisibility (flag present at all 3 sites, mechanism documented), and a real updater hop are UNTESTED on Windows; sandbox recycled mid-round (toolchain rebuilt via scripts/rebuild-toolchain.sh; GitHub token + velox-updater.key were LOST with it — push and release signing need re-provisioning).
+   220→
+   221→## NEXT SESSION STARTS HERE — v0.6.0 CI watch (turn ended mid-CI)
+   222→
+   223→- main = 28799af4 (all v0.6.0 work), tag v0.6.0 = 28799af4 (includes the YAML fix:
+   224→  colons in plain step-name scalars broke windows.yml — runs had ZERO jobs).
+   225→- CI watch: `bash scripts/ci-poll.sh` — the tag run (head_branch v0.6.0) builds the
+   226→  unified installer in the desktop job (windows gate → desktop → release).
+   227→- On green: verify with `bash scripts/release-check.sh` — expect EXACTLY
+   228→  Velox-Setup-x64-unified.exe + .sig + latest.json + SHA256SUMS.txt on
+   229→  releases/tag/v0.6.0 (release-check.sh TAG var still says v0.5.0 — change to v0.6.0),
+   230→  then verify latest.json URL/signature (trusted comment version:0.6.0).
+   231→- On desktop-job failure: fetch job logs via API, fix, commit, move tag
+   232→  (delete remote tag → retag → push), rerun. Locally-built + verified installer copy:
+   233→  download/v0.6.0-staging/ (147 MB, 22 files, signed, latest.json version:0.6.0) —
+   234→  CI's copy must match this composition.
+   235→- v0.5.0 page already cleaned (Velox-app-x64.exe + Velox-Extension.zip deleted; its
+   236→  updater trio Velox-Setup-x64.exe + .sig + latest.json stays for that tag's manifest).
+   237→
+   238→## Remaining / next candidates
+   239→
+   240→1. Toast matrix per notification pref; media-merge UI exercise needs yt-dlp + ffmpeg on a real machine (honest-unavailable states already in place).
+   241→2. Engine-side queue scheduler contract (queues currently orchestrate only while the app is open — stated honestly in the UI).
+   242→3. Clipboard monitor as a DESKTOP feature (the extension has its own opt-in clipboard suggestion; a standalone app-side monitor does not exist — honest screens).
+   243→4. Real-Windows installer test (INSTALLER-TEST-RESULTS.md refreshed 2026-11-22: installers ARE built+published; real-machine install pass + real in-app update hop still pending).
+   244→5. Long-path `\\?\` helper; GET-206 tolerance; extractor cookie jar (engine queue tasks 9/7).
+   245→
+   246→## Recovery after sandbox reset (checked once, then ask the user)
+   247→
+   248→Not in Git: `.secrets/github-token`, **`.secrets/velox-updater.key` (+ `.pub`)**, `.cargo/`, `.rustup/`, `.xwin-cache/`, `/tmp/*` (llvm debs, nsisx makensis, installer staging, e2e servers, `/tmp/msv` verify crate). Rebuild per `scripts/TOOLCHAIN-SETUP.md` (+ `rustup target add x86_64-pc-windows-msvc` + `cargo install cargo-xwin --version 0.23.1 --locked` + clang-19 debs + nsis 3.13 debs + `npm i -g @tauri-apps/cli`). After `rm -rf download-engine/target` the suite needs a ~10 min rebuild. The updater key is the single most critical secret — losing it means shipping a NEW pubkey with the next release and updating `tauri.conf.json`.
+   249→
+   250→
+   251→## 0.7.0 turn (2026-11-25, session 2) — themes + YouTube formats + Linux, released
+   252→
+   253→- **Themes**: themes.js (4 built-ins, WCAG 2.1 AA checker, JSON third-party themes
+   254→  with sanitizer + base inheritance), app.css [data-theme] blocks (sync-tested),
+   255→  theme-boot.js no-flash restore, Settings→Appearance picker with install/remove.
+   256→- **YouTube format selection**: media.formats RPC (honest qualities from
+   257→  yt-dlp -J), resolve_media_with (MP4 height cap + fps pref, MP3 audio path),
+   258→  engine-media convert_mp3 (libmp3lame -q:a 0, LGPL-gated), Add dialog
+   259→  format/quality picker wired to create cfg. media_height/media_fps/
+   260→  media_format in DownloadConfig.
+   261→- **Settings audit**: dead notifyStarted removed; theme/startImmediately/
+   262→  mediaFormat/mediaQuality added (all functional).
+   263→- **bin/ layout**: bundled tools in $INSTDIR\bin (both NSIS templates + CI
+   264→  staging + bundled_tool_path discovery in main.rs, flat 0.6.x fallback kept).
+   265→- **Linux**: linux-desktop CI job (ubuntu-22.04, webkit2gtk-4.1, xvfb startup
+   266→  smoke test asserting the data dir is created), offline tar.gz (bundled tools
+   267→  + install.sh, per-user ~/.local), online velox-setup-linux-online.sh (arch
+   268→  detect, official tool sources), Linux browser detect + NM registration
+   269→  (velox-host already supported), XDG paths (pre-existing cfg(unix) branches).
+   270→- **0.7.0** in tauri.conf.json + app Cargo.toml + NSIS PRODUCT_VERSION;
+   271→  THIRD_PARTY_NOTICES: yt-dlp (GPLv3+ binary) + FFmpeg LGPL-3.0 sections.
+   272→- **Docs**: docs/THEMES.md (manifest spec + security model), docs/LINUX.md
+   273→  (install/update/uninstall/troubleshooting).
+   274→- Tests: 213 cargo workspace + 32 node --test green locally; clippy clean.
+   275→- Known caveat: velox-app compiles only in CI (webkit2gtk) — main.rs unix
+   276→  branches verified by the linux-desktop job build.
+   277→

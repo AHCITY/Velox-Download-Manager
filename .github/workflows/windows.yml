@@ -7,6 +7,14 @@
 # The tag v<version> is created by the release job itself. Linux is built
 # separately in linux.yml (release/linux/** branches) and uploaded into the
 # SAME release afterwards — one push at a time, independent failure domains.
+#
+# Download policy (release-page.yml enforces it; scripts/release-notes.sh
+# renders the notes): the release page lists the downloads in order —
+#   1-Velox-Setup-x64.exe          online installer  (label: 1. Velox Setup)
+#   2-Velox-Setup-x64-Offline.exe  offline installer (label: 2. Velox Setup (Offline),
+#                                  also the signed auto-updater payload)
+#   3-/4- … Linux distributions    (linux.yml)
+#   metadata unnumbered: latest.json, SHA256SUMS.txt, .sig, core tar.gz
 name: windows
 on:
   push:
@@ -87,13 +95,13 @@ jobs:
           cargo test -p engine-storage -- --exact tests::lock_recovered_after_child_process_death
           cargo test -p engine-cli --test crash_resume -- --test-threads=1
 
-  # ---- Job 2: desktop application + UNIFIED installer ----
+  # ---- Job 2: desktop application + OFFLINE installer ----
   # Manual dispatch for development builds; every release/windows/** branch push
-  # builds the RELEASE artifacts. The unified NSIS template
+  # builds the RELEASE artifacts. The offline NSIS template
   # (scripts/installer-unified-template.nsi) installs EVERYTHING — Velox.exe,
   # browser extension, velox-browser-host.exe, yt-dlp, LGPL ffmpeg/ffprobe,
   # WebView2 fallback, licenses — one complete installer, which is also the
-  # signed auto-updater payload.
+  # signed auto-updater payload (published as 2-Velox-Setup-x64-Offline.exe).
   desktop:
     needs: windows
     if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/heads/release/windows/')
@@ -154,7 +162,7 @@ jobs:
           Copy-Item "app\src-tauri\target\release\Velox.exe" "$env:STAGING\Velox.exe"
           Get-ChildItem "$env:STAGING" | Select-Object Name, Length
 
-      - name: Install NSIS (makensis for the unified installer)
+      - name: Install NSIS (makensis for the offline installer)
         # windows-latest runners do NOT ship NSIS — install it, with a direct
         # setup-exe fallback in case the chocolatey feed is flaky.
         shell: pwsh
@@ -169,7 +177,7 @@ jobs:
           if (-not (Test-Path $nsis)) { throw "makensis still missing at $nsis after install" }
           & $nsis -VERSION
 
-      - name: Build the unified NSIS installer (makensis, updater-signed)
+      - name: Build the offline NSIS installer (makensis, updater-signed)
         shell: pwsh
         run: |
           $ver = "${{ github.ref_name }}".TrimStart('v')
@@ -185,19 +193,19 @@ jobs:
           & $nsis `
             "/DPRODUCT_VERSION=$ver" `
             "/DBUILD_STAGING=$env:STAGING" `
-            "/DBUILD_OUTPUT=$env:STAGING\Velox-Setup-x64-unified.exe" `
+            "/DBUILD_OUTPUT=$env:STAGING\Velox-Setup-x64-Offline.exe" `
             "/DBUILD_ICON_DIR=$env:GITHUB_WORKSPACE\download-engine\app\src-tauri\icons" `
             "$env:GITHUB_WORKSPACE\scripts\installer-unified-template.nsi"
           if ($LASTEXITCODE -ne 0) { throw "makensis failed with $LASTEXITCODE" }
           # sign the EXACT installer bytes the updater will verify (minisign,
           # trusted-comment version binding checked by require_signed_version)
           npm install -g "@tauri-apps/cli@^2"
-          tauri signer sign --app-version $ver "$env:STAGING\Velox-Setup-x64-unified.exe"
-          if (-not (Test-Path "$env:STAGING\Velox-Setup-x64-unified.exe.sig")) { throw "updater signature missing — TAURI_SIGNING_PRIVATE_KEY was not picked up" }
-          Copy-Item "$env:STAGING\Velox-Setup-x64-unified.exe" .
-          Copy-Item "$env:STAGING\Velox-Setup-x64-unified.exe.sig" .
+          tauri signer sign --app-version $ver "$env:STAGING\Velox-Setup-x64-Offline.exe"
+          if (-not (Test-Path "$env:STAGING\Velox-Setup-x64-Offline.exe.sig")) { throw "updater signature missing — TAURI_SIGNING_PRIVATE_KEY was not picked up" }
+          Copy-Item "$env:STAGING\Velox-Setup-x64-Offline.exe" .
+          Copy-Item "$env:STAGING\Velox-Setup-x64-Offline.exe.sig" .
 
-      - name: Verify the installer actually contains every required component
+      - name: Verify the offline installer actually contains every required component
         shell: pwsh
         run: |
           $seven = "C:\Program Files\7-Zip\7z.exe"
@@ -206,7 +214,7 @@ jobs:
           # the Windows runner lists "extension\README.md" while the check (and
           # our Linux local verification) uses forward slashes. Normalize the
           # listing to forward slashes before matching.
-          $listing = (& $seven l Velox-Setup-x64-unified.exe) -replace '\\','/'
+          $listing = (& $seven l Velox-Setup-x64-Offline.exe) -replace '\\','/'
           $required = @(
             "Velox.exe", "velox-browser-host.exe", "bin/yt-dlp.exe",
             "bin/ffmpeg.exe", "bin/ffprobe.exe", "extension", "manifest.json",
@@ -217,23 +225,23 @@ jobs:
           foreach ($r in $required) {
             if (-not ($listing -match [regex]::Escape($r))) { $missing += $r }
           }
-          if ($missing.Count) { throw "unified installer is INCOMPLETE — missing: $($missing -join ', ')" }
-          Write-Host "unified installer contents verified: $($required -join ', ')"
-          $size = [math]::Round((Get-Item Velox-Setup-x64-unified.exe).Length / 1MB, 1)
-          Write-Host "Velox-Setup-x64-unified.exe: $size MB"
+          if ($missing.Count) { throw "offline installer is INCOMPLETE — missing: $($missing -join ', ')" }
+          Write-Host "offline installer contents verified: $($required -join ', ')"
+          $size = [math]::Round((Get-Item Velox-Setup-x64-Offline.exe).Length / 1MB, 1)
+          Write-Host "Velox-Setup-x64-Offline.exe: $size MB"
 
-      - name: Upload unified installer artifact
+      - name: Upload offline installer artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Velox-Setup-x64-unified
-          path: download-engine/Velox-Setup-x64-unified.exe
+          name: Velox-Setup-x64-Offline
+          path: download-engine/Velox-Setup-x64-Offline.exe
           if-no-files-found: error
 
-      - name: Upload unified installer signature artifact
+      - name: Upload offline installer signature artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Velox-Setup-x64-unified.sig
-          path: download-engine/Velox-Setup-x64-unified.exe.sig
+          name: Velox-Setup-x64-Offline.sig
+          path: download-engine/Velox-Setup-x64-Offline.exe.sig
           if-no-files-found: error
 
   # ---- Job 2b: ONLINE installer (optional YouTube component, fetched at install) ----
@@ -346,10 +354,14 @@ jobs:
   # ---- Job 3: publish the signed Windows release ----
   # Runs ONLY on release/windows/** branch pushes. Creates the v<version> tag
   # and the GitHub release (idempotent: re-push re-uploads with --clobber).
-  # Linux distributions are built by linux.yml afterwards and uploaded INTO
-  # this same release — the platforms must not block each other.
+  # Publishes BOTH installers under the numbered download policy: the online
+  # installer (1-Velox-Setup-x64.exe) and the signed offline payload
+  # (2-Velox-Setup-x64-Offline.exe). Linux distributions are built by
+  # linux.yml afterwards and uploaded INTO this same release — the platforms
+  # must not block each other. Notes come from scripts/release-notes.sh
+  # (the shared formal template — linux.yml re-writes the SAME text).
   release:
-    needs: [desktop]
+    needs: [desktop, desktop-online]
     if: startsWith(github.ref, 'refs/heads/release/windows/')
     runs-on: ubuntu-latest
     permissions:
@@ -366,28 +378,22 @@ jobs:
           echo "TAG=$TAG" >> "$GITHUB_ENV"
           echo "VER=$VER" >> "$GITHUB_ENV"
           mkdir -p out
-          cp rel/Velox-Setup-x64-unified/Velox-Setup-x64-unified.exe out/
-          cp rel/Velox-Setup-x64-unified.sig/Velox-Setup-x64-unified.exe.sig out/
-          SIG=$(cat out/Velox-Setup-x64-unified.exe.sig)
-          URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/Velox-Setup-x64-unified.exe"
+          cp rel/Velox-Setup-x64-Online/Velox-Setup-x64-Online.exe out/1-Velox-Setup-x64.exe
+          cp rel/Velox-Setup-x64-Offline/Velox-Setup-x64-Offline.exe out/2-Velox-Setup-x64-Offline.exe
+          cp rel/Velox-Setup-x64-Offline.sig/Velox-Setup-x64-Offline.exe.sig out/Velox-Setup-x64-Offline.exe.sig
+          SIG=$(cat out/Velox-Setup-x64-Offline.exe.sig)
+          URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/2-Velox-Setup-x64-Offline.exe"
           PUB_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)
           jq -n --arg v "$VER" --arg s "$SIG" --arg u "$URL" --arg d "$PUB_DATE" \
             '{version:$v, notes:("Velox "+$v+" — see the release notes for changes."), pub_date:$d, platforms:{"windows-x86_64":{signature:$s, url:$u}}}' \
             > out/latest.json
-          (cd out && sha256sum Velox-Setup-x64-unified.exe Velox-Setup-x64-unified.exe.sig latest.json > SHA256SUMS.txt)
+          (cd out && sha256sum 1-Velox-Setup-x64.exe 2-Velox-Setup-x64-Offline.exe Velox-Setup-x64-Offline.exe.sig latest.json > SHA256SUMS.txt)
           cat out/latest.json
       - name: Publish the GitHub release (Windows assets)
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          {
-            printf '%s\n' "**Velox $VER** — themes, YouTube format selection, Linux support." ''
-            printf '%s\n' "### Windows" ''
-            printf '%s\n' "- **Velox-Setup-x64-unified.exe** — offline installer: app, browser extension + native messaging host, yt-dlp, LGPL ffmpeg/ffprobe (in \`bin/\`), WebView2 fallback. The in-app updater serves this file automatically." "- **latest.json** + signature — updater metadata (windows-x86_64)." ''
-            printf '%s\n' "SHA256SUMS.txt covers every artifact (Linux entries are appended when the Linux build lands, shortly after this one)." ''
-            printf '%s\n' "### Linux x86_64" ''
-            printf '%s\n' "Linux distributions are published separately right after this Windows release — the \`Velox-linux-x64-*\` assets will appear on this page automatically. See docs/LINUX.md in the repository meanwhile."
-          } > release-notes.md
+          bash scripts/release-notes.sh "$VER" > release-notes.md
           if gh release view "$TAG" >/dev/null 2>&1; then
             echo "release $TAG already exists — refreshing assets (idempotent retry)"
             gh release upload "$TAG" out/* --clobber

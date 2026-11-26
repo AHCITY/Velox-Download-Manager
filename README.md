@@ -4,7 +4,7 @@
 [![Windows](https://github.com/AHCITY/Velox-Download-Manager/actions/workflows/windows.yml/badge.svg)](https://github.com/AHCITY/Velox-Download-Manager/actions/workflows/windows.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-Velox is an open-source desktop download manager for Windows, built with a Rust transfer engine and a Tauri 2 interface. It provides segmented HTTP/HTTPS downloads, persistent pause and resume, integrity verification, media extraction, and Chromium browser integration.
+Velox is an open-source desktop download manager for Windows and Linux, built with a Rust transfer engine and a Tauri 2 interface. It provides segmented HTTP/HTTPS downloads, persistent pause and resume, integrity verification, media extraction, and Chromium browser integration.
 
 ## Features
 
@@ -18,9 +18,13 @@ Velox is an open-source desktop download manager for Windows, built with a Rust 
 
 ## Download
 
-Download the latest Windows installer from [GitHub Releases](https://github.com/AHCITY/Velox-Download-Manager/releases/latest).
+Download the latest installers from [GitHub Releases](https://github.com/AHCITY/Velox-Download-Manager/releases/latest).
 
-The unified installer includes the desktop application, WebView2 bootstrapper, yt-dlp, FFmpeg/ffprobe, and browser integration components. User settings and download history are stored separately from the application installation directory.
+**Windows 10 / 11** — run **Velox Setup** or **Velox Setup (Offline)** (per-user install, no admin required). The offline installer includes the desktop application, WebView2 bootstrapper, yt-dlp, FFmpeg/ffprobe, and browser integration components.
+
+**Linux (x86_64)** — use the offline archive or the online installer script (per-user install, no root required). See [docs/LINUX.md](docs/LINUX.md) for requirements, updates, and troubleshooting.
+
+User settings and download history are stored separately from the application installation directory.
 
 ## Build
 
