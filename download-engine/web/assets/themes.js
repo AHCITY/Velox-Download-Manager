@@ -134,7 +134,7 @@ const softCanopy = {
   },
 };
 
-export const BUILTIN_THEMES = { dark, light, purple, blue, softCanopy };
+export const BUILTIN_THEMES = { dark, light, purple, blue, 'soft-canopy': softCanopy };
 
 /* ------------------------------------------------------------------ */
 /* Color parsing + WCAG contrast (pure functions — unit tested)        */
