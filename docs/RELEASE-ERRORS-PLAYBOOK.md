@@ -1,7 +1,10 @@
 # RELEASE ERRORS PLAYBOOK — read BEFORE every release push
 
 Last updated: 2026-11-26 — the 4 failed `v0.7.0` tag attempts (#69/#71/#73/#75)
-are now FULLY diagnosed from job logs; see the verified failure map below.
+are fully diagnosed from job logs (verified failure map below), AND the
+published v0.7.0 page has been conformed to the download policy (sequenced,
+numbered downloads + labels, online installer attached, formal notes —
+see E-21..E-24 for the page-cleanup pitfalls hit along the way).
 
 Every release so far needed more than one push. This file is the accumulated,
 verified knowledge of WHY each class of release failed and the exact fix, plus
@@ -77,9 +80,21 @@ Push 2. **Never diagnose a "stuck" release before this much time has passed.**
 
 ### Post-release verification (what "done" means)
 
-- Release page shows: `Velox-Setup-x64-unified.exe`, `Velox-Setup-x64-unified.exe.sig`,
-  `latest.json`, `SHA256SUMS.txt`, `Velox-linux-x64-<ver>-offline.tar.gz`,
-  `Velox-linux-x64-<ver>.tar.gz`, `velox-setup-linux-online.sh`.
+- Release page shows, in this order (numbered names make GitHub's alphabetical
+  listing display the downloads in order; labels carry the same numbers):
+  `1-Velox-Setup-x64.exe` (label "1. Velox Setup"), `2-Velox-Setup-x64-Offline.exe`
+  (label "2. Velox Setup (Offline)"), `3-Velox-linux-x64-<ver>-offline.tar.gz`,
+  `4-velox-setup-linux-online.sh`, then the unnumbered metadata:
+  `latest.json`, `SHA256SUMS.txt`, `Velox-Setup-x64-Offline.exe.sig`,
+  `Velox-linux-x64-<ver>.tar.gz`.
+- Release notes are rendered by `scripts/release-notes.sh` — the single source
+  of truth for the page text; windows.yml, linux.yml and release-page.yml all
+  write the SAME body (idempotent).
+- The online installer is published by the release job (needs:
+  [desktop, desktop-online]) — both installers ship on every release.
+- `release-page.yml` is a self-healing guard: it re-conforms the page of the
+  version in tauri.conf.json on every main push and no-ops when the page is
+  already conforming.
 - `latest.json`: version == shipped version, URL points at THIS tag's asset,
   `pub_date` ISO, signature matches the `.sig` file content.
 - The `.sig` trusted comment contains `version:<ver>` (the updater
@@ -364,6 +379,62 @@ with logs, not with new env vars.
 setup when a Linux user lacks xdg-user-dirs is a real-world robustness bug —
 fall back to `$HOME/Downloads` in a future version instead of `?`.
 
+### E-21 · GitHub silently mutates release-asset names (spaces, parentheses)
+**Signature:** the upload returns 201 but the stored name is not the name you
+sent: `Velox Setup 0.7.0.exe` comes back as `Velox.Setup.0.7.0.exe` (spaces →
+dots) and `Velox Setup 0.7.0 (offline).exe` as `Velox.Setup.0.7.0.offline.exe`
+(parentheses REMOVED). No error anywhere.
+**Cause:** GitHub asset-name sanitization — spaces become dots, `(` and `)`
+are stripped. Verified empirically on v0.7.0 (2026-11-26); the literal
+"(offline)" requested for the page can therefore never exist as a FILE name.
+**Fix:** use the numbered/hyphen name policy (`1-Velox-Setup-x64.exe`,
+`2-Velox-Setup-x64-Offline.exe`, …). Human-readable naming lives in the asset
+LABEL (`2. Velox Setup (Offline)`) — labels DO render as the bold display
+text on the release page and may contain spaces/parentheses.
+**Rule:** after EVERY asset upload/PATCH, compare the response `name` against
+what you sent; never trust the request to round-trip.
+
+### E-22 · Release-page asset order is ALPHABETICAL — re-uploading cannot re-sequence
+**Signature:** assets appear in a jumbled order; deleting and re-uploading
+them in the desired order changes nothing.
+**Cause:** the release page (and `expanded_assets`) lists assets sorted by
+name, case-insensitively — upload order is irrelevant. Latest-first metadata
+names (`latest.json`, `SHA256SUMS.txt`) sort before `Velox-*`, and
+`Velox-linux-*` sorts before `Velox-Setup-*` (`l` < `s`), burying the main
+Windows installer at the bottom.
+**Fix:** sequence by NAMING: number the four downloads (`1-…`/`2-…` Windows,
+`3-…`/`4-…` Linux) so digits sort before letters and the platform order is
+explicit; keep `latest.json`/`SHA256SUMS.txt`/`.sig`/core tarball unnumbered
+metadata after them. Update linux.yml/windows.yml/templates so future CI
+produces conforming names natively, and `release-page.yml` (self-healing
+no-op when conforming) guards older pages.
+
+### E-23 · Renaming an asset breaks three things at once (updater URL, sums, .sig)
+**Signature:** after a rename the in-app updater 404s (E-9 family);
+`sha256sum -c SHA256SUMS.txt` fails on the renamed file; the signature file
+no longer sits beside its payload.
+**Cause:** three artifacts reference an asset NAME, not its bytes:
+`latest.json` `platforms.*.url`, the corresponding line in
+`SHA256SUMS.txt`, and the `.sig` sibling naming.
+**Fix (rename-only conformance):** retarget the URL inside `latest.json` and
+re-upload it (NO re-signing — the minisign signature covers the payload
+BYTES; a rename changes none, so the signature stays valid); regenerate
+`SHA256SUMS.txt` by downloading EVERY asset fresh and hashing it (E-19
+discipline — verify the remapped sums, don't trust the remap); rename the
+`.sig` alongside its installer. The sig's embedded `file:` trusted comment
+lags behind the new name — informational only, the updater cross-checks
+`version:` binding.
+**History:** the v0.7.0 page cleanup (2026-11-26) — verified end-to-end:
+updater URL resolves, all 7 sums verify OK.
+
+### E-24 · Unauthenticated GitHub API from the sandbox rate-limits mid-release
+**Signature:** reads suddenly return `{"message":"API rate limit exceeded…"}`
+and a JSON parse "fails" — even though the call worked minutes ago.
+**Cause:** anonymous API calls share a 60-requests/hour budget per IP; a
+release session exceeds it fast.
+**Fix:** authenticate EVERY call (`Authorization: Bearer <token>`), including
+reads. 5,000 req/h authenticated.
+
 ---
 
 ## Quick triage table (fastest path from symptom to fix)
@@ -386,6 +457,10 @@ fall back to `$HOME/Downloads` in a future version instead of `?`.
 | Packaging step exits 1 with NO output | E-17 |
 | Negative check never aborts | E-18 |
 | Downloaded tool is corrupt/error page | E-19 |
+| Uploaded asset name comes back different | E-21 |
+| Re-uploading does not fix the download order | E-22 |
+| Renamed asset: updater 404 / sums fail | E-23 |
+| Reads start returning rate-limit JSON | E-24 |
 
 ## Known non-errors (do not chase)
 
@@ -396,6 +471,8 @@ fall back to `$HOME/Downloads` in a future version instead of `?`.
 - Desktop-app unit-test step "velox-app is a standalone crate": it only
   compiles where the Tauri stack exists; on Linux CI it is covered by the
   `linux-desktop` build instead.
-- The `desktop-online` job builds an installer that is NOT on the release
-  page: by design (release page policy: unified installer + updater trio +
-  checksums + Linux distributions).
+- The `desktop-online` job builds the ONLINE installer, published by the
+  release job alongside the offline payload (download policy since the
+  v0.7.0 page cleanup: numbered 1-4 downloads + unnumbered metadata).
+  Until v0.7.0 the release job skipped it — release-page.yml attaches it
+  to older releases automatically.

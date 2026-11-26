@@ -116,27 +116,27 @@ jobs:
         run: |
           set -e
           cd "$STAGING/roots"
-          tar -czf "$STAGING/out/Velox-linux-x64-$VER-offline.tar.gz" "velox-$VER"
+          tar -czf "$STAGING/out/3-Velox-linux-x64-$VER-offline.tar.gz" "velox-$VER"
           cd "$STAGING/roots-core"
           tar -czf "$STAGING/out/Velox-linux-x64-$VER.tar.gz" "velox-$VER"
           # online installer: embed the release version, verify substitutions happened
           sed "s/__VELOX_VERSION__/$VER/" "$GITHUB_WORKSPACE/scripts/velox-setup-linux-online.sh" \
-            > "$STAGING/out/velox-setup-linux-online.sh"
-          chmod +x "$STAGING/out/velox-setup-linux-online.sh"
+            > "$STAGING/out/4-velox-setup-linux-online.sh"
+          chmod +x "$STAGING/out/4-velox-setup-linux-online.sh"
           # E-17 (killed run #75): the installer resolves the version at
           # RUNTIME via its own VER variable, so the file contains the
           # assignment VER="0.7.0" — NEVER the expanded URL. Grep the
           # assignment, not a URL with the version baked in.
-          grep -q "VER=\"$VER\"" "$STAGING/out/velox-setup-linux-online.sh"
-          bash -n "$STAGING/out/velox-setup-linux-online.sh"
+          grep -q "VER=\"$VER\"" "$STAGING/out/4-velox-setup-linux-online.sh"
+          bash -n "$STAGING/out/4-velox-setup-linux-online.sh"
           # E-18: "! grep" can NOT abort under set -e (errexit skips negated
           # commands) — use an explicit check that actually fails the step.
-          if grep -q "__VELOX_VERSION__" "$STAGING/out/velox-setup-linux-online.sh"; then
+          if grep -q "__VELOX_VERSION__" "$STAGING/out/4-velox-setup-linux-online.sh"; then
             echo "ERROR: __VELOX_VERSION__ placeholder survived substitution"; exit 1
           fi
           # verification: every distribution is complete, tools really bundled
-          tar -tzf "$STAGING/out/Velox-linux-x64-$VER-offline.tar.gz" | grep -q "bin/yt-dlp"
-          tar -tzf "$STAGING/out/Velox-linux-x64-$VER-offline.tar.gz" | grep -q "bin/ffmpeg"
+          tar -tzf "$STAGING/out/3-Velox-linux-x64-$VER-offline.tar.gz" | grep -q "bin/yt-dlp"
+          tar -tzf "$STAGING/out/3-Velox-linux-x64-$VER-offline.tar.gz" | grep -q "bin/ffmpeg"
           # core distribution must NOT bundle the tools (explicit E-18 form)
           if tar -tzf "$STAGING/out/Velox-linux-x64-$VER.tar.gz" | grep -q "bin/ffmpeg"; then
             echo "ERROR: core distribution must not bundle ffmpeg"; exit 1
@@ -189,9 +189,9 @@ jobs:
         run: |
           set -e
           mkdir -p out
-          cp rel/Velox-linux-dist/Velox-linux-x64-*-offline.tar.gz out/
+          cp rel/Velox-linux-dist/3-Velox-linux-x64-*-offline.tar.gz out/
           cp rel/Velox-linux-dist/Velox-linux-x64-*.tar.gz out/
-          cp rel/Velox-linux-dist/velox-setup-linux-online.sh out/
+          cp rel/Velox-linux-dist/4-velox-setup-linux-online.sh out/
           # merge into the existing SHA256SUMS.txt: strip any stale linux
           # lines, keep the Windows lines, append fresh linux checksums
           if gh release download "$TAG" --pattern 'SHA256SUMS.txt' --clobber; then
@@ -199,25 +199,19 @@ jobs:
           else
             : > sums.txt
           fi
-          (cd out && sha256sum Velox-linux-x64-*.tar.gz velox-setup-linux-online.sh) >> sums.txt
+          (cd out && sha256sum 3-Velox-linux-x64-*.tar.gz Velox-linux-x64-*.tar.gz 4-velox-setup-linux-online.sh) >> sums.txt
           cp sums.txt out/SHA256SUMS.txt
           gh release upload "$TAG" out/* --clobber
           echo "linux assets attached to $TAG"
-      - name: Add the Linux section to the release notes
+      - name: Rewrite the release notes (shared formal template)
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -e
-          gh release view "$TAG" --json body -q .body > notes.md
-          if grep -q "Velox-linux-x64-$VER-offline.tar.gz" notes.md; then
-            echo "linux section already present — leaving notes unchanged"
-          else
-            {
-              printf '%s\n' ""
-              printf '%s\n' "### Linux x86_64 (per-user, no root)" ''
-              printf '%s\n' "- **Velox-linux-x64-$VER-offline.tar.gz** — OFFLINE: app + yt-dlp + LGPL FFmpeg bundled in \`bin/\`; extract and run \`install.sh\` (menu entry, launcher, icons included). Uninstall: \`./install.sh --uninstall\`." "- **Velox-linux-x64-$VER.tar.gz** — app core for the online installer." "- **velox-setup-linux-online.sh** — ONLINE installer: downloads the core + the YouTube toolchain from official sources (\`--no-media\` skips it)." ''
-              printf '%s\n' "Requirements: WebKitGTK 4.1 + GTK3 (present on current Ubuntu/Debian/Fedora/Arch). See docs/LINUX.md for install, update and troubleshooting."
-            } >> notes.md
-            gh release edit "$TAG" --notes-file notes.md
-            echo "linux section added to the release notes"
-          fi
+          # scripts/release-notes.sh is the single source of truth for the
+          # page text — windows.yml publishes the SAME body at stage 1, so
+          # this rewrite is idempotent (identical bytes both stages).
+          bash scripts/release-notes.sh "$VER" > notes.md
+          grep -q "## Downloads" notes.md
+          gh release edit "$TAG" --title "Velox $VER" --notes-file notes.md
+          echo "formal release notes in place"

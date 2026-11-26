@@ -4,7 +4,7 @@
 [![windows](https://github.com/AHCITY/Velox-Download-Manager/actions/workflows/windows.yml/badge.svg)](https://github.com/AHCITY/Velox-Download-Manager/actions/workflows/windows.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-**A native, resumable download manager for Windows.** Rust download engine, Tauri 2 desktop UI, browser extension integration — with YouTube support powered by yt-dlp and an LGPL FFmpeg stream-copy pipeline.
+**A native, resumable download manager for Windows and Linux.** Rust download engine, Tauri 2 desktop UI, browser extension integration — with YouTube support powered by yt-dlp and an LGPL FFmpeg stream-copy pipeline.
 
 Velox is not a wrapper around a CLI downloader: the engine runs **in-process** — segmented HTTP/HTTPS transfers, transactional crash-safe resume, strict integrity verification, and a JSON-RPC API, all in Rust. The desktop shell and the browser extension are thin clients over that one engine.
 
@@ -21,9 +21,7 @@ Velox is not a wrapper around a CLI downloader: the engine runs **in-process** �
 
 ## Install
 
-Download **`Velox-Setup-x64-unified.exe`** from the [latest release](https://github.com/AHCITY/Velox-Download-Manager/releases/latest) and run it (Windows 10 / 11, per-user install, no admin required).
-
-The installer ships everything:
+**Windows 10 / 11** — download **Velox Setup** or **Velox Setup (Offline)** from the [latest release](https://github.com/AHCITY/Velox-Download-Manager/releases/latest) and run it (per-user install, no admin required). The offline installer ships everything:
 
 | Bundled | Purpose |
 | --- | --- |
@@ -33,9 +31,11 @@ The installer ships everything:
 | `extension/` + `velox-browser-host.exe` | browser integration (auto-registered) |
 | `WebView2Setup.exe` | fallback runtime installer (used only if WebView2 is missing) |
 
+**Linux (x86_64)** — the offline archive or the online installer script from the [latest release](https://github.com/AHCITY/Velox-Download-Manager/releases/latest); per-user install, no root required. See [docs/LINUX.md](docs/LINUX.md) for requirements, updates and troubleshooting.
+
 The app discovers its bundled tools next to its own executable — **no PATH configuration needed**. User data (history, settings, downloads) lives outside the install directory and survives upgrades and uninstall.
 
-Linux/macOS: build from source (below). There is no packaged installer for them yet.
+macOS: build from source (below).
 
 ## Build from source
 
@@ -80,7 +80,6 @@ scripts/                  # build, packaging, release and CI helper scripts
 
 ## Roadmap
 
-- Online/offline installer variant selection (postponed deliberately — one complete installer ships today)
 - Mirror/Metalink support, multi-protocol planning
 - Packaged Linux builds (AppImage/deb)
 - Media playlist support (currently single-media URLs)
