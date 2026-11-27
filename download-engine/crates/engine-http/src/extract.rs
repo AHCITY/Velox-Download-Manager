@@ -169,6 +169,7 @@ pub async fn resolve_media_with(
                 audio_name: None,
                 convert: Some(engine_core::config::MediaConvert::Mp3),
             }),
+            thumbnail: pick_thumbnail(&meta),
             ..Default::default()
         }
     } else if let Some(audio) = &plan.audio {
@@ -194,6 +195,7 @@ pub async fn resolve_media_with(
                 audio_name: Some(format!("{} (audio stream).{}", title, audio.ext)),
                 convert: None,
             }),
+            thumbnail: pick_thumbnail(&meta),
             ..Default::default()
         }
     } else {
@@ -211,10 +213,44 @@ pub async fn resolve_media_with(
                 "media extractor: “{}” [{}]",
                 title, plan.video.format_id
             )),
+            thumbnail: pick_thumbnail(&meta),
             ..Default::default()
         }
     };
     Ok(info)
+}
+
+/// Best source-provided thumbnail for ANY media source (not only YouTube):
+/// yt-dlp reports `thumbnail` plus a ranked `thumbnails[]` list. Prefer the
+/// explicit field, then the largest-resolution entry. This is what makes
+/// "any source that has a thumbnail keeps it" work for YouTube, Vimeo,
+/// SoundCloud, Dailymotion, and every other extractor that reports one.
+fn pick_thumbnail(meta: &serde_json::Value) -> Option<String> {
+    let explicit = meta.get("thumbnail").and_then(|t| t.as_str());
+    let best_from_list = meta
+        .get("thumbnails")
+        .and_then(|t| t.as_array())
+        .and_then(|list| {
+            list.iter()
+                .filter_map(|t| {
+                    let url = t.get("url").and_then(|u| u.as_str())?;
+                    if url.is_empty() {
+                        return None;
+                    }
+                    let w = t.get("width").and_then(|w| w.as_u64()).unwrap_or(0);
+                    let h = t.get("height").and_then(|h| h.as_u64()).unwrap_or(0);
+                    // prefer preference (yt-dlp ranks), fall back to resolution
+                    let pref = t.get("preference").and_then(|p| p.as_f64()).unwrap_or(0.0);
+                    Some((pref, w.saturating_mul(h), url))
+                })
+                .max_by_key(|(pref, area, _)| (*pref * 1_000_000.0) as u64 + *area)
+                .map(|(_, _, url)| url.to_string())
+        });
+    match (explicit, best_from_list) {
+        (Some(u), _) => Some(u.to_string()),
+        (None, Some(u)) => Some(u),
+        (None, None) => None,
+    }
 }
 
 /// Container choice for a merged artifact without transcoding: mp4 hosts
@@ -561,6 +597,27 @@ mod tests {
             "vcodec": v, "acodec": a, "tbr": tbr, "filesize": size,
             "url": format!("https://media.example/{}.{}", id, ext),
         })
+    }
+
+    #[test]
+    fn thumbnail_any_source_explizit_field_and_best_list_entry() {
+        // explicit thumbnail wins (any source, not only YouTube)
+        let meta = serde_json::json!({
+            "thumbnail": "https://cdn.example/maxres.jpg",
+            "thumbnails": [{"url": "https://cdn.example/small.jpg", "width": 120, "height": 90}],
+        });
+        assert_eq!(pick_thumbnail(&meta).as_deref(), Some("https://cdn.example/maxres.jpg"));
+        // no explicit field: the largest-resolution list entry is kept
+        let meta = serde_json::json!({
+            "thumbnails": [
+                {"url": "https://cdn.example/small.jpg", "width": 120, "height": 90},
+                {"url": "https://cdn.example/big.jpg", "width": 1280, "height": 720},
+                {"url": "https://cdn.example/mid.jpg", "width": 640, "height": 360},
+            ],
+        });
+        assert_eq!(pick_thumbnail(&meta).as_deref(), Some("https://cdn.example/big.jpg"));
+        // nothing reported → None (UI falls back to the category icon)
+        assert_eq!(pick_thumbnail(&serde_json::json!({})), None);
     }
 
     #[test]

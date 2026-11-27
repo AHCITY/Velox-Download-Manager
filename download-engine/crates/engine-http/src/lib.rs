@@ -471,6 +471,7 @@ impl HttpPort for ReqwestBackend {
             suggested_name: None,
             resolve_note: None,
             media: None,
+            thumbnail: None,
         })
     }
 
@@ -655,7 +656,14 @@ fn build_client(
         .connect_timeout(cfg.connect_timeout)
         .read_timeout(cfg.stall_timeout)
         .redirect(reqwest::redirect::Policy::none())
-        .danger_accept_invalid_certs(insecure || !cfg.tls_verify);
+        .danger_accept_invalid_certs(insecure || !cfg.tls_verify)
+        // FDM/IDM-class connection reuse: segments and re-resolves reuse pooled
+        // keep-alive connections instead of re-handshaking (TLS handshakes are
+        // the dominant latency on high-RTT CDNs). tcp_nodelay avoids Nagle
+        // stalls on range requests.
+        .tcp_nodelay(true)
+        .pool_max_idle_per_host(16)
+        .pool_idle_timeout(Duration::from_secs(90));
     b = match jar {
         // shared RFC 6265 store backed by the persistent jar file
         Some(store) => b.cookie_provider(store),

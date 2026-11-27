@@ -40,6 +40,10 @@ pub struct ResourceInfo {
     /// itself; `media.audio_url` is the second stream and `media.output_name` the final
     /// merged artifact. The manager turns this into a two-stream media job.
     pub media: Option<crate::config::MediaMergeSpec>,
+    /// Source-provided preview image (media pages: the best thumbnail the extractor
+    /// reports). Any source that HAS a thumbnail keeps it — the UI renders it as
+    /// the row art and falls back to the category icon when this is None.
+    pub thumbnail: Option<String>,
 }
 
 /// What the first bytes of a body look like. Deliberately conservative: the engine only

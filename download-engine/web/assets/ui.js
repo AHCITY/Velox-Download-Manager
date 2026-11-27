@@ -30,10 +30,13 @@ export function ytThumbId(url) {
   return m ? m[1] : null;
 }
 
-/** Row art: a real YouTube thumbnail when the source is a video page, else the
- *  category icon. The img is attached by paintRow (CSP allows i.ytimg.com);
+/** Row art: the source-provided thumbnail when the engine captured one (ALL
+ *  media sources — YouTube, Vimeo, SoundCloud, …), else the legacy i.ytimg.com
+ *  scheme for YouTube URLs whose metadata was unavailable, else the category
+ *  icon. The img is attached by paintRow (CSP allows any https image);
  *  on load error it falls back to the icon, so a dead thumb never leaves a hole. */
 export function rowArt(r) {
+  if (r?.thumbnail) return `<div class="file-ico thumb" data-src="${esc(r.thumbnail)}" title="${esc(r?.final_name || '')}"></div>`;
   const id = ytThumbId(r?.url);
   if (!id) return fileTypeIcon(r?.final_name);
   return `<div class="file-ico thumb" data-thumb="${esc(id)}" title="${esc(r?.final_name || '')}"></div>`;
@@ -311,7 +314,10 @@ export function paintRow(node, r, { selectable = true, compact = false } = {}) {
   try { domain = new URL(r.url).host || ''; } catch { /* keep empty */ }
   const metaBits = [];
   if (domain) metaBits.push(esc(domain));
-  if (running && r.connections_active) metaBits.push(`<b>${r.connections_active}</b> connections`);
+  if (running && r.connections_active) {
+    const noun = r.mode === 'torrent' ? 'peers' : 'connections';
+    metaBits.push(`<b>${r.connections_active}</b> ${noun}`);
+  }
   metaBits.push(esc(fmtTime(r.created_at)));
   const domLine = `<div class="row-dom">${metaBits.join('<span class="dotsep">·</span>')}<span class="dst" title="${esc(r.dest_dir)}">${esc(r.dest_dir)}</span></div>`;
 
@@ -370,7 +376,7 @@ export function paintRow(node, r, { selectable = true, compact = false } = {}) {
     img.className = 'row-thumb';
     img.loading = 'lazy';
     img.alt = '';
-    img.src = `https://i.ytimg.com/vi/${thumbBox.dataset.thumb}/mqdefault.jpg`;
+    img.src = thumbBox.dataset.src || `https://i.ytimg.com/vi/${thumbBox.dataset.thumb}/mqdefault.jpg`;
     img.onerror = () => { thumbBox.classList.remove('thumb'); thumbBox.innerHTML = fileTypeIcon(r.final_name); };
     thumbBox.appendChild(img);
   }

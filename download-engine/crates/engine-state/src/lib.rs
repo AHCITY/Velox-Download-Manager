@@ -62,6 +62,10 @@ pub struct DownloadRow {
     pub created_at: String,
     pub updated_at: String,
     pub completed_at: Option<String>,
+    /// Source-provided preview image URL (yt-dlp metadata for media pages; any
+    /// extractor that reports one). The UI shows it as the row/dossier art and
+    /// falls back to the category icon when absent.
+    pub thumbnail: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -84,7 +88,7 @@ pub struct ErrorRow {
 const COLS: &str = "id, url, resolved_url, dest_dir, temp_path, final_name, total_size, etag, etag_is_weak, \
                     last_modified, mime, content_encoding, accept_ranges, mode, state, received, \
                     max_connections, config_json, error_code, error_message, sha256, blake3, verified, \
-                    created_at, updated_at, completed_at";
+                    created_at, updated_at, completed_at, thumbnail";
 
 pub struct Db {
     conn: Mutex<Connection>,
@@ -171,7 +175,8 @@ impl Db {
                 verified INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
-                completed_at TEXT
+                completed_at TEXT,
+                thumbnail TEXT
             );
 
             CREATE TABLE IF NOT EXISTS segments (
@@ -196,6 +201,16 @@ impl Db {
             CREATE INDEX IF NOT EXISTS idx_errors_dl ON errors(download_id);
             "#,
         )?;
+        // migration: pre-thumbnail databases (0.7.0 and older) gain the column in place;
+        // fresh databases already created it above.
+        let has_col: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('downloads') WHERE name='thumbnail'",
+            [],
+            |r| r.get(0),
+        )?;
+        if has_col == 0 {
+            conn.execute_batch("ALTER TABLE downloads ADD COLUMN thumbnail TEXT;")?;
+        }
         Ok(())
     }
 
@@ -212,7 +227,7 @@ impl Db {
         let ts = Self::now();
         conn.execute(
             &format!(
-                "INSERT INTO downloads ({}) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "INSERT INTO downloads ({}) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 COLS.trim_start_matches("id, ")
             ),
             params![
@@ -241,6 +256,7 @@ impl Db {
                 if row.created_at.is_empty() { ts.clone() } else { row.created_at.clone() },
                 ts,
                 row.completed_at,
+                row.thumbnail,
             ],
         )?;
         Ok(conn.last_insert_rowid())
@@ -253,7 +269,7 @@ impl Db {
             "UPDATE downloads SET url=?, resolved_url=?, dest_dir=?, temp_path=?, final_name=?, total_size=?, \
              etag=?, etag_is_weak=?, last_modified=?, mime=?, content_encoding=?, accept_ranges=?, mode=?, \
              state=?, received=?, max_connections=?, config_json=?, error_code=?, error_message=?, sha256=?, \
-             blake3=?, verified=?, updated_at=?, completed_at=? WHERE id=?",
+             blake3=?, verified=?, updated_at=?, completed_at=?, thumbnail=? WHERE id=?",
             params![
                 row.url,
                 row.resolved_url,
@@ -279,6 +295,7 @@ impl Db {
                 row.verified as i64,
                 Self::now(),
                 row.completed_at,
+                row.thumbnail.clone(),
                 row.id,
             ],
         )?;
@@ -493,6 +510,7 @@ fn row_to_download(r: &rusqlite::Row<'_>) -> rusqlite::Result<DownloadRow> {
         created_at: r.get(23).unwrap_or_default(),
         updated_at: r.get(24).unwrap_or_default(),
         completed_at: r.get(25).unwrap_or_default(),
+        thumbnail: r.get(26).unwrap_or_default(),
     })
 }
 
