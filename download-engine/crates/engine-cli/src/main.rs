@@ -719,7 +719,13 @@ async fn wire_torrents(manager: &Arc<DownloadManager>) {
         return;
     }
     let db = manager.db().clone();
-    match engine_torrent::TorrentEngine::new(&manager.engine_config().data_dir, db, manager.event_bus()).await {
+    match engine_torrent::TorrentEngine::new(
+        &manager.engine_config().data_dir,
+        db,
+        manager.event_bus(),
+    )
+    .await
+    {
         Ok(engine) => {
             manager.set_torrent(Some(engine));
             eprintln!("torrent engine: ready (magnet + .torrent downloads enabled)");

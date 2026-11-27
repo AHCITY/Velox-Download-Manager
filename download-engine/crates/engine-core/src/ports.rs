@@ -190,8 +190,12 @@ pub trait HttpPort: Send + Sync {
 pub trait TorrentPort: Send + Sync {
     /// Attach the BitTorrent engine to an existing row (the row was created by
     /// the manager; `id` is the row id). Engine-owned from here on.
-    async fn add(&self, id: i64, source: &str, out_dir: &std::path::Path)
-        -> Result<(), EngineError>;
+    async fn add(
+        &self,
+        id: i64,
+        source: &str,
+        out_dir: &std::path::Path,
+    ) -> Result<(), EngineError>;
 
     /// Pause: stop the swarm traffic, keep the partial pieces on disk.
     async fn pause(&self, id: i64) -> Result<(), EngineError>;

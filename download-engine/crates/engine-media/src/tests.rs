@@ -216,7 +216,8 @@ async fn gpl_swapped_binary_caught_at_merge_time() {
     let port = FakePort::ok();
     *port.version_out.lock().unwrap() =
         "ffmpeg version 7.1\nconfiguration: --enable-gpl --enable-libx264".into();
-    let pipeline = MediaPipeline::with_binaries_gated(port, "ffmpeg", "ffprobe", crate::LicenseGate::Enforce);
+    let pipeline =
+        MediaPipeline::with_binaries_gated(port, "ffmpeg", "ffprobe", crate::LicenseGate::Enforce);
     let (bus, _rx) = make_bus(16);
     let (_, kill) = watch::channel(false);
     let err = pipeline.merge(3, &input(), &bus, kill).await.unwrap_err();
@@ -325,7 +326,11 @@ impl MediaPipelinePort for GplPort {
         })
     }
 
-    async fn version(&self, _exe: &str, _kill: watch::Receiver<bool>) -> Result<String, EngineError> {
+    async fn version(
+        &self,
+        _exe: &str,
+        _kill: watch::Receiver<bool>,
+    ) -> Result<String, EngineError> {
         Ok("ffmpeg version 7.1\nconfiguration: --enable-gpl --enable-libx264".into())
     }
 }
@@ -349,8 +354,16 @@ async fn user_path_ffmpeg_with_gpl_flags_is_accepted() {
 async fn bundled_ffmpeg_with_gpl_flags_is_refused() {
     // a "bundled" dir whose fake ffmpeg advertises --enable-gpl → Enforce gate
     let dir = tempfile::tempdir().unwrap();
-    let exe = if cfg!(windows) { "ffmpeg.exe" } else { "ffmpeg" };
-    let probe = if cfg!(windows) { "ffprobe.exe" } else { "ffprobe" };
+    let exe = if cfg!(windows) {
+        "ffmpeg.exe"
+    } else {
+        "ffmpeg"
+    };
+    let probe = if cfg!(windows) {
+        "ffprobe.exe"
+    } else {
+        "ffprobe"
+    };
     std::fs::write(dir.path().join(exe), "not a real binary").unwrap();
     std::fs::write(dir.path().join(probe), "not a real binary").unwrap();
     // GplPort answers the version probe regardless of the fake file bytes.

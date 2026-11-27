@@ -561,7 +561,9 @@ impl DownloadManager {
                 redirect_chain: vec![url.to_string()],
                 status: 200,
                 mime: Some("application/x-bittorrent".into()),
-                suggested_name: Some(crate::naming::sanitize_filename(&torrent_placeholder_name(url))),
+                suggested_name: Some(crate::naming::sanitize_filename(&torrent_placeholder_name(
+                    url,
+                ))),
                 resolve_note: Some(
                     "BitTorrent source — added as a torrent download (no HTTP preview)".into(),
                 ),
@@ -583,7 +585,11 @@ impl DownloadManager {
     /// register a `mode = "torrent"` row, then hand it to the injected torrent
     /// stage. The row joins the SAME manifest as HTTP downloads — one list, one
     /// UI. Metadata (name/size) fills in as the swarm reports it.
-    async fn add_torrent(&self, url: &str, cfg: DownloadConfig) -> Result<AddedDownload, EngineError> {
+    async fn add_torrent(
+        &self,
+        url: &str,
+        cfg: DownloadConfig,
+    ) -> Result<AddedDownload, EngineError> {
         let port = self.torrent.lock().unwrap().clone().ok_or_else(|| {
             EngineError::new(
                 ErrorKind::InvalidConfig,
@@ -793,7 +799,10 @@ impl DownloadManager {
         // pieces on disk, so a cancelled torrent can also be resumed.
         if row.mode == "torrent" {
             let port = self.torrent.lock().unwrap().clone().ok_or_else(|| {
-                EngineError::new(ErrorKind::InvalidConfig, "torrent support is not available in this build")
+                EngineError::new(
+                    ErrorKind::InvalidConfig,
+                    "torrent support is not available in this build",
+                )
             })?;
             port.resume(id).await?;
             return Ok(());
@@ -1473,7 +1482,10 @@ impl DownloadManager {
             if row.mode == "torrent" {
                 if row.state != states::COMPLETED {
                     let port = self.torrent.lock().unwrap().clone().ok_or_else(|| {
-                        EngineError::new(ErrorKind::InvalidConfig, "torrent support is not available in this build")
+                        EngineError::new(
+                            ErrorKind::InvalidConfig,
+                            "torrent support is not available in this build",
+                        )
                     })?;
                     port.pause(id).await?;
                 }
@@ -1511,13 +1523,17 @@ impl DownloadManager {
             if row.mode == "torrent" {
                 if row.state != states::COMPLETED {
                     let port = self.torrent.lock().unwrap().clone().ok_or_else(|| {
-                        EngineError::new(ErrorKind::InvalidConfig, "torrent support is not available in this build")
+                        EngineError::new(
+                            ErrorKind::InvalidConfig,
+                            "torrent support is not available in this build",
+                        )
                     })?;
                     let _ = port.pause(id).await;
                     if let Ok(Some(mut r)) = self.db.get_download(id) {
                         r.state = states::CANCELLED.to_string();
                         r.error_code = Some("CANCELLED".into());
-                        r.error_message = Some("torrent paused by cancel (pieces kept on disk)".into());
+                        r.error_message =
+                            Some("torrent paused by cancel (pieces kept on disk)".into());
                         self.db.update_download(&r).map_err(db_err)?;
                         self.events
                             .send(crate::events::Event::DownloadState {
@@ -1871,7 +1887,7 @@ fn torrent_placeholder_name(source: &str) -> String {
         let hash = source
             .split('&')
             .find(|p| p.to_ascii_lowercase().starts_with("xt=urn:btih:"))
-            .and_then(|p| p.split(':').last())
+            .and_then(|p| p.split(':').next_back())
             .unwrap_or("torrent");
         let short: String = hash.chars().take(12).collect();
         format!("torrent {short}")

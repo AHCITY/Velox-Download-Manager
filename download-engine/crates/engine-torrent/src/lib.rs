@@ -47,7 +47,11 @@ pub struct TorrentEngine {
 
 impl TorrentEngine {
     /// Build the session and re-attach every incomplete torrent row (crash recovery).
-    pub async fn new(data_dir: &Path, db: Arc<Db>, events: EventBus) -> Result<Arc<Self>, EngineError> {
+    pub async fn new(
+        data_dir: &Path,
+        db: Arc<Db>,
+        events: EventBus,
+    ) -> Result<Arc<Self>, EngineError> {
         let session_dir = data_dir.join("torrents");
         std::fs::create_dir_all(&session_dir).map_err(io_err("cannot create torrent data dir"))?;
         let opts = SessionOptions {
@@ -59,7 +63,12 @@ impl TorrentEngine {
         };
         let session = Session::new_with_opts(session_dir, opts)
             .await
-            .map_err(|e| EngineError::new(ErrorKind::Io, format!("torrent session failed to start: {e}")))?;
+            .map_err(|e| {
+                EngineError::new(
+                    ErrorKind::Io,
+                    format!("torrent session failed to start: {e}"),
+                )
+            })?;
         let eng = Arc::new(Self {
             session,
             db,
@@ -88,7 +97,10 @@ impl TorrentEngine {
                 continue;
             }
             let id = row.id;
-            match self.attach(id, &row.url, Path::new(&row.dest_dir), true).await {
+            match self
+                .attach(id, &row.url, Path::new(&row.dest_dir), true)
+                .await
+            {
                 Ok(_) => {
                     let _ = self.events.send(Event::DownloadState {
                         id,
@@ -112,9 +124,7 @@ impl TorrentEngine {
     ) -> Result<ManagedTorrentHandle, EngineError> {
         // absolute output folder (librqbit requires one)
         let out_dir = std::fs::canonicalize(out_dir)
-            .or_else(|_| {
-                std::fs::create_dir_all(out_dir).map(|_| out_dir.to_path_buf())
-            })
+            .or_else(|_| std::fs::create_dir_all(out_dir).map(|_| out_dir.to_path_buf()))
             .map_err(io_err("torrent output folder unavailable"))?;
 
         let bytes_or_none = if !source.starts_with("magnet:")
@@ -154,10 +164,18 @@ impl TorrentEngine {
             .session
             .add_torrent(add, Some(opts))
             .await
-            .map_err(|e| EngineError::new(ErrorKind::InvalidUrl, format!("torrent could not be added: {e}")))?;
-        let handle = resp
-            .into_handle()
-            .ok_or_else(|| EngineError::new(ErrorKind::InvalidUrl, "torrent source was list-only; nothing to download"))?;
+            .map_err(|e| {
+                EngineError::new(
+                    ErrorKind::InvalidUrl,
+                    format!("torrent could not be added: {e}"),
+                )
+            })?;
+        let handle = resp.into_handle().ok_or_else(|| {
+            EngineError::new(
+                ErrorKind::InvalidUrl,
+                "torrent source was list-only; nothing to download",
+            )
+        })?;
         let tid = handle.id();
         self.handles.lock().unwrap().insert(id, handle.clone());
         self.ids.lock().unwrap().insert(tid, id);
@@ -194,10 +212,14 @@ impl TorrentEngine {
             let (speed, peers) = stats
                 .live
                 .as_ref()
-                .map(|l| (l.download_speed.as_bytes(), l.snapshot.peer_stats.live as usize))
+                .map(|l| {
+                    (
+                        l.download_speed.as_bytes(),
+                        l.snapshot.peer_stats.live as usize,
+                    )
+                })
                 .unwrap_or((0, 0));
 
-            let state = stats_state_of(&stats.state, stats.finished);
             let _ = self.events.send(Event::Progress {
                 id,
                 received,
@@ -207,12 +229,15 @@ impl TorrentEngine {
             });
 
             // metadata often arrives only after the magnet resolves
-            let mut want_db = tick % 2 == 0;
+            let mut want_db = tick.is_multiple_of(2);
             if let Some(name) = handle.name() {
                 if let Ok(Some(mut row)) = self.db.get_download(id) {
                     let current = sanitize_torrent_name(&row.final_name);
                     let candidate = sanitize_torrent_name(&name);
-                    if !candidate.is_empty() && candidate != current && looks_like_placeholder(&row.final_name) {
+                    if !candidate.is_empty()
+                        && candidate != current
+                        && looks_like_placeholder(&row.final_name)
+                    {
                         row.final_name = candidate;
                         if self.db.update_download(&row).is_ok() {
                             want_db = false; // already persisted this tick
@@ -228,7 +253,9 @@ impl TorrentEngine {
 
     /// DB sync + state transitions for one torrent row.
     async fn sync_row(&self, id: i64, handle: ManagedTorrentHandle, total: u64, received: u64) {
-        let Ok(Some(mut row)) = self.db.get_download(id) else { return };
+        let Ok(Some(mut row)) = self.db.get_download(id) else {
+            return;
+        };
         let stats = handle.stats();
         let new_state = stats_state_of(&stats.state, stats.finished);
         let old_state = row.state.clone();
@@ -255,8 +282,13 @@ impl TorrentEngine {
                 state: new_state.clone(),
             });
             if new_state == states::COMPLETED {
-                let path = std::path::Path::new(&row.dest_dir)
-                    .join(handle.output_folder().file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default());
+                let path = std::path::Path::new(&row.dest_dir).join(
+                    handle
+                        .output_folder()
+                        .file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_default(),
+                );
                 let _ = self.events.send(Event::Completed {
                     id,
                     path: path.display().to_string(),
@@ -272,13 +304,25 @@ impl TorrentEngine {
 fn stats_state_of(state: &TorrentStatsState, finished: bool) -> String {
     match state {
         TorrentStatsState::Initializing { .. } => {
-            if finished { states::COMPLETED.into() } else { states::DOWNLOADING.into() }
+            if finished {
+                states::COMPLETED.into()
+            } else {
+                states::DOWNLOADING.into()
+            }
         }
         TorrentStatsState::Live => {
-            if finished { states::COMPLETED.into() } else { states::DOWNLOADING.into() }
+            if finished {
+                states::COMPLETED.into()
+            } else {
+                states::DOWNLOADING.into()
+            }
         }
         TorrentStatsState::Paused => {
-            if finished { states::COMPLETED.into() } else { states::PAUSED.into() }
+            if finished {
+                states::COMPLETED.into()
+            } else {
+                states::PAUSED.into()
+            }
         }
         TorrentStatsState::Error => states::FAILED.into(),
     }
@@ -358,8 +402,13 @@ impl TorrentPort for TorrentEngine {
             // resume-after-crash and "Retry" hit an already-live torrent — that
             // is the happy path, not an error
             let msg = e.to_string();
-            if !msg.to_ascii_lowercase().contains("already") && !msg.to_ascii_lowercase().contains("live") {
-                return Err(EngineError::new(ErrorKind::Io, format!("torrent resume failed: {e}")));
+            if !msg.to_ascii_lowercase().contains("already")
+                && !msg.to_ascii_lowercase().contains("live")
+            {
+                return Err(EngineError::new(
+                    ErrorKind::Io,
+                    format!("torrent resume failed: {e}"),
+                ));
             }
         }
         self.sync_row(id, handle, 0, 0).await;

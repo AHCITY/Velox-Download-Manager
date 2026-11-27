@@ -606,7 +606,10 @@ mod tests {
             "thumbnail": "https://cdn.example/maxres.jpg",
             "thumbnails": [{"url": "https://cdn.example/small.jpg", "width": 120, "height": 90}],
         });
-        assert_eq!(pick_thumbnail(&meta).as_deref(), Some("https://cdn.example/maxres.jpg"));
+        assert_eq!(
+            pick_thumbnail(&meta).as_deref(),
+            Some("https://cdn.example/maxres.jpg")
+        );
         // no explicit field: the largest-resolution list entry is kept
         let meta = serde_json::json!({
             "thumbnails": [
@@ -615,7 +618,10 @@ mod tests {
                 {"url": "https://cdn.example/mid.jpg", "width": 640, "height": 360},
             ],
         });
-        assert_eq!(pick_thumbnail(&meta).as_deref(), Some("https://cdn.example/big.jpg"));
+        assert_eq!(
+            pick_thumbnail(&meta).as_deref(),
+            Some("https://cdn.example/big.jpg")
+        );
         // nothing reported → None (UI falls back to the category icon)
         assert_eq!(pick_thumbnail(&serde_json::json!({})), None);
     }
