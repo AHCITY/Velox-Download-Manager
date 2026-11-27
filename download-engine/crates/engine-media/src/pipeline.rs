@@ -134,11 +134,24 @@ pub fn validate_probe_json(probe: &serde_json::Value) -> Result<(), EngineError>
     Ok(())
 }
 
+/// License policy applied at discovery. `Enforce` is for binaries Velox itself
+/// DISTRIBUTES (bundled beside the exe — the LGPL policy must hold for what we
+/// ship). `Skip` is for binaries the user installed on their own system and
+/// pointed us at via PATH: invoking them is not distribution, and refusing them
+/// broke merging for the majority of users (winget/gyan/distro builds are
+/// GPL-flagged) — the #1 root cause of "YouTube downloads as 2 separate files".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LicenseGate {
+    Enforce,
+    Skip,
+}
+
 /// Merge pipeline: LGPL gate + merge + validation + events.
 pub struct MediaPipeline<P: MediaPipelinePort> {
     port: Arc<P>,
     ffmpeg: String,
     ffprobe: String,
+    gate: LicenseGate,
 }
 
 impl<P: MediaPipelinePort> std::fmt::Debug for MediaPipeline<P> {
@@ -152,15 +165,27 @@ impl<P: MediaPipelinePort> std::fmt::Debug for MediaPipeline<P> {
 
 impl<P: MediaPipelinePort> MediaPipeline<P> {
     /// Build a pipeline around explicit binaries. No discovery I/O.
+    /// Bare names (PATH-provided, user-installed binaries) are not gated.
     pub fn with_binaries(
         port: Arc<P>,
         ffmpeg: impl Into<String>,
         ffprobe: impl Into<String>,
     ) -> Self {
+        Self::with_binaries_gated(port, ffmpeg, ffprobe, LicenseGate::Skip)
+    }
+
+    /// Same as `with_binaries` with an explicit license policy.
+    pub fn with_binaries_gated(
+        port: Arc<P>,
+        ffmpeg: impl Into<String>,
+        ffprobe: impl Into<String>,
+        gate: LicenseGate,
+    ) -> Self {
         Self {
             port,
             ffmpeg: ffmpeg.into(),
             ffprobe: ffprobe.into(),
+            gate,
         }
     }
 
@@ -173,11 +198,23 @@ impl<P: MediaPipelinePort> MediaPipeline<P> {
     /// Discovery with explicit binaries — the bundled-beside-exe layout wins
     /// over a bare PATH lookup, which missed the installer-shipped ffmpeg and
     /// left YouTube downloads as two separate files (merge port never injected).
-    /// The LGPL gate still applies to whichever ffmpeg is selected.
+    /// The LGPL gate applies to BUNDLED binaries (Velox distributes them);
+    /// a user-installed binary resolved through PATH is only invoked, never
+    /// distributed, so its license flags are the user's own choice.
     pub async fn discover_with(
         port: Arc<P>,
         ffmpeg: PathBuf,
         ffprobe: PathBuf,
+    ) -> Result<Self, EngineError> {
+        Self::discover_with_policy(port, ffmpeg, ffprobe, LicenseGate::Enforce).await
+    }
+
+    /// Discovery with an explicit license policy (see `LicenseGate`).
+    pub async fn discover_with_policy(
+        port: Arc<P>,
+        ffmpeg: PathBuf,
+        ffprobe: PathBuf,
+        gate: LicenseGate,
     ) -> Result<Self, EngineError> {
         let ff_name = ffmpeg.display().to_string();
         let fp_name = ffprobe.display().to_string();
@@ -189,12 +226,13 @@ impl<P: MediaPipelinePort> MediaPipeline<P> {
                 EngineError::new(
                     ErrorKind::MissingFfmpeg,
                     format!(
-                        "{exe} not found — install an LGPL ffmpeg build \
-                                 (docs/FFMPEG_INTEGRATION.md §3)"
+                        "{exe} not found — install FFmpeg to merge video+audio into one file \
+                                 (bundled with the Velox installer's YouTube component; otherwise \
+                                  install ffmpeg and make sure it is on PATH)"
                     ),
                 )
             })?;
-            if exe == ff_name {
+            if exe == ff_name && gate == LicenseGate::Enforce {
                 verify_lgpl(&version)?;
             }
         }
@@ -202,19 +240,21 @@ impl<P: MediaPipelinePort> MediaPipeline<P> {
             port,
             ffmpeg: ff_name,
             ffprobe: fp_name,
+            gate,
         })
     }
 
     /// Merge `input` (stream copy), validate with ffprobe, emit `Merging`/`Merged`.
     /// On cancel the child is killed and `Cancelled` is returned (§4).
-    /// Convert one input file to MP3 (LGPL gate + kill-safe + output check).
+    /// Convert one input file to MP3 (kill-safe + output check; the LGPL gate
+    /// re-runs only for gated bundled binaries).
     pub async fn convert_mp3(
         &self,
         input: &std::path::Path,
         output: &std::path::Path,
         kill: watch::Receiver<bool>,
     ) -> Result<(), EngineError> {
-        // LGPL gate on every conversion (a swapped binary between runs must be caught).
+        // gate on every conversion (a swapped binary between runs must be caught)
         let (_gate_tx, gate_kill) = watch::channel(false);
         let version = self
             .port
@@ -226,7 +266,9 @@ impl<P: MediaPipelinePort> MediaPipeline<P> {
                     format!("ffmpeg vanished before conversion: {}", e.message),
                 )
             })?;
-        verify_lgpl(&version)?;
+        if self.gate == LicenseGate::Enforce {
+            verify_lgpl(&version)?;
+        }
         let args = build_mp3_args(&input.display().to_string(), &output.display().to_string());
         let outcome = self.port.run(&self.ffmpeg, &args, kill).await?;
         if outcome.cancelled {
@@ -259,7 +301,7 @@ impl<P: MediaPipelinePort> MediaPipeline<P> {
     ) -> Result<PathBuf, EngineError> {
         let _ = bus.send(Event::Merging { id });
 
-        // LGPL gate on every merge (a swapped binary between runs must be caught).
+        // gate on every merge (a swapped binary between runs must be caught)
         let (_gate_tx, gate_kill) = watch::channel(false);
         let version = self
             .port
@@ -271,7 +313,9 @@ impl<P: MediaPipelinePort> MediaPipeline<P> {
                     format!("ffmpeg vanished before merge: {}", e.message),
                 )
             })?;
-        verify_lgpl(&version)?;
+        if self.gate == LicenseGate::Enforce {
+            verify_lgpl(&version)?;
+        }
 
         let args = build_merge_args(input);
         let outcome = self.port.run(&self.ffmpeg, &args, kill).await?;

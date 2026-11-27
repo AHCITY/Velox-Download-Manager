@@ -11,4 +11,5 @@ tokio.workspace = true
 serde_json.workspace = true
 
 [dev-dependencies]
-# workspace dev pattern: none needed yet
+# real temp dirs for the bundled-layout discovery tests
+tempfile = { workspace = true }

@@ -174,6 +174,7 @@ pub async fn handle_line(manager: &Arc<DownloadManager>, line: &str) -> Option<S
             "max_connections_per_host": manager.engine_config().max_connections_per_host,
             "max_concurrent_downloads": manager.engine_config().max_concurrent_downloads,
             "merge_capable": manager.has_media_merge(),
+            "torrent_capable": manager.has_torrents(),
             "default_out_dir": manager.engine_config().default_out_dir.display().to_string(),
         })),
         "download.create" => {
@@ -363,7 +364,7 @@ mod tests {
         )
         .await
         .unwrap();
-        assert!(r.contains("media pipeline not configured"), "{r}");
+        assert!(r.contains("FFmpeg was not found"), "{r}");
         // capability is reported honestly in engine.info
         let r = handle_line(&m, r#"{"jsonrpc":"2.0","id":13,"method":"engine.info"}"#)
             .await

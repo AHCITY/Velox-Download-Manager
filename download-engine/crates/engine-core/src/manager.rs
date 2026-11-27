@@ -110,6 +110,9 @@ pub struct StatusView {
     pub bps_smoothed: f64,
     pub bps_avg: f64,
     pub bps_peak: f64,
+    /// Source-provided preview image URL (thumbnails for ALL media sources that
+    /// have one, not only YouTube). None = no thumbnail, UI falls back to icons.
+    pub thumbnail: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -149,6 +152,10 @@ pub struct DownloadManager {
     /// In-flight adaptive media jobs (video ids currently running their audio
     /// download + merge orchestration). Guards single-flight per job.
     media_jobs: Mutex<HashSet<i64>>,
+    /// BitTorrent/magnet stage (engine-torrent), same injection pattern as the
+    /// media pipeline: core routes `mode = "torrent"` rows to the port; the
+    /// transfer engine never links a torrent library.
+    torrent: Mutex<Option<Arc<dyn crate::ports::TorrentPort>>>,
 }
 
 impl DownloadManager {
@@ -182,7 +189,27 @@ impl DownloadManager {
             merge_triggers: Mutex::new(HashMap::new()),
             merging: Mutex::new(HashSet::new()),
             media_jobs: Mutex::new(HashSet::new()),
+            torrent: Mutex::new(None),
         }))
+    }
+
+    /// Inject the torrent stage (engine-torrent). None keeps magnet/.torrent
+    /// sources failing honestly instead of pretending.
+    pub fn set_torrent(&self, port: Option<Arc<dyn crate::ports::TorrentPort>>) {
+        *self.torrent.lock().unwrap() = port;
+    }
+
+    /// Whether the torrent stage is available (API layers report capability honestly).
+    pub fn has_torrents(&self) -> bool {
+        self.torrent.lock().unwrap().is_some()
+    }
+
+    /// Magnet URIs and .torrent sources (local path or http(s) URL) are torrent
+    /// downloads, not HTTP ones.
+    pub fn is_torrent_source(url: &str) -> bool {
+        let u = url.trim();
+        u.to_ascii_lowercase().starts_with("magnet:")
+            || u.to_ascii_lowercase().ends_with(".torrent")
     }
 
     /// Inject the MediaPipeline merge stage (engine-media). None disables merges:
@@ -248,6 +275,12 @@ impl DownloadManager {
 
     pub fn events(&self) -> tokio::sync::broadcast::Receiver<Event> {
         self.events.subscribe()
+    }
+
+    /// The raw event bus sender (torrent stage + other injected stages emit
+    /// through it; hosts subscribe via `events()`).
+    pub fn event_bus(&self) -> tokio::sync::broadcast::Sender<Event> {
+        self.events.clone()
     }
 
     /// Speed-intelligence tap: mirrors the event bus for ONE download and
@@ -522,6 +555,19 @@ impl DownloadManager {
         url: &str,
         cfg: DownloadConfig,
     ) -> Result<crate::inspect::ResourceInfo, EngineError> {
+        if Self::is_torrent_source(url) {
+            return Ok(crate::inspect::ResourceInfo {
+                final_url: url.to_string(),
+                redirect_chain: vec![url.to_string()],
+                status: 200,
+                mime: Some("application/x-bittorrent".into()),
+                suggested_name: Some(crate::naming::sanitize_filename(&torrent_placeholder_name(url))),
+                resolve_note: Some(
+                    "BitTorrent source — added as a torrent download (no HTTP preview)".into(),
+                ),
+                ..Default::default()
+            });
+        }
         Self::validate_url(url)?;
         let headers = RequestHeaders::from_config(
             &cfg.headers,
@@ -533,8 +579,75 @@ impl DownloadManager {
         self.resolve_with_retry(url, &headers).await
     }
 
+    /// Torrent add path (magnet URI / .torrent path / http(s) .torrent URL):
+    /// register a `mode = "torrent"` row, then hand it to the injected torrent
+    /// stage. The row joins the SAME manifest as HTTP downloads — one list, one
+    /// UI. Metadata (name/size) fills in as the swarm reports it.
+    async fn add_torrent(&self, url: &str, cfg: DownloadConfig) -> Result<AddedDownload, EngineError> {
+        let port = self.torrent.lock().unwrap().clone().ok_or_else(|| {
+            EngineError::new(
+                ErrorKind::InvalidConfig,
+                "this engine build has no torrent support — magnet links and .torrent files \
+                     are not available (the desktop app and CLI enable it by default)",
+            )
+        })?;
+        let dest_dir = cfg
+            .out_dir
+            .clone()
+            .unwrap_or_else(|| self.engine.default_out_dir.clone());
+        let dest_str = dest_dir.display().to_string();
+
+        // dedupe: same torrent source into the same destination returns the existing row
+        let placeholder = torrent_placeholder_name(url);
+        if let Ok(Some(existing)) = self.db.find_same_destination(url, &dest_str, &placeholder) {
+            return Ok(AddedDownload {
+                id: existing.id,
+                filename: existing.final_name.clone(),
+                dest_dir: existing.dest_dir.clone(),
+                temp_path: existing.temp_path.clone().unwrap_or_default(),
+                total_size: existing.total_size.map(|t| t as u64),
+                accept_ranges: existing.accept_ranges.clone(),
+                resumable: resumability(&existing),
+                resumed_from: existing.received.max(0) as u64,
+                existing_id: Some(existing.id),
+            });
+        }
+
+        Self::preflight_checked(&dest_dir, None)?;
+        let final_name = placeholder;
+        let row = DownloadRow {
+            url: url.to_string(),
+            resolved_url: None,
+            dest_dir: dest_str.clone(),
+            final_name: final_name.clone(),
+            mime: Some("application/x-bittorrent".into()),
+            accept_ranges: "no".into(),
+            mode: "torrent".into(),
+            state: states::CREATED.to_string(),
+            config_json: serde_json::to_string(&cfg).unwrap_or_else(|_| "{}".into()),
+            ..Default::default()
+        };
+        let id = self.db.insert_download(&row).map_err(db_err)?;
+        port.add(id, url, &dest_dir).await?;
+        info!(id, "torrent: attached to the swarm");
+        Ok(AddedDownload {
+            id,
+            filename: final_name,
+            dest_dir: dest_str,
+            temp_path: String::new(),
+            total_size: None,
+            accept_ranges: "no".into(),
+            resumable: "no",
+            resumed_from: 0,
+            existing_id: None,
+        })
+    }
+
     /// Inspect a URL and register a download without starting it.
     pub async fn add(&self, url: &str, cfg: DownloadConfig) -> Result<AddedDownload, EngineError> {
+        if Self::is_torrent_source(url) {
+            return self.add_torrent(url, cfg).await;
+        }
         Self::validate_url(url)?;
         let mut cfg = cfg;
         let headers = RequestHeaders::from_config(
@@ -635,6 +748,7 @@ impl DownloadManager {
             state: states::CREATED.to_string(),
             max_connections: crate::plan::effective_max_connections(&self.engine, &cfg) as i64,
             config_json: serde_json::to_string(&cfg).unwrap_or_else(|_| "{}".into()),
+            thumbnail: info.thumbnail.clone(),
             ..Default::default()
         };
         let id = self.db.insert_download(&row).map_err(db_err)?;
@@ -673,6 +787,16 @@ impl DownloadManager {
                 ErrorKind::InvalidConfig,
                 "download already completed",
             ));
+        }
+        // Torrent rows: start() means resume (a fresh row was attached at add();
+        // a restart-recovered row is paused). Cancelled torrent rows keep their
+        // pieces on disk, so a cancelled torrent can also be resumed.
+        if row.mode == "torrent" {
+            let port = self.torrent.lock().unwrap().clone().ok_or_else(|| {
+                EngineError::new(ErrorKind::InvalidConfig, "torrent support is not available in this build")
+            })?;
+            port.resume(id).await?;
+            return Ok(());
         }
         if row.state == states::CANCELLED {
             return Err(EngineError::new(
@@ -965,7 +1089,8 @@ impl DownloadManager {
                 }
                 None => Err(crate::error::EngineError::new(
                     crate::error::ErrorKind::InvalidConfig,
-                    "media pipeline not configured — MP3 extraction needs the bundled ffmpeg",
+                    "FFmpeg was not found on this machine — MP3 extraction needs it. Reinstall Velox \
+                        with the YouTube component, or install FFmpeg and put it on PATH.",
                 )),
             };
             self.merge_triggers.lock().unwrap().remove(&video_id);
@@ -1103,9 +1228,10 @@ impl DownloadManager {
     pub async fn merge_streams(&self, video_id: i64, audio_id: i64) -> Result<(), EngineError> {
         let port = self.media_merge.lock().unwrap().clone().ok_or_else(|| {
             EngineError::new(
-                ErrorKind::InvalidConfig,
-                "media pipeline not configured — set an LGPL ffmpeg integration first \
-                     (docs/FFMPEG_INTEGRATION.md §3)",
+                ErrorKind::MissingFfmpeg,
+                "FFmpeg was not found on this machine — video+audio could not be merged into \
+                     one file. Reinstall Velox with the YouTube component (it bundles FFmpeg), \
+                     or install FFmpeg and make sure it is on PATH, then retry the merge.",
             )
         })?;
 
@@ -1342,6 +1468,18 @@ impl DownloadManager {
                 return Ok(());
             }
         }
+        // Torrent rows: no HTTP task — stop the swarm traffic, keep the pieces.
+        if let Ok(Some(row)) = self.db.get_download(id) {
+            if row.mode == "torrent" {
+                if row.state != states::COMPLETED {
+                    let port = self.torrent.lock().unwrap().clone().ok_or_else(|| {
+                        EngineError::new(ErrorKind::InvalidConfig, "torrent support is not available in this build")
+                    })?;
+                    port.pause(id).await?;
+                }
+                return Ok(());
+            }
+        }
         if let Some(entry) = self.running_snapshot(id) {
             let _ = entry.cmd.send(TaskCommand::Pause);
             // honesty fix: report when the task did NOT settle — "ok" used to mask
@@ -1367,6 +1505,31 @@ impl DownloadManager {
 
     /// Cancel and forget: removes the manifest row and the part file.
     pub async fn cancel(&self, id: i64) -> Result<(), EngineError> {
+        // Torrent rows have no HTTP task: pause the swarm, mark cancelled, keep
+        // the pieces on disk (a later Retry resumes instead of restarting).
+        if let Ok(Some(row)) = self.db.get_download(id) {
+            if row.mode == "torrent" {
+                if row.state != states::COMPLETED {
+                    let port = self.torrent.lock().unwrap().clone().ok_or_else(|| {
+                        EngineError::new(ErrorKind::InvalidConfig, "torrent support is not available in this build")
+                    })?;
+                    let _ = port.pause(id).await;
+                    if let Ok(Some(mut r)) = self.db.get_download(id) {
+                        r.state = states::CANCELLED.to_string();
+                        r.error_code = Some("CANCELLED".into());
+                        r.error_message = Some("torrent paused by cancel (pieces kept on disk)".into());
+                        self.db.update_download(&r).map_err(db_err)?;
+                        self.events
+                            .send(crate::events::Event::DownloadState {
+                                id,
+                                state: states::CANCELLED.to_string(),
+                            })
+                            .ok();
+                    }
+                }
+                return Ok(());
+            }
+        }
         if let Some(entry) = self.running_snapshot(id) {
             let _ = entry.cmd.send(TaskCommand::Cancel);
             if !wait_until_settled(self, id, Duration::from_secs(60)).await {
@@ -1445,6 +1608,22 @@ impl DownloadManager {
             .get_download(id)
             .map_err(db_err)?
             .ok_or_else(|| EngineError::new(ErrorKind::InvalidConfig, "unknown download id"))?;
+        // Torrent rows: detach from the session first (delete_files also wipes
+        // the pieces), then drop the row like any other download.
+        if row.mode == "torrent" {
+            let port = self.torrent.lock().unwrap().clone();
+            if let Some(port) = port {
+                let _ = port.remove(id, delete_file).await;
+            }
+            self.db.delete_download(id).map_err(db_err)?;
+            self.events
+                .send(crate::events::Event::DownloadState {
+                    id,
+                    state: "removed".to_string(),
+                })
+                .ok();
+            return Ok(());
+        }
         if delete_file && row.state == states::COMPLETED {
             let p = std::path::Path::new(&row.dest_dir).join(&row.final_name);
             match std::fs::remove_file(&p) {
@@ -1580,6 +1759,7 @@ impl DownloadManager {
             bps_smoothed: self.speed_stats_of(row.id).smoothed_bps,
             bps_avg: self.speed_stats_of(row.id).avg_bps,
             bps_peak: self.speed_stats_of(row.id).peak_bps,
+            thumbnail: row.thumbnail.clone(),
         }
     }
 
@@ -1679,6 +1859,29 @@ fn resumability(row: &DownloadRow) -> &'static str {
             }
         }
         _ => "unknown",
+    }
+}
+
+/// Stable, filesystem-safe placeholder name for a torrent row until the swarm
+/// metadata arrives (the poller replaces it with the real torrent name).
+fn torrent_placeholder_name(source: &str) -> String {
+    let lower = source.to_ascii_lowercase();
+    if lower.starts_with("magnet:") {
+        // prefer the xt hash fragment for a stable name
+        let hash = source
+            .split('&')
+            .find(|p| p.to_ascii_lowercase().starts_with("xt=urn:btih:"))
+            .and_then(|p| p.split(':').last())
+            .unwrap_or("torrent");
+        let short: String = hash.chars().take(12).collect();
+        format!("torrent {short}")
+    } else if lower.ends_with(".torrent") {
+        std::path::Path::new(source)
+            .file_stem()
+            .map(|n| format!("{}.torrent", n.to_string_lossy()))
+            .unwrap_or_else(|| "torrent.torrent".into())
+    } else {
+        "torrent".into()
     }
 }
 
@@ -1964,8 +2167,8 @@ mod merge_tests {
         let data = tempfile::tempdir().unwrap();
         let m = mgr(data.path());
         let e = m.merge_streams(1, 2).await.unwrap_err();
-        assert_eq!(e.kind, ErrorKind::InvalidConfig);
-        assert!(e.message.contains("media pipeline not configured"));
+        assert_eq!(e.kind, ErrorKind::MissingFfmpeg);
+        assert!(e.message.contains("FFmpeg was not found"));
     }
 
     #[tokio::test]

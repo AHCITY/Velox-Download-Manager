@@ -211,10 +211,12 @@ async fn ffprobe_rejection_is_corrupt_media() {
 
 #[tokio::test]
 async fn gpl_swapped_binary_caught_at_merge_time() {
+    // BUNDLED pipeline (Enforce): a binary swapped in after discovery — or any
+    // GPL-flagged build we distribute — is refused again at merge time.
     let port = FakePort::ok();
     *port.version_out.lock().unwrap() =
         "ffmpeg version 7.1\nconfiguration: --enable-gpl --enable-libx264".into();
-    let pipeline = MediaPipeline::with_binaries(port, "ffmpeg", "ffprobe");
+    let pipeline = MediaPipeline::with_binaries_gated(port, "ffmpeg", "ffprobe", crate::LicenseGate::Enforce);
     let (bus, _rx) = make_bus(16);
     let (_, kill) = watch::channel(false);
     let err = pipeline.merge(3, &input(), &bus, kill).await.unwrap_err();
@@ -301,4 +303,64 @@ async fn discovery_missing_binary_is_honest() {
         .unwrap_err();
     assert_eq!(err.kind, ErrorKind::MissingFfmpeg);
     assert!(err.message.contains("ffmpeg not found"));
+}
+
+/// YouTube two-files fix #2 regression: a USER-installed GPL-flagged ffmpeg
+/// (winget/gyan/distro builds) must still be accepted — Velox only invokes it,
+/// it does not distribute it. The bundled layout keeps the gate.
+struct GplPort;
+
+#[async_trait::async_trait]
+impl MediaPipelinePort for GplPort {
+    async fn run(
+        &self,
+        _exe: &str,
+        _args: &[String],
+        _kill: watch::Receiver<bool>,
+    ) -> Result<SubprocessOutcome, EngineError> {
+        Ok(SubprocessOutcome {
+            exit_ok: true,
+            cancelled: false,
+            output_tail: String::new(),
+        })
+    }
+
+    async fn version(&self, _exe: &str, _kill: watch::Receiver<bool>) -> Result<String, EngineError> {
+        Ok("ffmpeg version 7.1\nconfiguration: --enable-gpl --enable-libx264".into())
+    }
+}
+
+#[tokio::test]
+async fn user_path_ffmpeg_with_gpl_flags_is_accepted() {
+    // PATH-resolved binaries (bare names) use LicenseGate::Skip: a GPL-flagged
+    // user install is invoked, not distributed, so merging must proceed.
+    let p = MediaPipeline::<GplPort>::discover_with_policy(
+        Arc::new(GplPort),
+        PathBuf::from("ffmpeg"),
+        PathBuf::from("ffprobe"),
+        crate::LicenseGate::Skip,
+    )
+    .await
+    .expect("user-installed GPL ffmpeg must be usable for merging");
+    let _ = p;
+}
+
+#[tokio::test]
+async fn bundled_ffmpeg_with_gpl_flags_is_refused() {
+    // a "bundled" dir whose fake ffmpeg advertises --enable-gpl → Enforce gate
+    let dir = tempfile::tempdir().unwrap();
+    let exe = if cfg!(windows) { "ffmpeg.exe" } else { "ffmpeg" };
+    let probe = if cfg!(windows) { "ffprobe.exe" } else { "ffprobe" };
+    std::fs::write(dir.path().join(exe), "not a real binary").unwrap();
+    std::fs::write(dir.path().join(probe), "not a real binary").unwrap();
+    // GplPort answers the version probe regardless of the fake file bytes.
+    let err = MediaPipeline::<GplPort>::discover_with_policy(
+        Arc::new(GplPort),
+        dir.path().join(exe),
+        dir.path().join(probe),
+        crate::LicenseGate::Enforce,
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(err.kind, ErrorKind::GplBuild);
 }

@@ -8,7 +8,7 @@
 pub mod pipeline;
 
 pub use pipeline::{
-    build_merge_args, MediaPipeline, MediaPipelinePort, MergeInput, SubprocessOutcome,
+    build_merge_args, LicenseGate, MediaPipeline, MediaPipelinePort, MergeInput, SubprocessOutcome,
     SubprocessPort,
 };
 
@@ -37,6 +37,14 @@ impl MergePort<SubprocessPort> {
     /// This is the YouTube two-files fix: bare "ffmpeg" lookup missed the
     /// bundled binaries, the merge port was never injected, and both streams
     /// finished as separate files.
+    ///
+    /// License policy (YouTube two-files fix #2): the LGPL gate is enforced for
+    /// binaries found in the BUNDLED directory — Velox distributes those and the
+    /// policy must hold for what we ship. A binary resolved through PATH belongs
+    /// to the user's own system (winget/gyan/distro builds are commonly
+    /// GPL-flagged): Velox merely invokes it, which is not distribution, and the
+    /// old blanket refusal turned every such install into "download finishes,
+    /// merge errors, two separate files".
     pub async fn discover_subprocess_at(
         dir: Option<&std::path::Path>,
     ) -> Result<Self, engine_core::error::EngineError> {
@@ -47,22 +55,28 @@ impl MergePort<SubprocessPort> {
                 n.to_string()
             }
         };
-        let pick = |n: &str| -> String {
-            dir.and_then(|d| {
+        let pick = |n: &str| -> (String, bool) {
+            if let Some(d) = dir {
                 let p = d.join(name(n));
                 if p.exists() {
-                    Some(p.display().to_string())
-                } else {
-                    None
+                    return (p.display().to_string(), true); // bundled
                 }
-            })
-            .unwrap_or_else(|| n.to_string())
+            }
+            (name(n), false) // user's own PATH binary
+        };
+        let (ff, ff_bundled) = pick("ffmpeg");
+        let (fp, _) = pick("ffprobe");
+        let gate = if ff_bundled {
+            LicenseGate::Enforce
+        } else {
+            LicenseGate::Skip
         };
         Ok(Self {
-            pipeline: MediaPipeline::discover_with(
+            pipeline: MediaPipeline::discover_with_policy(
                 std::sync::Arc::new(SubprocessPort),
-                std::path::PathBuf::from(pick("ffmpeg")),
-                std::path::PathBuf::from(pick("ffprobe")),
+                std::path::PathBuf::from(ff),
+                std::path::PathBuf::from(fp),
+                gate,
             )
             .await?,
         })
