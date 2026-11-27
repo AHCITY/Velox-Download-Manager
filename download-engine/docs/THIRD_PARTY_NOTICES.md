@@ -76,6 +76,19 @@ engine itself never links either tool — both are invoked as external executabl
   (ffprobe). MP3 encoding uses libmp3lame (LGPL) which is included in the
   LGPL builds.
 
+## librqbit + workspace crates (BitTorrent engine)
+
+- Project: https://github.com/ikatson/rqbit (crates: librqbit, librqbit-core,
+  librqbit-dht, librqbit-peer-protocol, librqbit-tracker-comms, librqbit-upnp,
+  librqbit-bencode, librqbit-sha1-wrapper, librqbit-buffers, librqbit-lsd and
+  related workspace members pulled by librqbit 9.1)
+- License: Apache-2.0 (full text: https://www.apache.org/licenses/LICENSE-2.0)
+- Used for: BitTorrent peer/DHT/tracker protocol, magnet metadata resolution,
+  piece verification and torrent storage. Built with `default-features = false`;
+  the SHA-1 backend is `sha1-crypto-hash` (OS crypto APIs). Replacement /
+  modification instructions: bump the librqbit version in
+  `crates/engine-torrent/Cargo.toml` and re-run `cargo build`.
+
 ## Velox application code
 
 MIT — see LICENSE at the repository root.

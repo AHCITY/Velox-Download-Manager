@@ -1,6 +1,6 @@
 # RELEASE ERRORS PLAYBOOK — read BEFORE every release push
 
-Last updated: 2026-11-26 — the 4 failed `v0.7.0` tag attempts (#69/#71/#73/#75)
+Last updated: 2026-11-27 — adds the PR-audit class (E-25), the ffmpeg `.part` muxer failure (E-26), the sidecar install lock (E-27) and the TLS-provider dependency gate (E-28). — the 4 failed `v0.7.0` tag attempts (#69/#71/#73/#75)
 are fully diagnosed from job logs (verified failure map below), AND the
 published v0.7.0 page has been conformed to the download policy (sequenced,
 numbered downloads + labels, online installer attached, formal notes —
@@ -461,6 +461,87 @@ reads. 5,000 req/h authenticated.
 | Re-uploading does not fix the download order | E-22 |
 | Renamed asset: updater 404 / sums fail | E-23 |
 | Reads start returning rate-limit JSON | E-24 |
+| Windows-only test compile errors on a PR (linux green) | E-25 |
+| `ffmpeg failed: …​.merging.part: use a standard extension` | E-26 |
+| Installer dies writing velox-browser-host.exe | E-27 |
+| New dep drags aws-lc-sys / cmake / NASM into CI | E-28 |
+
+### E-25 · A `#[cfg(windows)]`-only test target hides broken test code from Linux CI (PR #1)
+
+**Symptom.** PR CI: `linux` green, `windows` red with four E0425 errors in
+`app/src-tauri/src/main.rs` tests (`read_theme_file` / `THEMES_MAX_BYTES` not
+found in scope) — on code Linux had compiled a dozen times before.
+
+**Root cause.** The velox-app crate is only compiled+tested by the WINDOWS job
+(the Linux job builds the workspace crates + `linux-desktop`, and the Tauri
+stack is absent from sandbox/Linux CI). The PR's new tests referenced
+crate-root items that were missing from the tests module's explicit import
+list (`use super::{…}`); Linux never compiled the app crate, so nothing
+noticed until Windows.
+
+**Fix.** Add the names to the import list. **Rule:** ANY new test in
+`app/src-tauri/src/main.rs` must be compile-verified against the Windows job
+before merge — Linux CI green means nothing for the app crate. Check the
+`windows` check on the PR head, not the branch's last main commit.
+
+**Related PR #1 finding (same merge):** `BUILTIN_THEMES` was keyed `softCanopy`
+while every consumer indexes by the theme ID `soft-canopy` — the JS ids test
+caught it, and it also made `applyTheme('soft-canopy')` permanently false.
+Builtin-theme registry keys MUST equal their `id`.
+
+### E-26 · ffmpeg refuses `.part` temp outputs — the "use a standard extension" merge failure (user-reported)
+
+**Symptom.** YouTube downloads finish as TWO separate files (video stream
+FAILED + audio stream completed) and the error contains
+`ffmpeg failed: …​.mp4.merging.part: use a standard extension for the filename
+or specify the format manually … Error initializing the muxer`.
+
+**Root cause.** The merge stage writes to `<final>.merging.part` (temp + rename
+on success). ffmpeg infers the output muxer from the file EXTENSION; `.part`
+is not a container → muxer init fails → EVERY adaptive merge failed.
+`-movflags +faststart` additionally breaks matroska (mkv) merges.
+
+**Fix.** Pass the muxer explicitly: `engine_core::media::container_to_ffmpeg_format`
+maps the merge spec's `output_ext` to an ffmpeg muxer name, `MediaMergePort::merge`
+carries it, `build_merge_args` emits `-f mp4` / `-f matroska` (and emits
+`-movflags` only for the mov family). Same class applied to MP3 extraction
+(`-f mp3`, temp `.converting.part`) and frame thumbnails (`-f image2`).
+**Rule:** when ffmpeg writes to a temp file, ALWAYS pass `-f`; never rely on
+the extension while the temp suffix is on the name.
+
+### E-27 · The native-messaging sidecar locks `velox-browser-host.exe` mid-install ("browser-..." error)
+
+**Symptom.** Installer (online or unified) aborts mid-way with
+"Error opening file for writing: …\velox-browser-host.exe"; afterwards the app
+may not start (half-installed).
+
+**Root cause.** The sidecar is a STATELESS stdio relay, but any connected
+browser keeps the process alive (native messaging), and Windows locks a
+running exe's image file. The installer closed Velox.exe but not the sidecar.
+
+**Fix.** Both NSIS templates force-close it (`taskkill /F /IM
+velox-browser-host.exe`) after Velox.exe closes — fresh install, update wait
+and uninstall paths. Killing it is safe (it stores nothing; the browser
+respawns it on demand). **Rule:** every process the payload overwrites must be
+closed, not only the main app.
+
+### E-28 · `reqwest` 0.13 TLS features silently pull aws-lc-sys (cmake/NASM) onto Windows CI
+
+**Symptom (anticipated, avoided).** Adding a crate whose reqwest uses default
+TLS features (librqbit's `default-tls`) re-enables rustls WITH the aws-lc-rs
+provider; `aws-lc-sys` needs cmake+NASM on MSVC and inflates build time.
+
+**Fix.** The workspace already selects `reqwest = { default-features = false,
+features = ["rustls-no-provider"] }` + `rustls` (ring only). New crates that
+depend on TLS-using libraries MUST take `default-features = false` on the
+library AND force the provider at runtime
+(`rustls::crypto::ring::default_provider().install_default()` — see
+`engine_torrent::ensure_ring_provider`); feature unification then keeps one
+reqwest with ring and no aws-lc-sys. Verify with `cargo tree -i aws-lc-sys`
+(returning EMPTY is the gate). Also note reqwest 0.13 aliases `default-tls`
+STRAIGHT to the aws-lc rustls path — there is no native-tls default anymore.
+Side rule: sha1 backends — librqbit's `sha1-ring` feature is ALSO aws-lc-rs;
+use `sha1-crypto-hash` (OS APIs) instead.
 
 ## Known non-errors (do not chase)
 
