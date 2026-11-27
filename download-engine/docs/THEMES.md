@@ -100,3 +100,22 @@ guaranteed readable.
 - Apply by clicking its swatch; **Refresh list** re-reads the folder (you can
   also drop files there manually).
 - Remove with the ✕ on a custom swatch, or by deleting the file.
+
+### The themes folder inside the installation directory
+
+Velox maintains a `themes/` folder INSIDE the installation directory
+(`%LOCALAPPDATA%\Programs\Velox\themes\` with the per-user Windows setup;
+beside `Velox` on Linux). It is seeded at startup with the canonical manifest
+of every built-in theme:
+
+    dark.json · light.json · purple.json · blue.json · soft-canopy.json
+
+- The folder is a real theme library: drop your own `.json` manifests next to
+  the built-ins and they appear in Settings → Appearance after **Refresh list**
+  (the per-user data dir keeps working too; with the same id, the install-dir
+  copy wins).
+- Missing manifests are re-seeded on every start, but existing files are
+  NEVER overwritten — edits to a built-in copy survive app updates.
+- Want to build on a built-in? Copy `soft-canopy.json`, change its `id`, tweak
+  the colors, drop it in the same folder — it installs as a third-party theme
+  after the WCAG check.
