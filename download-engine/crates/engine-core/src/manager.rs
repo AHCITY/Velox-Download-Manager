@@ -1898,8 +1898,14 @@ fn resumability(row: &DownloadRow) -> &'static str {
 fn torrent_placeholder_name(source: &str) -> String {
     let lower = source.to_ascii_lowercase();
     if lower.starts_with("magnet:") {
-        // prefer the xt hash fragment for a stable name
-        let hash = source
+        // strip the scheme (the "?" stays glued to the first parameter),
+        // then prefer the xt hash fragment for a stable name
+        let params = source
+            .split_once(':')
+            .map(|(_, rest)| rest)
+            .unwrap_or(source);
+        let params = params.strip_prefix('?').unwrap_or(params);
+        let hash = params
             .split('&')
             .find(|p| p.to_ascii_lowercase().starts_with("xt=urn:btih:"))
             .and_then(|p| p.split(':').next_back())
@@ -2191,6 +2197,20 @@ mod merge_tests {
             }
         }
         assert!(saw_merging && saw_completed);
+    }
+
+    #[test]
+    fn magnet_placeholder_name_extracts_the_info_hash_fragment() {
+        assert_eq!(
+            torrent_placeholder_name(
+                "magnet:?xt=urn:btih:eeb55a82d0d93aca2e3b90fc4722d2531136735c&dn=Velox+Demo&tr=http%3A%2F%2F127.0.0.1%3A6969%2Fannounce"
+            ),
+            "torrent eeb55a82d0d9"
+        );
+        assert_eq!(
+            torrent_placeholder_name("/tmp/demo/VeloxDemo.torrent"),
+            "VeloxDemo.torrent"
+        );
     }
 
     #[tokio::test]
