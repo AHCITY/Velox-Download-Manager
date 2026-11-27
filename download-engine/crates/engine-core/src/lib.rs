@@ -10,6 +10,7 @@ pub mod extension;
 pub mod ids;
 pub mod inspect;
 pub mod manager;
+pub mod media;
 pub mod naming;
 pub mod paths;
 pub mod plan;

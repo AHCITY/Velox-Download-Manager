@@ -36,6 +36,10 @@ pub struct ResourceInfo {
     pub suggested_name: Option<String>,
     /// Human-readable provenance note from URL resolution (e.g. "Google Drive: confirmed").
     pub resolve_note: Option<String>,
+    /// Poster/thumbnail URL reported by the media extractor (yt-dlp `thumbnail`).
+    /// Works for EVERY supported site, not just YouTube; the manager persists the
+    /// image to the thumbs dir so the UI keeps it across restarts.
+    pub thumbnail_url: Option<String>,
     /// Adaptive media plan from the extractor (yt-dlp): the video half is `final_url`
     /// itself; `media.audio_url` is the second stream and `media.output_name` the final
     /// merged artifact. The manager turns this into a two-stream media job.

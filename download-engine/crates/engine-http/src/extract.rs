@@ -139,6 +139,22 @@ pub async fn resolve_media_with(
         .and_then(|t| t.as_str())
         .unwrap_or("media")
         .to_string();
+    // Poster for EVERY supported site (not just YouTube): yt-dlp `thumbnail`
+    // is the best single one; fall back to the largest entry of the list.
+    let thumbnail_url = meta
+        .get("thumbnail")
+        .and_then(|t| t.as_str())
+        .map(str::to_string)
+        .or_else(|| {
+            meta.get("thumbnails")
+                .and_then(|l| l.as_array())
+                .and_then(|list| {
+                    list.iter()
+                        .filter_map(|t| t.get("url").and_then(|u| u.as_str()))
+                        .last()
+                        .map(str::to_string)
+                })
+        });
     let plan_choice = choice.map(|format| PlanChoice {
         format,
         max_height,
@@ -169,6 +185,7 @@ pub async fn resolve_media_with(
                 audio_name: None,
                 convert: Some(engine_core::config::MediaConvert::Mp3),
             }),
+            thumbnail_url: thumbnail_url.clone(),
             ..Default::default()
         }
     } else if let Some(audio) = &plan.audio {
@@ -194,6 +211,7 @@ pub async fn resolve_media_with(
                 audio_name: Some(format!("{} (audio stream).{}", title, audio.ext)),
                 convert: None,
             }),
+            thumbnail_url: thumbnail_url.clone(),
             ..Default::default()
         }
     } else {
@@ -211,6 +229,7 @@ pub async fn resolve_media_with(
                 "media extractor: “{}” [{}]",
                 title, plan.video.format_id
             )),
+            thumbnail_url: thumbnail_url.clone(),
             ..Default::default()
         }
     };

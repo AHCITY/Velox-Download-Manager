@@ -240,6 +240,12 @@ pub async fn handle_line(manager: &Arc<DownloadManager>, line: &str) -> Option<S
                 .map_err(engine_err)
         }
         "download.list" => manager.list().map(|rows| json!(rows)).map_err(engine_err),
+        "thumbnail.get" => {
+            let Some(id_) = params.get("id").and_then(parse_id) else {
+                return Some(bad_params_json(id, "missing id"));
+            };
+            Ok(json!({ "dataUrl": read_thumb_data_url(&manager, id_) }))
+        }
         "download.status" => {
             let Some(id_) = params.get("id").and_then(parse_id) else {
                 return Some(bad_params_json(id, "missing id"));
@@ -294,6 +300,43 @@ pub async fn handle_line(manager: &Arc<DownloadManager>, line: &str) -> Option<S
             json!({"jsonrpc":"2.0","id":id,"error":{"code":code,"message":message}}).to_string()
         }
     })
+}
+
+/// Read a row's persisted thumbnail and encode it as a data URL for the UI
+/// (CSP already allows img-src data:). Missing/corrupt thumb → None.
+fn read_thumb_data_url(manager: &std::sync::Arc<engine_core::manager::DownloadManager>, id: i64) -> Option<String> {
+    let path = manager.thumb_path(id);
+    let bytes = std::fs::read(&path).ok()?;
+    let mime = if bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
+        "image/jpeg"
+    } else if bytes.starts_with(&[0x89, b'P', b'N', b'G']) {
+        "image/png"
+    } else if bytes.starts_with(b"GIF8") {
+        "image/gif"
+    } else if bytes.len() > 12 && bytes.starts_with(b"RIFF") && &bytes[8..12] == b"WEBP" {
+        "image/webp"
+    } else {
+        return None;
+    };
+    Some(format!("data:{mime};base64,{}", b64_encode(&bytes)))
+}
+
+/// Minimal standard base64 (no external dep): engine-api only encodes small
+/// thumbnail blobs, correctness is pinned by the unit test below.
+fn b64_encode(data: &[u8]) -> String {
+    const TBL: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
+    for chunk in data.chunks(3) {
+        let b0 = chunk[0] as u32;
+        let b1 = *chunk.get(1).unwrap_or(&0) as u32;
+        let b2 = *chunk.get(2).unwrap_or(&0) as u32;
+        let n = (b0 << 16) | (b1 << 8) | b2;
+        out.push(TBL[(n >> 18) as usize & 63] as char);
+        out.push(TBL[(n >> 12) as usize & 63] as char);
+        out.push(if chunk.len() > 1 { TBL[(n >> 6) as usize & 63] as char } else { '=' });
+        out.push(if chunk.len() > 2 { TBL[n as usize & 63] as char } else { '=' });
+    }
+    out
 }
 
 fn bad_params_json(id: Value, msg: &str) -> String {
@@ -481,9 +524,11 @@ mod tests {
                 _video: &Path,
                 _audio: &Path,
                 output: &Path,
+                format: &str,
                 _bus: &engine_core::events::EventBus,
                 _kill: tokio::sync::watch::Receiver<bool>,
             ) -> Result<(), engine_core::error::EngineError> {
+                assert_eq!(format, "mp4", "muxer format must reach the merge port");
                 std::fs::write(output, b"merged-bytes").map_err(|e| {
                     engine_core::error::EngineError::new(
                         engine_core::error::ErrorKind::MergeFailed,

@@ -49,6 +49,12 @@ struct Seg {
     completed: bool,
     dirty: bool,
     owner: Option<u64>,
+    /// Rate-window bookkeeping (IDM-style dynamic segmentation): set when a
+    /// worker takes the segment; the monitor compares window progress against
+    /// a floor and splits the tail of pathologically slow connections so the
+    /// freed range can be picked up by a faster worker.
+    window_start: Option<std::time::Instant>,
+    window_pos: u64,
 }
 
 pub struct SegmentTable {
@@ -69,6 +75,8 @@ impl SegmentTable {
                     completed: s.completed,
                     dirty: false,
                     owner: None,
+                    window_start: None,
+                    window_pos: 0,
                 };
                 // normalize: fully written but unmarked (interrupted at the exact boundary)
                 if let Some(e) = seg.end {
@@ -108,6 +116,8 @@ impl SegmentTable {
             .find(|(_, s)| !s.completed && s.owner.is_none())
         {
             s.owner = Some(worker);
+            s.window_start = Some(std::time::Instant::now());
+            s.window_pos = s.pos;
             return Some(Work {
                 idx,
                 start: s.start + s.pos,
@@ -142,6 +152,8 @@ impl SegmentTable {
                 completed: false,
                 dirty: false,
                 owner: Some(worker),
+                window_start: Some(std::time::Instant::now()),
+                window_pos: 0,
             });
             let idx = segs.len() - 1;
             return Some(Work {
@@ -209,6 +221,77 @@ impl SegmentTable {
         }
         drop(segs);
         self.notify.notify_waiters();
+    }
+
+    /// Monitor-driven dynamic segmentation (IDM-style): split the tail off any
+    /// ACTIVE segment whose measured rate fell below `min_rate_bps` over at
+    /// least `min_elapsed` (a connection that stalled silently without dying,
+    /// or is pathologically slow). The freed tail becomes an unowned segment a
+    /// parked (or soon-finishing) worker picks up — exactly the steal path, so
+    /// clamping still makes double-writes impossible. Returns the split count.
+    ///
+    /// Cheap by design: the rate window is compared, never awaited; segments
+    /// without a window (unowned/resumed-not-yet-taken) are skipped.
+    pub fn split_slow_segments(
+        &self,
+        min_rate_bps: u64,
+        min_elapsed: std::time::Duration,
+    ) -> usize {
+        let mut split_count = 0;
+        loop {
+            let mut segs = self.inner.lock().unwrap();
+            let now = std::time::Instant::now();
+            // find the first splittable slow segment (bounded work per tick)
+            let mut victim: Option<(usize, u64)> = None; // (idx, split_at)
+            for (i, s) in segs.iter().enumerate() {
+                if s.completed || s.owner.is_none() {
+                    continue;
+                }
+                let Some(ws) = s.window_start else { continue };
+                let elapsed = now.duration_since(ws);
+                if elapsed < min_elapsed {
+                    continue;
+                }
+                let Some(end) = s.end else { continue };
+                let remaining = end + 1 - (s.start + s.pos);
+                if remaining < 2 * self.min_split {
+                    continue;
+                }
+                let progress = s.pos.saturating_sub(s.window_pos);
+                let rate = progress / elapsed.as_secs().max(1);
+                if rate < min_rate_bps {
+                    let split_at = s.start + s.pos + remaining / 2;
+                    victim = Some((i, split_at));
+                    break;
+                }
+            }
+            match victim {
+                None => break,
+                Some((i, split_at)) => {
+                    let s = &mut segs[i];
+                    let old_end = s.end.unwrap_or(split_at);
+                    s.end = Some(split_at - 1);
+                    // restart the victim's rate window so it is not re-split
+                    // every tick while it drains its (now shorter) range
+                    s.window_start = Some(now);
+                    s.window_pos = s.pos;
+                    segs.push(Seg {
+                        start: split_at,
+                        end: Some(old_end),
+                        pos: 0,
+                        completed: false,
+                        dirty: false,
+                        owner: None,
+                        window_start: None,
+                        window_pos: 0,
+                    });
+                    split_count += 1;
+                    drop(segs);
+                    self.notify.notify_waiters();
+                }
+            }
+        }
+        split_count
     }
 
     /// Full snapshot for persistence (task replaces DB rows transactionally — always consistent).
@@ -445,6 +528,86 @@ mod tests {
             (0, 200),
             "resumed segment continues at its checkpoint"
         );
+    }
+
+    #[test]
+    fn slow_segment_tail_gets_split_by_monitor() {
+        let t = SegmentTable::new(
+            vec![SegInit {
+                start: 0,
+                end: Some(9_999_999),
+                pos: 0,
+                completed: false,
+            }],
+            100_000,
+        );
+        let w = t.take(1).unwrap();
+        // simulate a connection that moved 1 KiB in 60 s (pathologically slow):
+        // backdate the rate window and advance a little
+        {
+            let mut segs = t.inner.lock().unwrap();
+            let s = &mut segs[w.idx];
+            s.window_start = Some(std::time::Instant::now() - std::time::Duration::from_secs(60));
+            s.window_pos = 0;
+        }
+        t.advance(w.idx, 1024);
+        let n = t.split_slow_segments(32 * 1024, std::time::Duration::from_secs(10));
+        assert_eq!(n, 1, "slow segment tail must be split");
+        // the freed tail is an unowned segment a parked worker can take
+        let w2 = t.take(2).unwrap();
+        assert_eq!(w2.idx, 1, "freed tail becomes segment 1");
+        assert!(w2.start > w.start + 1024, "tail starts in the far half");
+        // the victim was clamped below the split point
+        let victim_end = t.end_of(w.idx).unwrap();
+        assert!(victim_end < w2.start);
+    }
+
+    #[test]
+    fn healthy_segment_is_not_split() {
+        let t = SegmentTable::new(
+            vec![SegInit {
+                start: 0,
+                end: Some(9_999_999),
+                pos: 0,
+                completed: false,
+            }],
+            100_000,
+        );
+        let w = t.take(1).unwrap();
+        {
+            let mut segs = t.inner.lock().unwrap();
+            let s = &mut segs[w.idx];
+            s.window_start = Some(std::time::Instant::now() - std::time::Duration::from_secs(60));
+            s.window_pos = 0;
+        }
+        t.advance(w.idx, 8 * 1024 * 1024); // ~139 KiB/s over the window
+        let n = t.split_slow_segments(32 * 1024, std::time::Duration::from_secs(10));
+        assert_eq!(n, 0, "a healthy connection keeps its range");
+        let segs = t.snapshot();
+        assert_eq!(segs.len(), 1, "no new segment was created by the monitor");
+    }
+
+    #[test]
+    fn too_small_tail_is_never_split() {
+        let t = SegmentTable::new(
+            vec![SegInit {
+                start: 0,
+                end: Some(150_000),
+                pos: 0,
+                completed: false,
+            }],
+            100_000,
+        );
+        let w = t.take(1).unwrap();
+        {
+            let mut segs = t.inner.lock().unwrap();
+            let s = &mut segs[w.idx];
+            s.window_start = Some(std::time::Instant::now() - std::time::Duration::from_secs(60));
+            s.window_pos = 0;
+        }
+        t.advance(w.idx, 0);
+        let n = t.split_slow_segments(32 * 1024, std::time::Duration::from_secs(10));
+        assert_eq!(n, 0, "remaining < 2*min_split must not be split");
     }
 
     #[test]

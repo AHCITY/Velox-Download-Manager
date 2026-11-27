@@ -213,6 +213,7 @@ fn make_config(engine: &EngineConfig, opts: &Opts) -> DownloadConfig {
         referer: opts.referer.clone(),
         auth: None,
         media_format: None,
+        thumbnail_url: None,
         media_height: None,
         media_fps: None,
         max_connections: opts.max_connections,

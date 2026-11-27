@@ -16,7 +16,17 @@ fn input() -> MergeInput {
     MergeInput {
         video: PathBuf::from("/dl/video.m4s"),
         audio: PathBuf::from("/dl/audio.m4s"),
-        output: PathBuf::from("/dl/out.mp4"),
+        output: PathBuf::from("/dl/out.mp4.merging.part"),
+        format: "mp4".into(),
+    }
+}
+
+fn mkv_input() -> MergeInput {
+    MergeInput {
+        video: PathBuf::from("/dl/video.webm"),
+        audio: PathBuf::from("/dl/audio.webm"),
+        output: PathBuf::from("/dl/out.mkv.merging.part"),
+        format: "matroska".into(),
     }
 }
 
@@ -108,7 +118,56 @@ fn merge_args_are_pinned_copy_only() {
     for banned in ["libx264", "libx265", "-crf", "-preset", "--enable"] {
         assert!(!joined.contains(banned), "transcode/flag leak: {banned}");
     }
-    assert_eq!(args.last().unwrap(), "/dl/out.mp4");
+    assert_eq!(args.last().unwrap(), "/dl/out.mp4.merging.part");
+}
+
+/// The .merging.part temp file cannot identify the muxer by extension: the
+/// format MUST be passed explicitly or ffmpeg aborts with
+/// "use a standard extension for the filename" (the two-file YouTube bug).
+#[test]
+fn merge_args_force_the_muxer_for_part_temp_files() {
+    let args = build_merge_args(&input());
+    let joined = args.join(" ");
+    assert!(
+        joined.contains("-f mp4"),
+        "mp4 merge must force the muxer: {joined}"
+    );
+    // matroska (vp9/opus mixes): -f matroska AND no -movflags (the mkv muxer
+    // rejects it — a second way every mkv merge used to fail)
+    let mkv = build_merge_args(&mkv_input());
+    let joined_mk = mkv.join(" ");
+    assert!(
+        joined_mk.contains("-f matroska"),
+        "mkv merge must force the matroska muxer: {joined_mk}"
+    );
+    assert!(
+        !joined_mk.contains("movflags"),
+        "matroska muxer rejects -movflags: {joined_mk}"
+    );
+    assert_eq!(mkv.last().unwrap(), "/dl/out.mkv.merging.part");
+}
+
+/// MP3 extraction writes to a .converting.part temp path: -f mp3 must be there.
+#[test]
+fn mp3_args_force_the_muxer() {
+    use crate::pipeline::build_mp3_args;
+    let args = build_mp3_args("/dl/raw.m4a", "/dl/out.mp3.converting.part");
+    let joined = args.join(" ");
+    assert!(joined.contains("-f mp3"), "mp3 extraction must force the muxer: {joined}");
+    assert!(joined.contains("libmp3lame"));
+    assert_eq!(args.last().unwrap(), "/dl/out.mp3.converting.part");
+}
+
+/// Frame thumbnails write to a .thumb.part temp path: -f image2 must be there.
+#[test]
+fn frame_args_force_image2_muxer() {
+    use crate::pipeline::build_frame_args;
+    let args = build_frame_args("/dl/video.mp4", 2, "/thumbs/7.jpg.thumb.part");
+    let joined = args.join(" ");
+    assert!(joined.contains("-f image2"), "frame extraction must force image2: {joined}");
+    assert!(joined.contains("-ss 2"));
+    assert!(joined.contains("scale=480:-2"));
+    assert_eq!(args.last().unwrap(), "/thumbs/7.jpg.thumb.part");
 }
 
 #[test]
@@ -156,7 +215,7 @@ async fn full_merge_emits_merging_and_merged() {
         .merge(7, &input(), &bus, kill)
         .await
         .expect("merge ok");
-    assert_eq!(path, PathBuf::from("/dl/out.mp4"));
+    assert_eq!(path, PathBuf::from("/dl/out.mp4.merging.part"));
     let mut saw_merging = false;
     let mut saw_merged = false;
     while let Ok(ev) = rx.try_recv() {
@@ -167,7 +226,7 @@ async fn full_merge_emits_merging_and_merged() {
             }
             Event::Merged { id, path } => {
                 assert_eq!(id, 7);
-                assert_eq!(path, "/dl/out.mp4");
+                assert_eq!(path, "/dl/out.mp4.merging.part");
                 saw_merged = true;
             }
             _ => {}

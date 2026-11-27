@@ -186,12 +186,19 @@ pub trait MediaMergePort: Send + Sync {
     /// Stream-copy `video`+`audio` into `output` (the manager owns the output path).
     /// On cancel (kill trigger) implementations return `Cancelled` and must have
     /// killed the child. Never claim success without post-validation.
+    ///
+    /// `format` is the ffmpeg muxer name for the target container
+    /// (`crate::media::container_to_ffmpeg_format`); the output is a `.part`
+    /// temp file whose extension cannot identify the muxer, so the format is
+    /// passed explicitly (a missing `-f` is the "use a standard extension"
+    /// muxer failure).
     async fn merge(
         &self,
         id: i64,
         video: &std::path::Path,
         audio: &std::path::Path,
         output: &std::path::Path,
+        format: &str,
         bus: &crate::events::EventBus,
         kill: tokio::sync::watch::Receiver<bool>,
     ) -> Result<(), EngineError>;
@@ -199,6 +206,8 @@ pub trait MediaMergePort: Send + Sync {
     /// Convert a completed single-stream download to MP3 (audio extraction,
     /// libmp3lame VBR best). Same contract as merge: LGPL-gated, kill-safe,
     /// honest errors, never claim success without the output existing.
+    /// `output` may be a `.converting.part` temp path; the pipeline passes
+    /// `-f mp3` so the extension never selects the muxer.
     async fn convert_to_mp3(
         &self,
         id: i64,
@@ -211,6 +220,26 @@ pub trait MediaMergePort: Send + Sync {
         Err(EngineError::new(
             ErrorKind::MergeFailed,
             "media pipeline does not support MP3 conversion",
+        ))
+    }
+
+    /// Extract ONE poster frame from a finished video file (thumbnail for ANY
+    /// source: direct downloads, not just media pages). `output` may be a
+    /// `.thumb.part` temp path; implementations force `-f image2`. Same
+    /// contract as merge: LGPL-gated, kill-safe, honest errors.
+    async fn extract_frame(
+        &self,
+        id: i64,
+        input: &std::path::Path,
+        at_secs: u64,
+        output: &std::path::Path,
+        bus: &crate::events::EventBus,
+        kill: tokio::sync::watch::Receiver<bool>,
+    ) -> Result<(), EngineError> {
+        let _ = (id, input, at_secs, output, bus, kill);
+        Err(EngineError::new(
+            ErrorKind::MergeFailed,
+            "media pipeline does not support frame extraction",
         ))
     }
 }

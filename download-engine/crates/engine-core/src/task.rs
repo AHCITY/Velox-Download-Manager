@@ -26,6 +26,11 @@ use engine_storage::PartFile;
 
 pub type DownloadId = i64;
 
+/// Dynamic-segmentation thresholds (IDM inspiration): a connection moving less
+/// than this rate over at least the window duration has its tail split off.
+const SLOW_SEGMENT_RATE_BPS: u64 = 32 * 1024;
+const SLOW_SEGMENT_MIN_ELAPSED: Duration = Duration::from_secs(10);
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TaskCommand {
     Run,
@@ -137,9 +142,11 @@ pub fn compute_hash_blocking(path: &std::path::Path, algo: HashAlgo) -> std::io:
 }
 
 fn hex(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
     let mut s = String::with_capacity(bytes.len() * 2);
     for b in bytes {
-        s.push_str(&format!("{b:02x}"));
+        s.push(HEX[(b >> 4) as usize] as char);
+        s.push(HEX[(b & 0xf) as usize] as char);
     }
     s
 }
@@ -546,6 +553,17 @@ pub async fn run_task(args: TaskArgs, mgr_cmd: watch::Receiver<TaskCommand>) -> 
             };
             match sig {
                 Sig::Tick => {
+                    // IDM-style dynamic segmentation, monitor-driven: a segment
+                    // crawling far below the fleet pace (silent slow connection,
+                    // not a stall — those die in the HTTP watchdog) gives up its
+                    // tail so faster workers can take it. Conditions are checked
+                    // inside the table; this call is lock-cheap.
+                    if !table.all_done() {
+                        let _ = table.split_slow_segments(
+                            SLOW_SEGMENT_RATE_BPS,
+                            SLOW_SEGMENT_MIN_ELAPSED,
+                        );
+                    }
                     let stats = table.stats();
                     let now = std::time::Instant::now();
                     let dt = now.duration_since(last_tick).as_secs_f64().max(0.001);

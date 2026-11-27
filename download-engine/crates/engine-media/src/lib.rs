@@ -8,8 +8,8 @@
 pub mod pipeline;
 
 pub use pipeline::{
-    build_merge_args, MediaPipeline, MediaPipelinePort, MergeInput, SubprocessOutcome,
-    SubprocessPort,
+    build_frame_args, build_merge_args, MediaPipeline, MediaPipelinePort, MergeInput,
+    SubprocessOutcome, SubprocessPort,
 };
 
 /// Manager-facing adapter (roadmap 4 slice 2): implements engine-core's
@@ -91,6 +91,7 @@ impl<P: MediaPipelinePort> engine_core::ports::MediaMergePort for MergePort<P> {
         video: &std::path::Path,
         audio: &std::path::Path,
         output: &std::path::Path,
+        format: &str,
         bus: &engine_core::events::EventBus,
         kill: tokio::sync::watch::Receiver<bool>,
     ) -> Result<(), engine_core::error::EngineError> {
@@ -98,8 +99,22 @@ impl<P: MediaPipelinePort> engine_core::ports::MediaMergePort for MergePort<P> {
             video: video.to_path_buf(),
             audio: audio.to_path_buf(),
             output: output.to_path_buf(),
+            format: format.to_string(),
         };
         self.pipeline.merge(id, &input, bus, kill).await.map(|_| ())
+    }
+
+    async fn extract_frame(
+        &self,
+        id: i64,
+        input: &std::path::Path,
+        at_secs: u64,
+        output: &std::path::Path,
+        bus: &engine_core::events::EventBus,
+        kill: tokio::sync::watch::Receiver<bool>,
+    ) -> Result<(), engine_core::error::EngineError> {
+        let _ = (id, bus);
+        self.pipeline.extract_frame(input, at_secs, output, kill).await
     }
 }
 

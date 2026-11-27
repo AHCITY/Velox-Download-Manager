@@ -16,6 +16,10 @@ pub struct MergeInput {
     pub video: PathBuf,
     pub audio: PathBuf,
     pub output: PathBuf,
+    /// ffmpeg muxer name for the target container (e.g. "mp4", "matroska").
+    /// The output is a `.merging.part` temp file, so the muxer cannot be
+    /// inferred from the extension and MUST be passed with `-f`.
+    pub format: String,
 }
 
 /// Result of one subprocess run.
@@ -62,12 +66,41 @@ pub fn build_mp3_args(input: &str, output: &str) -> Vec<String> {
         "libmp3lame".into(),
         "-q:a".into(),
         "0".into(),
+        // the manager writes to `<final>.converting.part`: force the muxer,
+        // the .part extension cannot select it
+        "-f".into(),
+        "mp3".into(),
+        output.into(),
+    ]
+}
+
+/// ffmpeg args for one poster frame (JPEG, 480 px wide, high quality).
+/// `-f image2` is forced: the output may be a `.thumb.part` temp path whose
+/// extension cannot select the muxer (same rule as the merge stage).
+pub fn build_frame_args(input: &str, at_secs: u64, output: &str) -> Vec<String> {
+    vec![
+        "-y".into(),
+        "-hide_banner".into(),
+        "-loglevel".into(),
+        "error".into(),
+        "-ss".into(),
+        at_secs.to_string(),
+        "-i".into(),
+        input.into(),
+        "-frames:v".into(),
+        "1".into(),
+        "-vf".into(),
+        "scale=480:-2".into(),
+        "-q:v".into(),
+        "4".into(),
+        "-f".into(),
+        "image2".into(),
         output.into(),
     ]
 }
 
 pub fn build_merge_args(input: &MergeInput) -> Vec<String> {
-    vec![
+    let mut args = vec![
         "-y".into(),
         "-i".into(),
         input.video.display().to_string(),
@@ -79,10 +112,18 @@ pub fn build_merge_args(input: &MergeInput) -> Vec<String> {
         "1:a:0?".into(),
         "-c".into(),
         "copy".into(),
-        "-movflags".into(),
-        "+faststart".into(),
-        input.output.display().to_string(),
-    ]
+        // temp output ends in .merging.part: the muxer MUST be named, or
+        // ffmpeg fails with "use a standard extension for the filename"
+        "-f".into(),
+        input.format.clone(),
+    ];
+    // faststart only exists on the mov family; the matroska muxer rejects it
+    if engine_core::media::accepts_movflags(&input.format) {
+        args.push("-movflags".into());
+        args.push("+faststart".into());
+    }
+    args.push(input.output.display().to_string());
+    args
 }
 
 /// LGPL policy check on `ffmpeg -version` output (audit §D procedure): any build that
@@ -203,6 +244,52 @@ impl<P: MediaPipelinePort> MediaPipeline<P> {
             ffmpeg: ff_name,
             ffprobe: fp_name,
         })
+    }
+
+    /// Extract ONE poster frame (JPEG) from a video file. LGPL gate + kill-safe;
+    /// output may be a `.thumb.part` temp path (`-f image2` forced). `at_secs`
+    /// positions the seek; 2 s skips most black intros cheaply.
+    pub async fn extract_frame(
+        &self,
+        input: &std::path::Path,
+        at_secs: u64,
+        output: &std::path::Path,
+        kill: watch::Receiver<bool>,
+    ) -> Result<(), EngineError> {
+        let (_gate_tx, gate_kill) = watch::channel(false);
+        let version = self
+            .port
+            .version(&self.ffmpeg, gate_kill)
+            .await
+            .map_err(|e| {
+                EngineError::new(
+                    ErrorKind::MissingFfmpeg,
+                    format!("ffmpeg vanished before frame extraction: {}", e.message),
+                )
+            })?;
+        verify_lgpl(&version)?;
+        let args = build_frame_args(
+            &input.display().to_string(),
+            at_secs,
+            &output.display().to_string(),
+        );
+        let outcome = self.port.run(&self.ffmpeg, &args, kill).await?;
+        if outcome.cancelled {
+            return Err(EngineError::new(ErrorKind::Cancelled, "frame extraction cancelled"));
+        }
+        if !outcome.exit_ok {
+            return Err(EngineError::new(
+                ErrorKind::MergeFailed,
+                format!("ffmpeg failed to extract a frame: {}", tail(&outcome.output_tail)),
+            ));
+        }
+        if !output.is_file() {
+            return Err(EngineError::new(
+                ErrorKind::MergeFailed,
+                "ffmpeg reported success but the frame file is missing",
+            ));
+        }
+        Ok(())
     }
 
     /// Merge `input` (stream copy), validate with ffprobe, emit `Merging`/`Merged`.

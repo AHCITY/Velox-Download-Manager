@@ -64,6 +64,11 @@ pub enum Event {
         id: i64,
         path: String,
     },
+    /// A row's thumbnail became available (fetched from the extractor's poster
+    /// URL or extracted as a frame from the finished file). UI refreshes row art.
+    ThumbnailReady {
+        id: i64,
+    },
 }
 
 pub type EventBus = broadcast::Sender<Event>;

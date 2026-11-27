@@ -468,6 +468,7 @@ impl HttpPort for ReqwestBackend {
             www_authenticate,
             retry_after: retry_after_raw.and_then(|v| parse_retry_after(&v)),
             sniffed,
+            thumbnail_url: None,
             suggested_name: None,
             resolve_note: None,
             media: None,

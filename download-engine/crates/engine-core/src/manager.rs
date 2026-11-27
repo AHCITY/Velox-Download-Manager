@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use serde::Serialize;
 use tokio::sync::{watch, Semaphore};
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use engine_state::{states, Db, DownloadRow};
 
@@ -103,6 +103,9 @@ pub struct StatusView {
     /// disk (deleted/moved externally). The row stays honest: state is not rewritten;
     /// the UI can surface "file missing" instead of a phantom entry.
     pub file_missing: bool,
+    /// A persisted thumbnail exists for this row (<data_dir>/thumbs/<id>.jpg).
+    /// Any source: extractor poster URLs and frame-extracted video covers.
+    pub has_thumb: bool,
     /// Per-download speed cap from the stored DownloadConfig (UI: Network screen).
     pub bandwidth_limit_bps: Option<u64>,
     /// Download intelligence (browser-ecosystem turn): smoothed/avg/peak session
@@ -125,6 +128,24 @@ pub struct VerifyOutcome {
 struct RunningTask {
     cmd: watch::Sender<TaskCommand>,
     live_table: Arc<Mutex<Option<Arc<SegmentTable>>>>,
+}
+
+/// Thumbnail fetch cap: poster images are tens of KB; 4 MiB is generous.
+const THUMB_MAX_BYTES: usize = 4 * 1024 * 1024;
+
+/// Magic-byte image sniffing: only real images are persisted as thumbnails.
+fn looks_like_image(b: &[u8]) -> bool {
+    if b.len() < 12 {
+        return false;
+    }
+    jpeg_starts_with(&b[..3])
+        || b.starts_with(&[0x89, b'P', b'N', b'G'])          // PNG
+        || b.starts_with(b"GIF8")                            // GIF
+        || (b.starts_with(b"RIFF") && &b[8..12] == b"WEBP")  // WEBP
+}
+
+fn jpeg_starts_with(b: &[u8]) -> bool {
+    b.starts_with(&[0xFF, 0xD8, 0xFF])
 }
 
 pub struct DownloadManager {
@@ -200,10 +221,15 @@ impl DownloadManager {
             return;
         };
         for row in rows {
-            if row.state != states::MERGING {
+            let cfg: DownloadConfig = serde_json::from_str(&row.config_json).unwrap_or_default();
+            // A still-present media_merge spec means the media job never
+            // finished cleanly (success clears it): any temp file it may have
+            // been writing is garbage from a dead process.
+            let has_spec = cfg.media_merge.is_some();
+            let merging = row.state == states::MERGING;
+            if !merging && !has_spec {
                 continue;
             }
-            let cfg: DownloadConfig = serde_json::from_str(&row.config_json).unwrap_or_default();
             let ext = cfg
                 .media_merge
                 .as_ref()
@@ -215,18 +241,47 @@ impl DownloadManager {
                 .map(|(s, _)| s.to_string())
                 .unwrap_or_else(|| row.final_name.clone());
             let dest = std::path::Path::new(&row.dest_dir);
+            // candidate output stems: the row's final_name AND the spec's
+            // explicit output_name (they differ for media jobs: the extractor
+            // sets output_name to "<title>.<ext>" while the row keeps the
+            // "(video stream)" suggested name)
+            let mut stems = vec![stem];
+            if let Some(on) = cfg
+                .media_merge
+                .as_ref()
+                .and_then(|m| m.output_name.clone())
+                .filter(|n| !n.is_empty())
+            {
+                let s = on.rsplit_once('.').map(|(a, _)| a.to_string()).unwrap_or(on);
+                if !stems.contains(&s) {
+                    stems.push(s);
+                }
+            }
             if let Ok(entries) = std::fs::read_dir(dest) {
-                let exact = format!("{stem}.{ext}.merging.part");
-                let variant_prefix = format!("{stem}(");
-                let variant_suffix = format!(".{ext}.merging.part");
+                let mp3_suffix = ".converting.part".to_string();
+                let merge_suffix = format!(".{ext}.merging.part");
+                let mut exacts = std::collections::HashSet::new();
+                let mut prefixes = Vec::new();
+                for st in &stems {
+                    exacts.insert(format!("{st}.{ext}.merging.part"));
+                    exacts.insert(format!("{st}.mp3.converting.part"));
+                    prefixes.push(format!("{st}("));
+                }
                 for e in entries.flatten() {
                     let name = e.file_name().to_string_lossy().into_owned();
-                    if name == exact
-                        || (name.starts_with(&variant_prefix) && name.ends_with(&variant_suffix))
+                    let variant = name.ends_with(&mp3_suffix)
+                        || name.ends_with(&merge_suffix);
+                    if exacts.contains(&name)
+                        || (variant && prefixes.iter().any(|p| name.starts_with(p)))
                     {
                         let _ = std::fs::remove_file(e.path());
                     }
                 }
+            }
+            if !merging {
+                // spec-bearing non-MERGING rows keep their real state (the raw
+                // stream is complete and usable); only the temp was garbage
+                continue;
             }
             let mut r = row.clone();
             r.state = states::FAILED.to_string();
@@ -564,6 +619,12 @@ impl DownloadManager {
                 cfg.media_merge = Some(spec);
             }
         }
+        // Poster/thumbnail from the extractor (ANY supported site): persist the
+        // URL with the row; the image is fetched to the thumbs dir right after
+        // the row exists (thumbnails for all sources, kept across restarts).
+        if cfg.thumbnail_url.is_none() {
+            cfg.thumbnail_url = info.thumbnail_url.clone();
+        }
         // P0 gate at registration time: a web page (HTML) or compressed transfer never
         // becomes a download row at all — the user sees the real reason immediately.
         crate::task::page_gate(&info, &cfg)?;
@@ -644,6 +705,10 @@ impl DownloadManager {
         row.temp_path = Some(temp_path.display().to_string());
         self.db.update_download(&row).map_err(db_err)?;
         info!(id, url, name = %final_name, size = ?info.content_length, "download added");
+
+        if let Some(turl) = cfg.thumbnail_url.clone() {
+            self.spawn_thumbnail_fetch(id, turl);
+        }
 
         Ok(AddedDownload {
             id,
@@ -871,12 +936,138 @@ impl DownloadManager {
             // Adaptive media job (YouTube etc.): the VIDEO row completed and carries a
             // pending media_merge spec → orchestrate the audio half + merge in the
             // background. Everything stays in the ordinary engine paths.
-            if matches!(outcome, Some(TaskOutcome::Completed { .. })) {
+            if let Some(TaskOutcome::Completed { path, .. }) = outcome {
                 this.maybe_spawn_media_job(id);
+                // thumbnail for ANY source: video files that finished without an
+                // extractor poster get a frame extracted from the file itself
+                this.maybe_spawn_frame_thumb(id, &path);
             }
             let _ = outcome;
         });
         Ok(())
+    }
+
+    /// Thumbnail store: <data_dir>/thumbs/<id>.jpg. Persisted across restarts
+    /// (the UI asks via thumbnail.get and caches the data URL).
+    pub fn thumb_path(&self, id: i64) -> std::path::PathBuf {
+        self.engine.data_dir.join("thumbs").join(format!("{id}.jpg"))
+    }
+
+    /// Spawn the poster fetch for a freshly created row (extractor thumbnail
+    /// URL). Fire-and-forget: a failed fetch must never fail the download —
+    /// the row art simply falls back to the category icon / frame extraction.
+    fn spawn_thumbnail_fetch(&self, id: i64, url: String) {
+        if url.is_empty() {
+            return;
+        }
+        let http = self.http.clone();
+        let events = self.events.clone();
+        let dest = self.thumb_path(id);
+        tokio::spawn(async move {
+            if dest.exists() {
+                return;
+            }
+            if let Some(p) = dest.parent() {
+                let _ = std::fs::create_dir_all(p);
+            }
+            let tmp = dest.with_extension("jpg.downloading");
+            let req = crate::ports::RangeRequest {
+                url,
+                start: 0,
+                end: None,
+                if_range: None,
+                headers: crate::ports::RequestHeaders::default(),
+                no_range_header: false,
+            };
+            let res = async {
+                let resp = http.open_range(req).await?;
+                let mut body = resp.body;
+                let mut buf: Vec<u8> = Vec::new();
+                while buf.len() < THUMB_MAX_BYTES {
+                    match body.next_chunk().await {
+                        Ok(Some(chunk)) => buf.extend_from_slice(&chunk),
+                        Ok(None) => break,
+                        Err(_) => break,
+                    }
+                }
+                if !looks_like_image(&buf) {
+                    return Err(EngineError::new(
+                        ErrorKind::InvalidResponse,
+                        "thumbnail URL did not return an image",
+                    ));
+                }
+                std::fs::write(&tmp, &buf)
+                    .map_err(|e| EngineError::new(ErrorKind::Io, format!("thumb write: {e}")))?;
+                std::fs::rename(&tmp, &dest)
+                    .map_err(|e| EngineError::new(ErrorKind::Io, format!("thumb rename: {e}")))?;
+                Ok::<(), EngineError>(())
+            }
+            .await;
+            match res {
+                Ok(()) => {
+                    let _ = events.send(crate::events::Event::ThumbnailReady { id });
+                    info!(id, "thumbnail persisted");
+                }
+                Err(e) => {
+                    let _ = std::fs::remove_file(tmp);
+                    debug!(id, error = %e.message, "thumbnail fetch skipped");
+                }
+            }
+        });
+    }
+
+    /// Poster frame for a COMPLETED download of a video container without a
+    /// persisted thumbnail (direct downloads from any source). Fire-and-forget.
+    fn maybe_spawn_frame_thumb(&self, id: i64, path: &std::path::Path) {
+        let Some(ext) = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.to_ascii_lowercase())
+        else {
+            return;
+        };
+        if !matches!(
+            ext.as_str(),
+            "mp4" | "mkv" | "webm" | "mov" | "m4v" | "ts" | "mts" | "m2ts" | "avi"
+        ) {
+            return;
+        }
+        if self.thumb_path(id).exists() {
+            return;
+        }
+        let Some(port) = self.media_merge.lock().unwrap().clone() else {
+            return;
+        };
+        let src = path.to_path_buf();
+        let dest = self.thumb_path(id);
+        let events = self.events.clone();
+        tokio::spawn(async move {
+            if let Some(p) = dest.parent() {
+                let _ = std::fs::create_dir_all(p);
+            }
+            let tmp = dest.with_extension("jpg.thumb.part");
+            let (bus, _rx) = crate::events::make_bus(8);
+            let (_kill_tx, kill) = tokio::sync::watch::channel(false);
+            // 2 s in: past most black intros; cheap (one frame, stream copy of nothing)
+            let res = port
+                .extract_frame(id, &src, 2, &tmp, &bus, kill)
+                .await
+                .and_then(|()| {
+                    std::fs::rename(&tmp, &dest).map_err(|e| {
+                        EngineError::new(ErrorKind::Io, format!("thumb rename: {e}"))
+                    })
+                });
+            match res {
+                Ok(()) => {
+                    let _ = events.send(crate::events::Event::ThumbnailReady { id });
+                    info!(id, "thumbnail extracted from video frame");
+                }
+                Err(e) => {
+                    let _ = std::fs::remove_file(&tmp);
+                    debug!(id, error = %e.message, "frame thumbnail skipped");
+                }
+            }
+        });
     }
 
     /// Claim + spawn the media job for a completed video row (single-flight).
@@ -952,6 +1143,16 @@ impl DownloadManager {
                 out = std::path::Path::new(&dest_dir).join(format!("{stem}({n}).mp3"));
                 n += 1;
             }
+            // write to a temp path, rename only on success: a killed or failed
+            // conversion must never leave a truncated .mp3 at the final name
+            // (same lifecycle the merge path gives its .merging.part)
+            let part = {
+                let name = out
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                std::path::Path::new(&dest_dir).join(format!("{name}.converting.part"))
+            };
             let (kill_tx, kill_rx) = tokio::sync::watch::channel(false);
             self.merge_triggers
                 .lock()
@@ -960,8 +1161,16 @@ impl DownloadManager {
             let port = self.media_merge.lock().unwrap().clone();
             let res = match port {
                 Some(port) => {
-                    port.convert_to_mp3(video_id, &row_file, &out, &self.events, kill_rx)
+                    port.convert_to_mp3(video_id, &row_file, &part, &self.events, kill_rx)
                         .await
+                        .and_then(|()| {
+                            std::fs::rename(&part, &out).map_err(|e| {
+                                crate::error::EngineError::new(
+                                    crate::error::ErrorKind::Io,
+                                    format!("cannot finalize converted MP3: {e}"),
+                                )
+                            })
+                        })
                 }
                 None => Err(crate::error::EngineError::new(
                     crate::error::ErrorKind::InvalidConfig,
@@ -969,6 +1178,9 @@ impl DownloadManager {
                 )),
             };
             self.merge_triggers.lock().unwrap().remove(&video_id);
+            if res.is_err() {
+                let _ = std::fs::remove_file(&part);
+            }
             match res {
                 Ok(()) => {
                     // the row now describes the converted MP3
@@ -1218,8 +1430,11 @@ impl DownloadManager {
             .unwrap()
             .insert(id, kill_tx.clone());
 
+        // the temp output ends in .merging.part: name the muxer explicitly or
+        // ffmpeg cannot initialize it (the two-separate-files YouTube bug)
+        let muxer = crate::media::container_to_ffmpeg_format(&ext);
         let result = port
-            .merge(id, &video_path, &audio_path, &part, &self.events, kill_rx)
+            .merge(id, &video_path, &audio_path, &part, muxer, &self.events, kill_rx)
             .await;
 
         self.merge_triggers.lock().unwrap().remove(&id);
@@ -1577,6 +1792,7 @@ impl DownloadManager {
             bandwidth_limit_bps: serde_json::from_str::<serde_json::Value>(&row.config_json)
                 .ok()
                 .and_then(|c| c.get("bandwidth_limit_bps").and_then(|v| v.as_u64())),
+            has_thumb: self.thumb_path(row.id).exists(),
             bps_smoothed: self.speed_stats_of(row.id).smoothed_bps,
             bps_avg: self.speed_stats_of(row.id).avg_bps,
             bps_peak: self.speed_stats_of(row.id).peak_bps,
@@ -1767,9 +1983,11 @@ mod merge_tests {
             _video: &std::path::Path,
             _audio: &std::path::Path,
             output: &std::path::Path,
+            format: &str,
             _bus: &crate::events::EventBus,
             kill: tokio::sync::watch::Receiver<bool>,
         ) -> Result<(), EngineError> {
+            let _ = format;
             match self.0 {
                 Mode::Ok => {
                     std::fs::write(output, b"merged-bytes").map_err(|e| {

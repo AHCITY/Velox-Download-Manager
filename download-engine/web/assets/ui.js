@@ -30,10 +30,20 @@ export function ytThumbId(url) {
   return m ? m[1] : null;
 }
 
-/** Row art: a real YouTube thumbnail when the source is a video page, else the
- *  category icon. The img is attached by paintRow (CSP allows i.ytimg.com);
- *  on load error it falls back to the icon, so a dead thumb never leaves a hole. */
+/** Persisted row thumbnails (id -> data URL), filled lazily via thumbnail.get.
+ *  Thumbs are stored engine-side in <data_dir>/thumbs/<id>.jpg, so they survive
+ *  restarts and work for EVERY source (extractor posters + frame extraction). */
+const thumbCache = new Map();
+
+export function thumbCacheReset() { thumbCache.clear(); }
+
+/** Row art precedence: persisted thumbnail (any source) > YouTube poster from
+ *  the watch-page URL > category icon. The img is attached by paintRow; on
+ *  load error it falls back to the icon, so a dead thumb never leaves a hole. */
 export function rowArt(r) {
+  if (r?.has_thumb) {
+    return `<div class="file-ico thumb" data-thumb-id="${esc(String(r.id))}" title="${esc(r?.final_name || '')}"></div>`;
+  }
   const id = ytThumbId(r?.url);
   if (!id) return fileTypeIcon(r?.final_name);
   return `<div class="file-ico thumb" data-thumb="${esc(id)}" title="${esc(r?.final_name || '')}"></div>`;
@@ -362,15 +372,37 @@ export function paintRow(node, r, { selectable = true, compact = false } = {}) {
     node.classList.toggle('selected', store.selection.has(r.id));
     node.dispatchEvent(new CustomEvent('selchange', { bubbles: true }));
   };
-  // YouTube thumbnail: attach after innerHTML so a load error can fall back
-  // to the category icon without inline handlers (CSP-safe)
+  // Row thumbnail: attach after innerHTML so a load error can fall back
+  // to the category icon without inline handlers (CSP allows data: URLs and
+  // i.ytimg.com). Persisted thumbs (data-thumb-id) load lazily via the engine;
+  // YouTube-only rows fall back to the public poster URL.
   const thumbBox = node.querySelector('.file-ico.thumb');
   if (thumbBox) {
     const img = new Image();
     img.className = 'row-thumb';
     img.loading = 'lazy';
     img.alt = '';
-    img.src = `https://i.ytimg.com/vi/${thumbBox.dataset.thumb}/mqdefault.jpg`;
+    const persisted = thumbBox.dataset.thumbId;
+    if (persisted != null) {
+      const cached = thumbCache.get(persisted);
+      if (cached) {
+        img.src = cached;
+      } else {
+        import('./api.js').then(({ engine }) => engine.thumb(persisted))
+          .then((res) => {
+            const url = res?.dataUrl;
+            if (!url) throw new Error('no thumb');
+            thumbCache.set(persisted, url);
+            if (thumbBox.isConnected) img.src = url;
+          })
+          .catch(() => {
+            thumbBox.classList.remove('thumb');
+            thumbBox.innerHTML = fileTypeIcon(r.final_name);
+          });
+      }
+    } else if (thumbBox.dataset.thumb) {
+      img.src = `https://i.ytimg.com/vi/${thumbBox.dataset.thumb}/mqdefault.jpg`;
+    }
     img.onerror = () => { thumbBox.classList.remove('thumb'); thumbBox.innerHTML = fileTypeIcon(r.final_name); };
     thumbBox.appendChild(img);
   }

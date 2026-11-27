@@ -127,6 +127,10 @@ pub fn wire_event(e: &Event) -> (String, String) {
             "merged".to_string(),
             json!({ "id": id, "path": path }).to_string(),
         ),
+        Event::ThumbnailReady { id } => (
+            "thumbnail_ready".to_string(),
+            json!({ "id": id }).to_string(),
+        ),
     }
 }
 
@@ -163,7 +167,8 @@ async fn pump(manager: Arc<DownloadManager>, hub: Arc<Hub>) {
                             | Event::Failed { id, .. }
                             | Event::Verified { id, .. }
                             | Event::Merging { id, .. }
-                            | Event::Merged { id, .. } => {
+                            | Event::Merged { id, .. }
+                            | Event::ThumbnailReady { id } => {
                                 pending.remove(id);
                             }
                             // audit D4: resolve-phase events carry no download id

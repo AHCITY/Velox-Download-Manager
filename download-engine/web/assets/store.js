@@ -317,6 +317,12 @@ export function startEvents() {
     const prevState = row?.state;
 
     switch (name) {
+      case 'thumbnail_ready': {
+        // a persisted thumbnail just landed (extractor poster or video frame):
+        // mark the row so rowArt() switches to the engine-stored image
+        if (row) { row.has_thumb = true; }
+        break;
+      }
       case 'progress': {
         if (!row) return;
         if (!RUNNING_STATES.includes(row.state)) return; // stale coalesced progress never resurrects a settled row

@@ -133,6 +133,11 @@ pub struct DownloadConfig {
     /// Preferred fps for the selected height (e.g. Some(60) for "1080p60").
     #[serde(default)]
     pub media_fps: Option<u32>,
+    /// Poster/thumbnail URL captured from the media extractor at resolve time.
+    /// Persisted with the row (config_json) so the thumbnail can be re-fetched;
+    /// the fetched image itself lives in <data_dir>/thumbs/<id>.jpg.
+    #[serde(default)]
+    pub thumbnail_url: Option<String>,
 }
 
 /// Container/format choice for media downloads.
