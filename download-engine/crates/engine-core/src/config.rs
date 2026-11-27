@@ -56,8 +56,11 @@ impl Default for EngineConfig {
         Self {
             data_dir: PathBuf::from("velox-data"),
             default_out_dir: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
-            max_connections_per_host: 8,
-            max_connections_per_download: 8,
+            // IDM-class defaults: 16 connections per download and per host.
+            // The per-download value is clamped to the host ceiling, so both
+            // must move together. Tail-stealing keeps small files efficient.
+            max_connections_per_host: 16,
+            max_connections_per_download: 16,
             min_segment_size: 8 * 1024 * 1024,
             user_agent: format!("velox/{}", env!("CARGO_PKG_VERSION")),
             connect_timeout: Duration::from_secs(10),

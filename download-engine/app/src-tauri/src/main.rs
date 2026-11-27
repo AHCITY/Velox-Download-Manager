@@ -35,6 +35,11 @@ struct AppState {
     settings_path: PathBuf,
     /// User-installed third-party themes (JSON manifests; docs/THEMES.md).
     themes_dir: PathBuf,
+    /// `themes/` INSIDE the installation directory: the visible theme library
+    /// (canonical built-in manifests are seeded here; users can drop their own
+    /// .json files next to them). None when the exe dir could not be resolved
+    /// (portable/dev runs fall back to the per-user dir above only).
+    install_themes_dir: Option<PathBuf>,
     /// Set by the first CloseRequested; makes repeated close requests safe.
     shutting_down: AtomicBool,
 }
@@ -177,6 +182,108 @@ fn settings_set(state: State<'_, AppState>, json: String) -> Result<(), String> 
  * ==================================================================== */
 const THEMES_MAX_BYTES: usize = 100 * 1024;
 
+/// Canonical built-in theme manifests, written into `<install>/themes/` at
+/// startup (missing files only — user edits survive updates). The values are
+/// the same palettes the frontend defines in assets/themes.js; the node test
+/// web/tests/themes.test.mjs pins the frontend side, and this fn is unit
+/// tested for structure + id coverage.
+fn builtin_theme_manifests() -> Vec<(&'static str, serde_json::Value)> {
+    let themes = [
+        ("dark", "Dark", "dark", serde_json::json!({
+            "--bg0": "#0b0e13", "--bg1": "#10141b", "--bg2": "#161c25", "--bg3": "#1c232e", "--bg4": "#232c38",
+            "--line": "#1e2632", "--line2": "#2a3543",
+            "--t1": "#e9eef5", "--t2": "#9aa7b8", "--t3": "#6b7889",
+            "--accent": "#4d9fff", "--accent-h": "#6cb0ff", "--accent-bg": "rgba(77,159,255,.13)", "--on-accent": "#06121f",
+            "--ok": "#3ecf8e", "--ok-bg": "rgba(62,207,142,.12)",
+            "--warn": "#e2b53e", "--warn-bg": "rgba(226,181,62,.12)",
+            "--err": "#f4695e", "--err-bg": "rgba(244,105,94,.12)",
+            "--purple": "#b18cff", "--purple-bg": "rgba(177,140,255,.13)",
+            "--cat-archive": "#e2a55e", "--cat-archive-bg": "rgba(226,165,94,.12)",
+            "--scroll": "#2a3543", "--scroll-h": "#35404f",
+            "--spin-track": "rgba(0,0,0,.25)", "--spin-dot": "#06121f",
+            "--shadow-pop": "0 8px 28px rgba(0,0,0,.45), 0 2px 8px rgba(0,0,0,.3)"
+        })),
+        ("light", "Light", "light", serde_json::json!({
+            "--bg0": "#f3f5f8", "--bg1": "#ffffff", "--bg2": "#eef1f5", "--bg3": "#e7ebf1", "--bg4": "#dde2ea",
+            "--line": "#e2e6ed", "--line2": "#ccd3de",
+            "--t1": "#1b2430", "--t2": "#4f5b6a", "--t3": "#7c8797",
+            "--accent": "#0b6dd6", "--accent-h": "#095cb4", "--accent-bg": "rgba(11,109,214,.10)", "--on-accent": "#ffffff",
+            "--ok": "#157a4d", "--ok-bg": "rgba(21,122,77,.10)",
+            "--warn": "#8f6400", "--warn-bg": "rgba(143,100,0,.10)",
+            "--err": "#c2392e", "--err-bg": "rgba(194,57,46,.10)",
+            "--purple": "#7443d6", "--purple-bg": "rgba(116,67,214,.09)",
+            "--cat-archive": "#a05f16", "--cat-archive-bg": "rgba(160,95,22,.10)",
+            "--scroll": "#c6cdd8", "--scroll-h": "#b2bac7",
+            "--spin-track": "rgba(255,255,255,.6)", "--spin-dot": "#0b6dd6",
+            "--shadow-pop": "0 8px 28px rgba(23,32,46,.14), 0 2px 8px rgba(23,32,46,.10)"
+        })),
+        ("purple", "Purple", "dark", serde_json::json!({
+            "--bg0": "#0d0916", "--bg1": "#120d1f", "--bg2": "#191228", "--bg3": "#201833", "--bg4": "#2a2042",
+            "--line": "#221a38", "--line2": "#32244e",
+            "--t1": "#ede9f7", "--t2": "#ab9fc9", "--t3": "#756a94",
+            "--accent": "#a382ff", "--accent-h": "#b99cff", "--accent-bg": "rgba(163,130,255,.14)", "--on-accent": "#150c26",
+            "--ok": "#43d99a", "--ok-bg": "rgba(67,217,154,.12)",
+            "--warn": "#e6ba4f", "--warn-bg": "rgba(230,186,79,.12)",
+            "--err": "#f77066", "--err-bg": "rgba(247,112,102,.12)",
+            "--purple": "#f0a6ff", "--purple-bg": "rgba(240,166,255,.12)",
+            "--cat-archive": "#e2a55e", "--cat-archive-bg": "rgba(226,165,94,.12)",
+            "--scroll": "#2e2248", "--scroll-h": "#3c2d5e",
+            "--spin-track": "rgba(0,0,0,.25)", "--spin-dot": "#150c26",
+            "--shadow-pop": "0 8px 28px rgba(0,0,0,.5), 0 2px 8px rgba(0,0,0,.35)"
+        })),
+        ("blue", "Blue", "dark", serde_json::json!({
+            "--bg0": "#0a1020", "--bg1": "#0e1628", "--bg2": "#141f36", "--bg3": "#1a2844", "--bg4": "#233454",
+            "--line": "#1b2a44", "--line2": "#2a3d5e",
+            "--t1": "#e8eefb", "--t2": "#9babc9", "--t3": "#66789c",
+            "--accent": "#4cc2ff", "--accent-h": "#7cd3ff", "--accent-bg": "rgba(76,194,255,.13)", "--on-accent": "#06101f",
+            "--ok": "#3ecf8e", "--ok-bg": "rgba(62,207,142,.12)",
+            "--warn": "#e2b53e", "--warn-bg": "rgba(226,181,62,.12)",
+            "--err": "#f4695e", "--err-bg": "rgba(244,105,94,.12)",
+            "--purple": "#b18cff", "--purple-bg": "rgba(177,140,255,.13)",
+            "--cat-archive": "#e2a55e", "--cat-archive-bg": "rgba(226,165,94,.12)",
+            "--scroll": "#26395a", "--scroll-h": "#324971",
+            "--spin-track": "rgba(0,0,0,.25)", "--spin-dot": "#06101f",
+            "--shadow-pop": "0 8px 28px rgba(0,0,0,.5), 0 2px 8px rgba(0,0,0,.35)"
+        })),
+        ("soft-canopy", "Soft Canopy", "dark", serde_json::json!({
+            "--bg0": "#101715", "--bg1": "#151e1a", "--bg2": "#1c2923", "--bg3": "#22332b", "--bg4": "#2b4035",
+            "--line": "#26372e", "--line2": "#354a3e",
+            "--t1": "#edf4ef", "--t2": "#b7c8be", "--t3": "#91a69a",
+            "--accent": "#91c9ad", "--accent-h": "#addbc2", "--accent-bg": "rgba(145,201,173,.15)", "--on-accent": "#102019",
+            "--ok": "#65d6a4", "--ok-bg": "rgba(101,214,164,.14)",
+            "--warn": "#e8bd72", "--warn-bg": "rgba(232,189,114,.14)",
+            "--err": "#f07e78", "--err-bg": "rgba(240,126,120,.14)",
+            "--purple": "#c3a5e8", "--purple-bg": "rgba(195,165,232,.14)",
+            "--cat-archive": "#e3b27d", "--cat-archive-bg": "rgba(227,178,125,.14)",
+            "--scroll": "#40564a", "--scroll-h": "#587364",
+            "--spin-track": "rgba(237,244,239,.14)", "--spin-dot": "#102019",
+            "--shadow-pop": "0 8px 28px rgba(0,0,0,.42), 0 2px 8px rgba(0,0,0,.28)"
+        })),
+    ];
+    themes
+        .into_iter()
+        .map(|(id, name, ty, colors)| {
+            let manifest = serde_json::json!({
+                "id": id, "name": name, "type": ty, "built_in": true, "colors": colors,
+            });
+            (format!("{id}.json"), manifest)
+        })
+        .collect()
+}
+
+/// Seed the install-dir themes folder: write each manifest only when the file
+/// is missing (never overwrite user edits).
+fn seed_builtin_theme_manifests(dir: &std::path::Path) {
+    for (file, manifest) in builtin_theme_manifests() {
+        let path = dir.join(&file);
+        if path.exists() {
+            continue;
+        }
+        let pretty = serde_json::to_string_pretty(&manifest).unwrap_or_default();
+        let _ = std::fs::write(&path, pretty + "\n");
+    }
+}
+
 #[tauri::command]
 fn themes_dir(state: State<'_, AppState>) -> Result<String, String> {
     std::fs::create_dir_all(&state.themes_dir).map_err(|e| e.to_string())?;
@@ -184,29 +291,40 @@ fn themes_dir(state: State<'_, AppState>) -> Result<String, String> {
 }
 
 /// List installed third-party themes (raw manifests; the UI validates each).
+/// Both theme locations are scanned: the themes/ folder INSIDE the installation
+/// directory first, then the per-user data dir; the first manifest with a given
+/// id wins.
 #[tauri::command]
 fn themes_list(state: State<'_, AppState>) -> Vec<serde_json::Value> {
     let mut out = Vec::new();
-    let rd = match std::fs::read_dir(&state.themes_dir) {
-        Ok(rd) => rd,
-        Err(_) => return out,
-    };
-    for entry in rd.flatten() {
-        let p = entry.path();
-        if p.extension().and_then(|e| e.to_str()) != Some("json") {
-            continue;
+    let mut seen = std::collections::HashSet::new();
+    let mut dirs: Vec<&PathBuf> = Vec::new();
+    if let Some(d) = &state.install_themes_dir {
+        dirs.push(d);
+    }
+    dirs.push(&state.themes_dir);
+    for dir in dirs {
+        let rd = match std::fs::read_dir(dir) {
+            Ok(rd) => rd,
+            Err(_) => continue,
+        };
+        for entry in rd.flatten() {
+            let p = entry.path();
+            if p.extension().and_then(|e| e.to_str()) != Some("json") {
+                continue;
+            }
+            let Ok(txt) = std::fs::read_to_string(&p) else { continue };
+            if txt.len() > THEMES_MAX_BYTES {
+                continue;
+            }
+            let Ok(v) = serde_json::from_str::<serde_json::Value>(&txt) else { continue };
+            let id = v.get("id").and_then(|i| i.as_str()).unwrap_or("").to_string();
+            if id.is_empty() || !seen.insert(id.clone()) {
+                continue;
+            }
+            let name = v.get("name").and_then(|n| n.as_str()).unwrap_or("").to_string();
+            out.push(serde_json::json!({ "id": id, "name": name, "theme": v }));
         }
-        let Ok(txt) = std::fs::read_to_string(&p) else { continue };
-        if txt.len() > THEMES_MAX_BYTES {
-            continue;
-        }
-        let Ok(v) = serde_json::from_str::<serde_json::Value>(&txt) else { continue };
-        let id = v.get("id").and_then(|i| i.as_str()).unwrap_or("").to_string();
-        if id.is_empty() {
-            continue;
-        }
-        let name = v.get("name").and_then(|n| n.as_str()).unwrap_or("").to_string();
-        out.push(serde_json::json!({ "id": id, "name": name, "theme": v }));
     }
     out
 }
@@ -1168,14 +1286,43 @@ fn main() {
                 ),
             }
 
+            // BitTorrent stage: magnet links + .torrent files download through
+            // the same manifest/UI. Best-effort: a failed session start keeps
+            // the rest of the app working and torrent sources then fail with
+            // the honest "no torrent support" error.
+            match tauri::async_runtime::block_on(engine_torrent::TorrentEngine::new(
+                &data_dir,
+                manager.db().clone(),
+                manager.event_bus(),
+            )) {
+                Ok(engine) => {
+                    manager.set_torrent(Some(engine));
+                    eprintln!("torrent engine: ready (magnet + .torrent downloads enabled)");
+                }
+                Err(e) => eprintln!("torrent engine: unavailable ({})", e.message),
+            }
+
             let settings_path = data_dir.join("ui-settings.json");
             let themes_dir = app.path().app_data_dir()?.join("themes");
             std::fs::create_dir_all(&themes_dir).map_err(|e| e.to_string())?;
+
+            // Themes folder INSIDE the installation directory (Settings →
+            // Appearance scans it): seeded with the canonical built-in manifests
+            // so the folder is a real, visible, editable theme library. A failed
+            // seed (read-only dir) is non-fatal — the per-user dir still works.
+            let install_themes_dir = exe_dir().map(|d| d.join("themes"));
+            if let Some(dir) = &install_themes_dir {
+                if std::fs::create_dir_all(dir).is_ok() {
+                    seed_builtin_theme_manifests(dir);
+                }
+            }
+
             app.manage(AppState {
                 manager: manager.clone(),
                 downloads_root: downloads_root.clone(),
                 settings_path,
                 themes_dir,
+                install_themes_dir,
                 shutting_down: AtomicBool::new(false),
             });
 
@@ -1252,8 +1399,41 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
-    use super::{edge_exe_candidates, validate_host_manifest, HOST_REG_BROWSERS, read_theme_file, THEMES_MAX_BYTES};
+    use super::{
+        builtin_theme_manifests, edge_exe_candidates, read_theme_file, seed_builtin_theme_manifests,
+        validate_host_manifest, HOST_REG_BROWSERS, THEMES_MAX_BYTES,
+    };
     use engine_core::extension::EXTENSION_ID;
+
+    #[test]
+    fn install_dir_theme_manifests_cover_all_builtins_and_are_valid() {
+        let manifests = builtin_theme_manifests();
+        let ids: Vec<&str> = manifests.iter().map(|(f, _)| f.trim_end_matches(".json")).collect();
+        assert_eq!(
+            ids,
+            vec!["dark", "light", "purple", "blue", "soft-canopy"],
+            "the themes folder seeds exactly the built-in ids"
+        );
+        for (file, m) in &manifests {
+            assert_eq!(m.get("id").and_then(|i| i.as_str()), Some(file.trim_end_matches(".json")));
+            assert!(m.get("name").and_then(|n| n.as_str()).is_some(), "{file} has a name");
+            assert!(m.get("colors").and_then(|c| c.as_object()).map(|o| o.len() >= 28).unwrap_or(false),
+                "{file} defines the full palette");
+        }
+    }
+
+    #[test]
+    fn seeding_writes_missing_manifests_and_never_overwrites() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        seed_builtin_theme_manifests(dir.path());
+        let canopy = dir.path().join("soft-canopy.json");
+        assert!(canopy.exists(), "manifests are seeded");
+        // a user edit must survive the next startup
+        std::fs::write(&canopy, "{\"id\": \"soft-canopy\", \"edited\": true}").unwrap();
+        seed_builtin_theme_manifests(dir.path());
+        let txt = std::fs::read_to_string(&canopy).unwrap();
+        assert!(txt.contains("\"edited\": true"), "existing files are never overwritten");
+    }
 
 
     #[test]

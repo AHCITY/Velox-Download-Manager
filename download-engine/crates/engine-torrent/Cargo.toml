@@ -1,0 +1,18 @@
+[package]
+name = "engine-torrent"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+engine-core = { path = "../engine-core" }
+engine-state = { path = "../engine-state" }
+# default-tls (native-tls: OpenSSL on Linux, schannel on Windows) — avoids
+# aws-lc-rs/cmake which the workspace deliberately does not build (see the
+# reqwest comment above). TLS is needed for https trackers + .torrent fetches.
+librqbit = { version = "9.1", default-features = false, features = ["default-tls"] }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+async-trait = { workspace = true }
+tracing = { workspace = true }

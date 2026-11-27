@@ -15,6 +15,7 @@ engine-http = { path = "../engine-http" }
 engine-api = { path = "../engine-api" }
 engine-bridge = { path = "../engine-bridge" }
 engine-media = { path = "../engine-media" }
+engine-torrent = { path = "../engine-torrent" }
 tokio = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }

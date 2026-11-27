@@ -711,6 +711,23 @@ async fn cmd_verify(manager: &Arc<DownloadManager>, rest: Vec<String>) -> u8 {
 /// discoverable on PATH. Honest one-line stderr report either way; absence
 /// never blocks other commands, merge calls then fail with clear guidance
 /// (docs/FFMPEG_INTEGRATION.md §3).
+/// Wire the BitTorrent stage (magnet + .torrent). Best-effort: a failed
+/// session start (e.g. no usable data dir) keeps the rest of the CLI working
+/// and magnet sources then fail with the honest "no torrent support" error.
+async fn wire_torrents(manager: &Arc<DownloadManager>) {
+    if manager.has_torrents() {
+        return;
+    }
+    let db = manager.db().clone();
+    match engine_torrent::TorrentEngine::new(&manager.engine_config().data_dir, db, manager.event_bus()).await {
+        Ok(engine) => {
+            manager.set_torrent(Some(engine));
+            eprintln!("torrent engine: ready (magnet + .torrent downloads enabled)");
+        }
+        Err(e) => eprintln!("torrent engine: unavailable ({})", e.message),
+    }
+}
+
 async fn wire_media_merge(manager: &Arc<DownloadManager>) {
     if manager.has_media_merge() {
         return;
@@ -739,6 +756,7 @@ async fn cmd_merge(manager: Arc<DownloadManager>, rest: Vec<String>) -> u8 {
         return 64;
     }
     wire_media_merge(&manager).await;
+    wire_torrents(&manager).await;
     match manager.merge_streams(ids[0], ids[1]).await {
         Ok(()) => {
             println!(
@@ -756,6 +774,7 @@ async fn cmd_merge(manager: Arc<DownloadManager>, rest: Vec<String>) -> u8 {
 
 async fn cmd_serve(manager: Arc<DownloadManager>) -> u8 {
     wire_media_merge(&manager).await;
+    wire_torrents(&manager).await;
     eprintln!("velox serve: JSON-RPC v1 on stdio (one request per line)");
     let serve_fut = engine_api::serve_stdio(manager);
     tokio::select! {
@@ -772,6 +791,7 @@ async fn cmd_serve(manager: Arc<DownloadManager>) -> u8 {
 
 async fn cmd_serve_http(manager: Arc<DownloadManager>, opts: Opts) -> u8 {
     wire_media_merge(&manager).await;
+    wire_torrents(&manager).await;
     let addr = format!("{}:{}", opts.bind, opts.port);
     // dual-stack by default: browsers resolve `localhost` to ::1 first, so binding
     // only 0.0.0.0 (IPv4) makes the UI unreachable-by-400 on some stacks; bind both

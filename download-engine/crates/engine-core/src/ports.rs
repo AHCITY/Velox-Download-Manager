@@ -181,6 +181,29 @@ pub trait HttpPort: Send + Sync {
 /// ffmpeg subprocess, kill-safe on `kill`, ffprobe post-validation, honest errors
 /// (`MISSING_FFMPEG`/`GPL_BUILD`/`MERGE_FAILED`/`CORRUPT_MEDIA`), and `Merging`/`Merged`
 /// events on the given bus. Docs: docs/FFMPEG_INTEGRATION.md.
+/// BitTorrent/magnet support (engine-torrent). Same injection pattern as
+/// `MediaMergePort`: the transfer engine never links a torrent library — the
+/// host wires an implementation in, and the manager routes rows with
+/// `mode == "torrent"` to it. `source` is a magnet URI, a local .torrent path,
+/// or an http(s) URL to a .torrent file.
+#[async_trait]
+pub trait TorrentPort: Send + Sync {
+    /// Attach the BitTorrent engine to an existing row (the row was created by
+    /// the manager; `id` is the row id). Engine-owned from here on.
+    async fn add(&self, id: i64, source: &str, out_dir: &std::path::Path)
+        -> Result<(), EngineError>;
+
+    /// Pause: stop the swarm traffic, keep the partial pieces on disk.
+    async fn pause(&self, id: i64) -> Result<(), EngineError>;
+
+    /// Resume a paused torrent (row already exists).
+    async fn resume(&self, id: i64) -> Result<(), EngineError>;
+
+    /// Detach the torrent from the session; `delete_files` also removes the
+    /// downloaded pieces.
+    async fn remove(&self, id: i64, delete_files: bool) -> Result<(), EngineError>;
+}
+
 #[async_trait]
 pub trait MediaMergePort: Send + Sync {
     /// Stream-copy `video`+`audio` into `output` (the manager owns the output path).

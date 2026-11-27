@@ -7,6 +7,13 @@ import { openDialog, el, esc, reportError, actions } from '../ui.js';
 
 let lastDest = null;
 
+/** Magnet URIs and .torrent files are torrent sources: they skip the HTTP
+ *  inspect preview and are created directly (the swarm reports name/size). */
+function isTorrentSource(url) {
+  const u = String(url || '').trim().toLowerCase();
+  return u.startsWith('magnet:') || u.endsWith('.torrent');
+}
+
 export function openAddDialog(prefillUrl = '') {
   // destination precedence: this session's last choice → the persisted default
   // directory (Settings → General) → the engine's startup dir
@@ -203,9 +210,21 @@ export function openAddDialog(prefillUrl = '') {
     const url = urlIn.value.trim();
     urlErr.style.display = 'none';
     if (!url || url === lastInspected) return;
+    if (isTorrentSource(url)) {
+      // torrent sources have no HTTP metadata to preview: name + size arrive
+      // from the swarm once the metadata resolves
+      lastInspected = url;
+      prev.style.display = 'block';
+      prev.className = 'preview ok';
+      prev.innerHTML = `
+        <div class="p-row"><span class="p-k">Type</span><span class="p-v">BitTorrent — magnet/torrent download</span></div>
+        <div class="p-row"><span class="p-k">Note</span><span class="p-v">File name and size are resolved from the swarm after adding.</span></div>
+      `;
+      return;
+    }
     if (!/^https?:\/\//i.test(url)) {
       prev.style.display = 'none';
-      if (url) showUrlError('URL must start with http:// or https://');
+      if (url) showUrlError('URL must start with http:// or https:// (magnet:?xt=… and .torrent links are also accepted)');
       return;
     }
     lastInspected = url;
@@ -288,7 +307,14 @@ export function openAddDialog(prefillUrl = '') {
   async function start() {
     const url = urlIn.value.trim();
     if (!url) { showUrlError('Enter a URL first.'); return; }
-    if (!/^https?:\/\//i.test(url)) { showUrlError('URL must start with http:// or https://'); return; }
+    if (!/^https?:\/\//i.test(url) && !isTorrentSource(url)) {
+      showUrlError('URL must start with http:// or https:// (magnet:?xt=… and .torrent links are also accepted)');
+      return;
+    }
+    if (isTorrentSource(url)) {
+      $('#adMediaFmt').style.display = 'none';
+      mediaChoice.active = false;
+    }
 
     // duplicate check against the real list (engine also de-dupes destinations)
     const dupe = [...store.rows.values()].find((r) => r.url === url && !['failed', 'cancelled'].includes(r.state));

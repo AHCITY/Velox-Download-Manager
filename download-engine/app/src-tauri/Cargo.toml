@@ -45,10 +45,14 @@ engine-state = { path = "../../crates/engine-state" }
 engine-api = { path = "../../crates/engine-api" }
 engine-bridge = { path = "../../crates/engine-bridge" }
 engine-media = { path = "../../crates/engine-media" }
+engine-torrent = { path = "../../crates/engine-torrent" }
 
 # Windows-only: browser detection + native-host registration probe (registry)
 [target.'cfg(windows)'.dependencies]
 winreg = "0.52"
+
+[dev-dependencies]
+tempfile = "3"
 
 [features]
 # tauri's custom-protocol feature is required for production builds
