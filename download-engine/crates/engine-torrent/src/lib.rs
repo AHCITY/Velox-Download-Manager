@@ -12,13 +12,18 @@
 //!   the engine re-attaches incomplete torrent rows at startup (crash recovery
 //!   follows the same "resume from what's on disk" contract as HTTP resuming).
 //! - Progress flows through the ordinary event bus (`Progress`,
-//!   `DownloadState`, `Completed`, `Failed`) so the web UI updates live without
+//!   `DownloadState`, `Completed`, `Failed`) so the UI updates live without
 //!   any torrent-specific code.
 //! - `connections_active` on the wire is the live peer count; the speed is the
 //!   swarm download rate.
+//! - Magnet adds never block: `session.add_torrent` on a metadata-less magnet
+//!   waits for the swarm to deliver the metadata, which can take forever when
+//!   no seeder answers. Attach runs in a bounded, cancellable resolver task so
+//!   an unresolvable magnet can never stall `download.create` or app startup.
 
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
@@ -33,7 +38,9 @@ use librqbit::{AddTorrent, AddTorrentOptions, Session, SessionOptions, TorrentSt
 // Arc over the public ManagedTorrent type.
 type ManagedTorrentHandle = Arc<librqbit::ManagedTorrent>;
 
-type TorrentId = usize;
+/// How long a magnet may wait for the swarm to deliver metadata before the
+/// row fails with an honest error.
+const MAGNET_RESOLVE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(90);
 
 pub struct TorrentEngine {
     session: Arc<Session>,
@@ -41,8 +48,11 @@ pub struct TorrentEngine {
     events: EventBus,
     /// row id → live handle (also the "is this row attached" marker).
     handles: Mutex<HashMap<i64, ManagedTorrentHandle>>,
-    /// librqbit TorrentId → row id (for the poller's iteration).
-    ids: Mutex<HashMap<TorrentId, i64>>,
+    /// row id → resolver cancel flag (magnet metadata still resolving).
+    resolving: Mutex<HashMap<i64, Arc<AtomicBool>>>,
+    /// Self weak pointer: lets `&self` trait methods spawn tasks that keep the
+    /// engine alive without creating reference cycles at construction.
+    self_weak: Mutex<std::sync::Weak<TorrentEngine>>,
 }
 
 impl TorrentEngine {
@@ -69,90 +79,103 @@ impl TorrentEngine {
                     format!("torrent session failed to start: {e}"),
                 )
             })?;
-        let eng = Arc::new(Self {
+        let eng = Arc::new_cyclic(|weak| Self {
             session,
             db,
             events,
             handles: Mutex::new(HashMap::new()),
-            ids: Mutex::new(HashMap::new()),
+            resolving: Mutex::new(HashMap::new()),
+            self_weak: Mutex::new(weak.clone()),
         });
         eng.recover_rows().await;
         eng.spawn_poller();
         Ok(eng)
     }
 
+    fn weak(&self) -> Arc<TorrentEngine> {
+        self.self_weak
+            .lock()
+            .unwrap()
+            .upgrade()
+            .expect("engine alive while its methods run")
+    }
+
     /// Re-attach rows left incomplete by a crash/upgrade (mode = torrent, not
-    /// completed/failed/cancelled). A failed re-attach flips the row to FAILED
-    /// with the real reason instead of leaving a zombie "downloading" row.
+    /// completed/cancelled). Recovery never blocks the host: file-backed rows
+    /// attach inline (metadata is known); magnets resolve in a background task.
     async fn recover_rows(self: &Arc<Self>) {
         let rows = match self.db.list_downloads() {
             Ok(rows) => rows,
             Err(_) => return,
         };
         for row in rows {
-            if row.mode != "torrent" {
-                continue;
-            }
-            if matches!(row.state.as_str(), states::COMPLETED | states::CANCELLED) {
+            if row.mode != "torrent"
+                || matches!(row.state.as_str(), states::COMPLETED | states::CANCELLED)
+            {
                 continue;
             }
             let id = row.id;
-            match self
-                .attach(id, &row.url, Path::new(&row.dest_dir), true)
-                .await
-            {
-                Ok(_) => {
-                    let _ = self.events.send(Event::DownloadState {
-                        id,
-                        state: states::PAUSED.into(),
-                    });
-                }
-                Err(e) => {
-                    warn_row_fail(&self.db, &self.events, id, &e.message);
+            let source = row.url.clone();
+            let out_dir = row.dest_dir.clone();
+            if source.starts_with("magnet:") {
+                // background resolver; the row stays `created` until metadata lands
+                self.spawn_magnet_resolver(id, source, out_dir, true);
+            } else {
+                match self
+                    .attach_inline(id, &source, Path::new(&out_dir), true)
+                    .await
+                {
+                    Ok(_) => {
+                        let _ = self.events.send(Event::DownloadState {
+                            id,
+                            state: states::PAUSED.into(),
+                        });
+                    }
+                    Err(e) => warn_row_fail(&self.db, &self.events, id, &e.message),
                 }
             }
         }
     }
 
-    /// Attach a source (magnet URI / .torrent path / http URL) to a row.
-    async fn attach(
+    /// Read a local .torrent source (validated: exists + size cap).
+    fn read_torrent_file(source: &str) -> Result<Vec<u8>, EngineError> {
+        let p = Path::new(source);
+        let md = std::fs::metadata(p).map_err(|_| {
+            EngineError::new(
+                ErrorKind::InvalidUrl,
+                format!("torrent file not found: {source}"),
+            )
+        })?;
+        if md.len() > 4 * 1024 * 1024 {
+            return Err(EngineError::new(
+                ErrorKind::InvalidUrl,
+                "torrent file is unreasonably large (>4 MiB); refusing",
+            ));
+        }
+        std::fs::read(p).map_err(io_err("cannot read torrent file"))
+    }
+
+    /// Attach a metadata-KNOWN source (.torrent bytes / http URL) to a row.
+    /// Fast: no swarm round-trip, safe to await inline.
+    async fn attach_inline(
         &self,
         id: i64,
         source: &str,
         out_dir: &Path,
         paused: bool,
     ) -> Result<ManagedTorrentHandle, EngineError> {
-        // absolute output folder (librqbit requires one)
         let out_dir = std::fs::canonicalize(out_dir)
             .or_else(|_| std::fs::create_dir_all(out_dir).map(|_| out_dir.to_path_buf()))
             .map_err(io_err("torrent output folder unavailable"))?;
 
-        let bytes_or_none = if !source.starts_with("magnet:")
-            && !source.starts_with("http://")
-            && !source.starts_with("https://")
-        {
-            // local .torrent file: read the bytes (validated: exists + size cap)
-            let p = Path::new(source);
-            let md = std::fs::metadata(p).map_err(|_| {
-                EngineError::new(
-                    ErrorKind::InvalidUrl,
-                    format!("torrent file not found: {source}"),
-                )
-            })?;
-            if md.len() > 4 * 1024 * 1024 {
-                return Err(EngineError::new(
-                    ErrorKind::InvalidUrl,
-                    "torrent file is unreasonably large (>4 MiB); refusing",
-                ));
-            }
-            Some(std::fs::read(p).map_err(io_err("cannot read torrent file"))?)
+        // magnets and http(s) URLs go through librqbit's URL path (magnets resolve
+        // via DHT/trackers, URLs are fetched); local files load as raw bytes
+        let add = if source.starts_with("http://") || source.starts_with("https://") {
+            AddTorrent::from_url(source.to_string())
+        } else if source.starts_with("magnet:") {
+            AddTorrent::from_url(source.to_string())
         } else {
-            None
-        };
-
-        let add = match bytes_or_none {
-            Some(bytes) => AddTorrent::from_bytes(bytes),
-            None => AddTorrent::from_url(source.to_string()),
+            AddTorrent::from_bytes(Self::read_torrent_file(source)?)
         };
         let opts = AddTorrentOptions {
             output_folder: Some(out_dir.display().to_string()),
@@ -176,10 +199,50 @@ impl TorrentEngine {
                 "torrent source was list-only; nothing to download",
             )
         })?;
-        let tid = handle.id();
         self.handles.lock().unwrap().insert(id, handle.clone());
-        self.ids.lock().unwrap().insert(tid, id);
+        self.sync_row(id, handle.clone(), 0, 0).await;
         Ok(handle)
+    }
+
+    /// Resolve a magnet in the background (bounded): the row stays `created`
+    /// until the swarm delivers the metadata, then the poller takes over. The
+    /// task aborts when the row is paused/removed/cancelled meanwhile.
+    fn spawn_magnet_resolver(&self, id: i64, source: String, out_dir: String, paused: bool) {
+        let this = self.weak();
+        let cancel = Arc::new(AtomicBool::new(false));
+        self.resolving.lock().unwrap().insert(id, cancel.clone());
+        tokio::spawn(async move {
+            let Some(this) = this.self_weak.lock().unwrap().upgrade() else {
+                return;
+            };
+            let attempt = this.attach_inline(id, &source, Path::new(&out_dir), paused);
+            let res = tokio::time::timeout(MAGNET_RESOLVE_TIMEOUT, attempt).await;
+            this.resolving.lock().unwrap().remove(&id);
+            if cancel.load(Ordering::SeqCst) {
+                return; // paused/removed while resolving: the caller owns the row state
+            }
+            let msg = match res {
+                Ok(Ok(_)) => return, // attached; the poller drives the row from here
+                Ok(Err(e)) => e.message,
+                Err(_) => format!(
+                    "magnet metadata did not resolve in {} s — no peers answered. \
+                     Check your network or retry later (the swarm may be empty).",
+                    MAGNET_RESOLVE_TIMEOUT.as_secs()
+                ),
+            };
+            warn_row_fail(&this.db, &this.events, id, &msg);
+        });
+    }
+
+    /// True when the row's magnet is still resolving in the background.
+    fn is_resolving(&self, id: i64) -> bool {
+        self.resolving.lock().unwrap().contains_key(&id)
+    }
+
+    fn cancel_resolver(&self, id: i64) {
+        if let Some(flag) = self.resolving.lock().unwrap().remove(&id) {
+            flag.store(true, Ordering::SeqCst);
+        }
     }
 
     fn spawn_poller(self: &Arc<Self>) {
@@ -246,7 +309,7 @@ impl TorrentEngine {
                 }
             }
             if want_db {
-                self.sync_row(id, handle.clone(), total, received).await;
+                self.sync_row(id, handle, total, received).await;
             }
         }
     }
@@ -368,58 +431,84 @@ fn warn_row_fail(db: &Arc<Db>, events: &EventBus, id: i64, message: &str) {
 #[async_trait]
 impl TorrentPort for TorrentEngine {
     async fn add(&self, id: i64, source: &str, out_dir: &Path) -> Result<(), EngineError> {
-        let handle = self.attach(id, source, out_dir, false).await?;
-        // kick the state into "downloading" so the UI sees progress right away
-        self.sync_row(id, handle, 0, 0).await;
+        if source.starts_with("magnet:") {
+            // never block: metadata resolution happens in the background task
+            self.spawn_magnet_resolver(
+                id,
+                source.to_string(),
+                out_dir.display().to_string(),
+                false,
+            );
+            return Ok(());
+        }
+        self.attach_inline(id, source, out_dir, false).await?;
         Ok(())
     }
 
     async fn pause(&self, id: i64) -> Result<(), EngineError> {
-        let handle = self
-            .handles
-            .lock()
-            .unwrap()
-            .get(&id)
-            .cloned()
-            .ok_or_else(|| EngineError::new(ErrorKind::InvalidConfig, "torrent is not attached"))?;
-        self.session
-            .pause(&handle)
-            .await
-            .map_err(|e| EngineError::new(ErrorKind::Io, format!("torrent pause failed: {e}")))?;
-        self.sync_row(id, handle, 0, 0).await;
+        let handle = self.handles.lock().unwrap().get(&id).cloned();
+        match handle {
+            Some(handle) => {
+                self.session.pause(&handle).await.map_err(|e| {
+                    EngineError::new(ErrorKind::Io, format!("torrent pause failed: {e}"))
+                })?;
+                self.sync_row(id, handle, 0, 0).await;
+            }
+            None => {
+                // still resolving: abort the resolver, the row keeps its state
+                self.cancel_resolver(id);
+            }
+        }
         Ok(())
     }
 
     async fn resume(&self, id: i64) -> Result<(), EngineError> {
-        let handle = self
-            .handles
-            .lock()
-            .unwrap()
-            .get(&id)
-            .cloned()
-            .ok_or_else(|| EngineError::new(ErrorKind::InvalidConfig, "torrent is not attached"))?;
-        if let Err(e) = self.session.unpause(&handle).await {
-            // resume-after-crash and "Retry" hit an already-live torrent — that
-            // is the happy path, not an error
-            let msg = e.to_string();
-            if !msg.to_ascii_lowercase().contains("already")
-                && !msg.to_ascii_lowercase().contains("live")
-            {
-                return Err(EngineError::new(
-                    ErrorKind::Io,
-                    format!("torrent resume failed: {e}"),
-                ));
+        let handle = self.handles.lock().unwrap().get(&id).cloned();
+        match handle {
+            Some(handle) => {
+                if let Err(e) = self.session.unpause(&handle).await {
+                    // resume-after-crash and "Retry" hit an already-live torrent —
+                    // that is the happy path, not an error
+                    let msg = e.to_string();
+                    let low = msg.to_ascii_lowercase();
+                    if !low.contains("already") && !low.contains("live") {
+                        return Err(EngineError::new(
+                            ErrorKind::Io,
+                            format!("torrent resume failed: {e}"),
+                        ));
+                    }
+                }
+                self.sync_row(id, handle, 0, 0).await;
+            }
+            None => {
+                // never attached (crash recovery / failed resolve): re-attach.
+                // A magnet re-resolves in the background; a .torrent attaches inline.
+                let Ok(Some(row)) = self.db.get_download(id) else {
+                    return Err(EngineError::new(
+                        ErrorKind::InvalidConfig,
+                        "unknown download id",
+                    ));
+                };
+                if self.is_resolving(id) {
+                    return Ok(()); // already resolving
+                }
+                if row.url.starts_with("magnet:") {
+                    self.spawn_magnet_resolver(id, row.url.clone(), row.dest_dir.clone(), false);
+                } else {
+                    self.attach_inline(id, &row.url, Path::new(&row.dest_dir), false)
+                        .await?;
+                }
             }
         }
-        self.sync_row(id, handle, 0, 0).await;
         Ok(())
     }
 
     async fn remove(&self, id: i64, delete_files: bool) -> Result<(), EngineError> {
+        // abort any in-flight resolver BEFORE detaching the handle
+        self.cancel_resolver(id);
         let handle = self.handles.lock().unwrap().remove(&id);
         if let Some(h) = handle {
             let tid = h.id();
-            self.ids.lock().unwrap().remove(&tid);
             let _ = self
                 .session
                 .delete(librqbit::api::TorrentIdOrHash::Id(tid), delete_files)
