@@ -179,7 +179,7 @@ const THEMES_MAX_BYTES: usize = 100 * 1024;
 
 /// Shipped into the themes folder (README.txt) so the on-disk format is
 /// documented where users drop their themes. NOT parsed by the loader.
-const THEMES_README: &str = r#"Velox themes folder
+const THEMES_README: &str = r##"Velox themes folder
 ====================
 
 Drop custom theme manifests here as <theme-id>.json files. They appear in
@@ -200,7 +200,7 @@ A theme manifest is a single JSON object:
 Limits: file size up to 100 KB, .json extension only. Files that fail
 validation are skipped. Built-in themes (dark, light, purple, blue,
 soft-canopy) cannot be overridden from this folder.
-"#;
+"##;
 
 #[tauri::command]
 fn themes_dir(state: State<'_, AppState>) -> Result<String, String> {
