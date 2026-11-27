@@ -8,8 +8,8 @@ use engine_core::events::{make_bus, Event};
 use tokio::sync::watch;
 
 use crate::pipeline::{
-    build_merge_args, validate_probe_json, verify_lgpl, MediaPipeline, MediaPipelinePort,
-    MergeInput, SubprocessOutcome, SubprocessPort,
+    build_merge_args, merge_output_format, validate_probe_json, verify_lgpl, MediaPipeline,
+    MediaPipelinePort, MergeInput, SubprocessOutcome, SubprocessPort,
 };
 
 fn input() -> MergeInput {
@@ -109,6 +109,61 @@ fn merge_args_are_pinned_copy_only() {
         assert!(!joined.contains(banned), "transcode/flag leak: {banned}");
     }
     assert_eq!(args.last().unwrap(), "/dl/out.mp4");
+    // the merge runs against a crash-safe `.merging.part` temp file whose
+    // extension ffmpeg cannot map to a muxer — the explicit format fixes it
+    assert!(
+        joined.contains("-f mp4"),
+        "explicit muxer for the temp output: {joined}"
+    );
+}
+
+#[test]
+fn merge_output_format_covers_the_containers_the_extractor_chooses() {
+    use std::path::Path;
+    assert_eq!(merge_output_format(Path::new("/dl/Title.mp4")), Some("mp4"));
+    assert_eq!(merge_output_format(Path::new("/dl/Title.m4v")), Some("mp4"));
+    assert_eq!(
+        merge_output_format(Path::new("/dl/Title.mkv")),
+        Some("matroska")
+    );
+    assert_eq!(
+        merge_output_format(Path::new("/dl/Title.webm")),
+        Some("webm")
+    );
+    assert_eq!(merge_output_format(Path::new("/dl/Title.bin")), None);
+}
+
+#[test]
+fn merge_output_format_sees_through_the_merging_part_temp_suffix() {
+    // THE regression: Path::extension() of the crash-safe temp name is "part"
+    // — the muxer must come from the real container extension beneath it.
+    use std::path::Path;
+    assert_eq!(
+        merge_output_format(Path::new("/dl/Title.mp4.merging.part")),
+        Some("mp4")
+    );
+    assert_eq!(
+        merge_output_format(Path::new("/dl/Title.mkv.merging.part")),
+        Some("matroska")
+    );
+    assert_eq!(
+        merge_output_format(Path::new("/dl/Title.webm.merging.part")),
+        Some("webm")
+    );
+}
+
+#[test]
+fn merge_args_carry_the_muxer_for_the_real_temp_file_shape() {
+    let input = MergeInput {
+        output: PathBuf::from("/dl/Title.mp4.merging.part"),
+        ..input()
+    };
+    let args = build_merge_args(&input);
+    let joined = args.join(" ");
+    assert!(
+        joined.contains("-f mp4"),
+        "muxer must be derived from the container beneath .merging.part: {joined}"
+    );
 }
 
 #[test]

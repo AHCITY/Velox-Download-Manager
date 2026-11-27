@@ -1202,13 +1202,28 @@ impl DownloadManager {
         }
 
         // 3) merge (LGPL-gated, stream-copy, ffprobe-validated inside merge_streams).
+        // Remember the video-only intermediate's name: the merged artifact gets
+        // its own name (the media title), so the intermediate must not linger.
+        let pre_merge_video_name = self.video_final_name(video_id);
         let merged = self.merge_streams(video_id, audio_id).await;
 
-        // 4) cleanup: drop the audio row + file; clear the pending spec on the video
-        //    row so a later re-trigger cannot re-merge an already-merged artifact.
+        // 4) cleanup: drop the audio row + file AND the video-only intermediate
+        //    file; clear the pending spec on the video row so a later re-trigger
+        //    cannot re-merge an already-merged artifact.
         match merged {
             Ok(()) => {
                 let _ = self.remove(audio_id, true).await;
+                let merged_name = self.video_final_name(video_id);
+                if merged_name != pre_merge_video_name {
+                    let intermediate = std::path::Path::new(&dest_dir).join(&pre_merge_video_name);
+                    match std::fs::remove_file(&intermediate) {
+                        Ok(()) => {}
+                        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                        Err(e) => {
+                            warn!(video_id, error = %e, "media job: could not remove the video-only intermediate file");
+                        }
+                    }
+                }
                 if let Ok(Some(mut row)) = self.db.get_download(video_id) {
                     if let Ok(mut cfg) =
                         serde_json::from_str::<crate::config::DownloadConfig>(&row.config_json)

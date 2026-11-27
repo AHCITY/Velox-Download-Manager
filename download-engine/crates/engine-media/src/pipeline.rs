@@ -66,8 +66,32 @@ pub fn build_mp3_args(input: &str, output: &str) -> Vec<String> {
     ]
 }
 
+/// Muxer for the merged output, derived from the output file's extension.
+/// ffmpeg picks its muxer from the output FILENAME; the merge writes to a
+/// crash-safe `.<name>.merging.part` temp file whose extension is unknown to
+/// ffmpeg, so EVERY merge failed with "use a standard extension for the
+/// filename or specify the format manually" — the real, reproducible root
+/// cause of "YouTube downloads as two separate files with a merge error".
+/// The explicit `-f` pins the muxer regardless of the temp suffix.
+pub fn merge_output_format(output: &std::path::Path) -> Option<&'static str> {
+    let name = output.file_name()?.to_str()?;
+    // Path::extension() of "Title.mp4.merging.part" is "part" — strip the
+    // crash-safe temp suffix first, then take the REAL container extension.
+    let base = name.strip_suffix(".merging.part").unwrap_or(name);
+    let ext = std::path::Path::new(base)
+        .extension()?
+        .to_str()?
+        .to_ascii_lowercase();
+    match ext.as_str() {
+        "mp4" | "m4v" | "mov" => Some("mp4"),
+        "mkv" => Some("matroska"),
+        "webm" => Some("webm"),
+        _ => None,
+    }
+}
+
 pub fn build_merge_args(input: &MergeInput) -> Vec<String> {
-    vec![
+    let mut args = vec![
         "-y".into(),
         "-i".into(),
         input.video.display().to_string(),
@@ -81,8 +105,13 @@ pub fn build_merge_args(input: &MergeInput) -> Vec<String> {
         "copy".into(),
         "-movflags".into(),
         "+faststart".into(),
-        input.output.display().to_string(),
-    ]
+    ];
+    if let Some(f) = merge_output_format(&input.output) {
+        args.push("-f".into());
+        args.push(f.into());
+    }
+    args.push(input.output.display().to_string());
+    args
 }
 
 /// LGPL policy check on `ffmpeg -version` output (audit §D procedure): any build that
