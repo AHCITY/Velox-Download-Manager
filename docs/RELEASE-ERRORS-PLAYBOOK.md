@@ -435,6 +435,64 @@ release session exceeds it fast.
 **Fix:** authenticate EVERY call (`Authorization: Bearer <token>`), including
 reads. 5,000 req/h authenticated.
 
+
+### E-25 · Theme PR: `BUILTIN_THEMES` key ≠ theme id (CI red + broken theme at runtime)
+**Signature:** `web/tests/themes.test.mjs` fails asserting
+`Object.keys(BUILTIN_THEMES)`; the new theme silently never applies at runtime
+(`applyTheme('soft-canopy')` misses).
+**Cause:** the object literal keyed the theme by its camelCase JS variable
+(`softCanopy`) while the theme id is `soft-canopy`. `getTheme(id)` looks up by
+id — a key/id mismatch is invisible until the test pins the key list.
+**Fix:** key the map by the id: `{ dark, light, purple, blue, 'soft-canopy': softCanopy }`.
+**Rule:** a built-in theme map key MUST equal the theme id; the node test pins it.
+
+### E-26 · windows.yml: `$size = ath]::Round(...)` — corrupted `[math]::Round`
+**Signature:** release builds would die parsing the pwsh step (`ath]::Round` is
+not valid PowerShell); slipped through because the `desktop`/`desktop-online`
+jobs are SKIPPED on normal main pushes and the last release predated the edit.
+**Cause:** a bad edit in the 1c9d2ef release-page cleanup.
+**Fix:** `[math]::Round` (both offline + online size logs). **Rule:** run the
+release workflow on a throwaway branch before trusting an edited release job.
+
+### E-27 · windows.yml: upload-artifact path pointed inside `download-engine/`
+**Signature:** `if-no-files-found: error` — the artifact upload fails although
+the installer was built.
+**Cause:** the installers are copied to the WORKSPACE ROOT (`Copy-Item ... .`),
+but the artifact `path:` said `download-engine/Velox-Setup-x64-*.exe`.
+**Fix:** artifact paths are workspace-root-relative here.
+
+### E-28 · Online installer aborts mid-way: "Error opening file for writing: velox-browser-host.exe"
+**Signature:** install dies around the browser-ecosystem staging (the reported
+"browser-… something" error); Velox never starts because the install never
+finished.
+**Cause:** the native-messaging host is spawned by the BROWSER, not by
+Velox.exe — closing Velox (CLOSEVELOX_GRACEFUL) leaves a stale
+`velox-browser-host.exe` running, and the NSIS `File` command cannot overwrite
+a running executable.
+**Fix:** both installer templates detect the stale host (tasklist) and
+force-terminate it (taskkill /F) before staging. Force is safe: the host is a
+headless stdio forwarder holding no download state (the engine owns it all).
+
+### E-29 · Online installer "hangs" during the ~120 MB FFmpeg download
+**Signature:** users see the installer sitting mid-way with no visible progress
+(then give up or kill it).
+**Cause:** PowerShell 5 `Invoke-WebRequest` renders a progress bar per chunk;
+that UI work can dominate large downloads.
+**Fix:** `$ProgressPreference = 'SilentlyContinue'` at the top of
+velox-online-fetch.ps1 (already retried 3x with backoff).
+
+### E-30 · YouTube downloads finish as TWO separate files + a merge error
+**Signature:** video + audio rows both complete; the video row then fails with
+`GPL_BUILD` or `MISSING_FFMPEG`; the user ends with 2 files and no merged mp4.
+**Cause (root):** the LGPL license gate refused EVERY ffmpeg advertising
+`--enable-gpl` — which is what winget/gyan/distro builds ship. Since Velox
+merely INVOKES a user-installed PATH binary (it does not distribute it), the
+refusal was over-broad and broke merging for most users.
+**Fix:** the gate now applies only to BUNDLED binaries (inside the app's tools
+dir — those we distribute). PATH-resolved binaries run ungated
+(`LicenseGate::Skip`), regression-tested in engine-media. The bundled layout
+keeps the LGPL gate (a swapped binary is still caught at merge time).
+
 ---
 
 ## Quick triage table (fastest path from symptom to fix)
@@ -461,6 +519,12 @@ reads. 5,000 req/h authenticated.
 | Re-uploading does not fix the download order | E-22 |
 | Renamed asset: updater 404 / sums fail | E-23 |
 | Reads start returning rate-limit JSON | E-24 |
+| Theme PR: tests fail on `BUILTIN_THEMES` keys | E-25 |
+| Release job dies parsing pwsh (`ath]::Round`) | E-26 |
+| Artifact upload says file missing after a build | E-27 |
+| Online installer dies writing velox-browser-host.exe | E-28 |
+| Online installer seems stuck on the FFmpeg download | E-29 |
+| YouTube: 2 files + merge error (`GPL_BUILD`/`MISSING_FFMPEG`) | E-30 |
 
 ## Known non-errors (do not chase)
 

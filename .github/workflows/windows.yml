@@ -234,14 +234,14 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: Velox-Setup-x64-Offline
-          path: download-engine/Velox-Setup-x64-Offline.exe
+          path: Velox-Setup-x64-Offline.exe
           if-no-files-found: error
 
       - name: Upload offline installer signature artifact
         uses: actions/upload-artifact@v4
         with:
           name: Velox-Setup-x64-Offline.sig
-          path: download-engine/Velox-Setup-x64-Offline.exe.sig
+          path: Velox-Setup-x64-Offline.exe.sig
           if-no-files-found: error
 
   # ---- Job 2b: ONLINE installer (optional YouTube component, fetched at install) ----
@@ -348,7 +348,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: Velox-Setup-x64-Online
-          path: download-engine/Velox-Setup-x64-Online.exe
+          path: Velox-Setup-x64-Online.exe
           if-no-files-found: error
 
   # ---- Job 3: publish the signed Windows release ----

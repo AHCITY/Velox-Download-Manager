@@ -15,6 +15,11 @@ Velox is an open-source desktop download manager for Windows and Linux, built wi
 - Google Drive large-file confirmation handling.
 - Chrome, Edge, and Brave integration through a browser extension and native messaging host.
 - Signed application updates with signature verification.
+- **BitTorrent & magnet links** — paste `magnet:?xt=…` or a `.torrent` file; swarm downloads
+  live in the same list with pause/resume/crash-recovery (DHT + trackers, librqbit).
+- **Thumbnails for every source** — any media source that has a preview image
+  (YouTube, Vimeo, SoundCloud, …) keeps it; the built-in themes ship as editable
+  manifests in the installation's `themes/` folder.
 
 ## Download
 

@@ -17,6 +17,10 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+# Invoke-WebRequest renders a progress bar per chunk; on big files (the ~120 MB
+# FFmpeg zip) that UI work can dominate the download and look like a mid-install
+# hang. Silence it.
+$ProgressPreference = 'SilentlyContinue'
 # GitHub requires TLS 1.2+; older PowerShell defaults can try 1.0/1.1 first.
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 

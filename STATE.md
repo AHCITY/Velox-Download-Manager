@@ -1,6 +1,8 @@
 # STATE.md — Velox Download Manager mission state
 
-Last updated: 2026-11-26 — **RELEASE-PAGE CLEANUP (session 4)**: v0.7.0 page restructured per user feedback — numbered/sequenced downloads (1-4 + metadata), unified renamed to Velox Setup (Offline), the CI-built online installer finally published (release job had skipped it), formal notes template (scripts/release-notes.sh) shared by all three stages, docs/LINUX.md created (release linked to a non-existent file). release-page.yml self-heals the page on every main push. Keep current; commit before ending every turn.
+Last updated: 2026-11-27 — **ENGINE UPGRADE SESSION 5**: YouTube two-files ROOT CAUSE #2 fixed (LGPL gate refused user-installed GPL ffmpeg — gate now bundled-only), thumbnails for ALL media sources (DB column `thumbnail` + extractor pick_thumbnail + UI/CSP), BitTorrent/magnet support (new crates/engine-torrent on librqbit 9.1, TorrentPort injection, unified rows/UI), themes folder seeded INSIDE the installation dir, online-installer fixes (browser-host kill E-28, PS1 hang E-29), windows.yml corruption fixed (E-26/E-27), IDM-class 16-connection defaults + keep-alive pool tuning. NO setup/release builds this turn (per user). Details: docs/RELEASE-ERRORS-PLAYBOOK.md E-25..E-30, docs/TORRENTS.md.
+
+## Previous: RELEASE-PAGE CLEANUP (session 4, 2026-11-26): v0.7.0 page restructured per user feedback — numbered/sequenced downloads (1-4 + metadata), unified renamed to Velox Setup (Offline), the CI-built online installer finally published (release job had skipped it), formal notes template (scripts/release-notes.sh) shared by all three stages, docs/LINUX.md created (release linked to a non-existent file). release-page.yml self-heals the page on every main push. Keep current; commit before ending every turn.
 
 ## Where things are
 

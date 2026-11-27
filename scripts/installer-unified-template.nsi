@@ -160,6 +160,15 @@ interactive:
     !insertmacro CLOSEVELOX_GRACEFUL
 files:
 
+  ; Same remedy as the online installer: the browser-spawned native-messaging
+  ; host does not close with Velox.exe, and a stale one aborts the File command
+  ; with "Error opening file for writing". Force-terminate the headless helper
+  ; before staging (it holds no download state).
+  nsExec::Exec 'tasklist /NH /FI "IMAGENAME eq velox-browser-host.exe" | find /I "velox-browser-host.exe"'
+  Pop $0
+  IntCmp $0 0 0 +2 +2
+    nsExec::Exec 'taskkill /F /IM velox-browser-host.exe'
+
   ; --- application ---
   File "/oname=Velox.exe" "${BUILD_STAGING}${SEP}Velox.exe"
 

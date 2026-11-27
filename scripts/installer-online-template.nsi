@@ -183,6 +183,18 @@ interactive:
     !insertmacro CLOSEVELOX_GRACEFUL
 files:
 
+  ; The native-messaging host is spawned by the BROWSER (not by Velox.exe), so
+  ; closing Velox does not close it. A still-running velox-browser-host.exe
+  ; makes the File command below abort mid-install with "Error opening file for
+  ; writing: velox-browser-host.exe" — the reported "browser-..." failure that
+  ; left the install half-done. Graceful close is impossible for a headless
+  ; stdio helper (it exits when its browser closes), so the stale process is
+  ; force-terminated; it holds no download state (the engine owns it all).
+  nsExec::Exec 'tasklist /NH /FI "IMAGENAME eq velox-browser-host.exe" | find /I "velox-browser-host.exe"'
+  Pop $0
+  IntCmp $0 0 0 +2 +2
+    nsExec::Exec 'taskkill /F /IM velox-browser-host.exe'
+
   ; --- application ---
   File "/oname=Velox.exe" "${BUILD_STAGING}${SEP}Velox.exe"
 
