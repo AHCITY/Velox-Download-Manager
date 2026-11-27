@@ -106,6 +106,14 @@ wait_close:
     IDRETRY wait_close
   Abort "Velox must be closed before installing."
 done_close:
+  ; the native messaging sidecar is STATELESS (a stdio relay only) and is kept
+  ; alive by any connected browser — it locks velox-browser-host.exe and the
+  ; File write below fails mid-install ("error opening file for writing").
+  ; Force-close it here: it holds no download state (the engine does), and the
+  ; browser respawns it on demand when the extension reconnects.
+  nsExec::Exec 'taskkill /F /IM velox-browser-host.exe'
+  Pop $0
+  Sleep 250
 !macroend
 
 ; UPDATE MODE: the app pauses its downloads and exits by itself; we simply
@@ -123,6 +131,11 @@ wait_upd:
   SetErrorLevel 2
   Quit
 done_upd:
+  ; same sidecar lock as the interactive path: kill the stateless relay so the
+  ; payload writes cannot fail mid-way (no download state lives in it)
+  nsExec::Exec 'taskkill /F /IM velox-browser-host.exe'
+  Pop $0
+  Sleep 250
 !macroend
 
 ; Download the optional YouTube toolchain via the staged PowerShell fetcher.
@@ -324,6 +337,10 @@ un_done:
   Delete "$INSTDIR\THIRD-PARTY-NOTICES.md"
   Delete "$INSTDIR\FFMPEG-LICENSE.txt"
   RMDir /r "$INSTDIR\extension"
+  ; themes folder: remove the shipped README; user-installed theme JSONs are
+  ; kept (they may be wanted) — the folder itself goes if empty
+  Delete "$INSTDIR\themes\README.txt"
+  RMDir "$INSTDIR\themes"
   DeleteRegKey HKCU "Software\Google\Chrome\NativeMessagingHosts\io.velox.downloadmanager"
   DeleteRegKey HKCU "Software\Microsoft\Edge\NativeMessagingHosts\io.velox.downloadmanager"
   DeleteRegKey HKCU "Software\BraveSoftware\Brave-Browser\NativeMessagingHosts\io.velox.downloadmanager"

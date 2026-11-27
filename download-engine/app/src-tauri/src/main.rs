@@ -177,6 +177,31 @@ fn settings_set(state: State<'_, AppState>, json: String) -> Result<(), String> 
  * ==================================================================== */
 const THEMES_MAX_BYTES: usize = 100 * 1024;
 
+/// Shipped into the themes folder (README.txt) so the on-disk format is
+/// documented where users drop their themes. NOT parsed by the loader.
+const THEMES_README: &str = r#"Velox themes folder
+====================
+
+Drop custom theme manifests here as <theme-id>.json files. They appear in
+Settings > Appearance after restarting Velox (or re-opening the screen).
+
+A theme manifest is a single JSON object:
+
+{
+  "id": "my-theme",          // unique; must not collide with built-ins
+  "name": "My Theme",        // shown in the picker
+  "base": "dark",            // optional: inherit colors you do not set
+  "colors": {
+    "bg": "#12141a",         // see docs/THEMES.md for the full palette keys
+    "fg": "#e8eaf0"
+  }
+}
+
+Limits: file size up to 100 KB, .json extension only. Files that fail
+validation are skipped. Built-in themes (dark, light, purple, blue,
+soft-canopy) cannot be overridden from this folder.
+"#;
+
 #[tauri::command]
 fn themes_dir(state: State<'_, AppState>) -> Result<String, String> {
     std::fs::create_dir_all(&state.themes_dir).map_err(|e| e.to_string())?;
@@ -1169,8 +1194,26 @@ fn main() {
             }
 
             let settings_path = data_dir.join("ui-settings.json");
-            let themes_dir = app.path().app_data_dir()?.join("themes");
+            // Themes folder INSIDE the main Velox installation directory
+            // ($INSTALLDIR/themes next to Velox.exe) so user-installed themes
+            // live with the app and are visible/manageable as files. Per-user
+            // installs are writable; a read-only install dir (managed/locked
+            // down setups) falls back to the app-data location so importing
+            // still works. A short README documents the manifest format.
+            let themes_dir = {
+                let exe_dir = std::env::current_exe()
+                    .ok()
+                    .and_then(|p| p.parent().map(std::path::Path::to_path_buf));
+                match exe_dir.map(|d| d.join("themes")) {
+                    Some(d) if std::fs::create_dir_all(&d).is_ok() => d,
+                    _ => app.path().app_data_dir()?.join("themes"),
+                }
+            };
             std::fs::create_dir_all(&themes_dir).map_err(|e| e.to_string())?;
+            let readme = themes_dir.join("README.txt");
+            if !readme.exists() {
+                let _ = std::fs::write(&readme, THEMES_README);
+            }
             app.manage(AppState {
                 manager: manager.clone(),
                 downloads_root: downloads_root.clone(),
