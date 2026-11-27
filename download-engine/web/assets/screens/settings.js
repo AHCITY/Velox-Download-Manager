@@ -285,14 +285,12 @@ function themeRow() {
 
   row.querySelector('#seThemeInstall').onclick = async () => {
     // desktop: native file open via the dialog plugin; browser preview: paste
-    if (window.__TAURI__?.dialog?.open) {
-      const picked = await window.__TAURI__.dialog.open({
-        filters: [{ name: 'Velox theme', extensions: ['json'] }],
-      });
-      if (!picked) return;
+    if (window.__TAURI__?.core?.invoke) {
       try {
-        const txt = await window.__TAURI__.fs?.readTextFile?.(picked)
-          ?? await (await fetch(picked)).text();
+        // The native picker and file read stay inside Rust. The renderer never
+        // passes an arbitrary local path into a filesystem-reading command.
+        const txt = await window.__TAURI__.core.invoke('theme_pick_file');
+        if (txt == null) return;
         await installThemeJson(txt, errBox, paint);
       } catch (e) {
         errBox.textContent = `Could not read the theme file: ${e}`;
@@ -313,11 +311,11 @@ async function installThemeJson(txt, errBox, repaint) {
   try { manifest = JSON.parse(txt); } catch { errBox.textContent = 'Not valid JSON.'; return; }
   const res = sanitizeTheme(manifest);
   if (!res.ok) { errBox.textContent = 'Theme rejected: ' + res.errors.slice(0, 3).join('; '); return; }
-  try {
-    if (window.__TAURI__?.core?.invoke) {
-      await window.__TAURI__.core.invoke('theme_install', { json: txt });
-    }
-  } catch { /* browser preview: registry-only */ }
+  if (window.__TAURI__?.core?.invoke) {
+    // In the desktop app, persistence must succeed before the theme is
+    // registered or selected; never report a theme as installed on failure.
+    await window.__TAURI__.core.invoke('theme_install', { json: txt });
+  }
   registerCustomTheme(res.theme);
   if (applyTheme(res.theme.id)) {
     setPrefs({ theme: res.theme.id });

@@ -115,7 +115,26 @@ const blue = {
   },
 };
 
-export const BUILTIN_THEMES = { dark, light, purple, blue };
+
+const softCanopy = {
+  id: 'soft-canopy', name: 'Soft Canopy', type: 'dark', built_in: true,
+  colors: {
+    '--bg0': '#101715', '--bg1': '#151e1a', '--bg2': '#1c2923', '--bg3': '#22332b', '--bg4': '#2b4035',
+    '--line': '#26372e', '--line2': '#354a3e',
+    '--t1': '#edf4ef', '--t2': '#b7c8be', '--t3': '#91a69a',
+    '--accent': '#91c9ad', '--accent-h': '#addbc2', '--accent-bg': 'rgba(145,201,173,.15)', '--on-accent': '#102019',
+    '--ok': '#65d6a4', '--ok-bg': 'rgba(101,214,164,.14)',
+    '--warn': '#e8bd72', '--warn-bg': 'rgba(232,189,114,.14)',
+    '--err': '#f07e78', '--err-bg': 'rgba(240,126,120,.14)',
+    '--purple': '#c3a5e8', '--purple-bg': 'rgba(195,165,232,.14)',
+    '--cat-archive': '#e3b27d', '--cat-archive-bg': 'rgba(227,178,125,.14)',
+    '--scroll': '#40564a', '--scroll-h': '#587364',
+    '--spin-track': 'rgba(237,244,239,.14)', '--spin-dot': '#102019',
+    '--shadow-pop': '0 8px 28px rgba(0,0,0,.42), 0 2px 8px rgba(0,0,0,.28)',
+  },
+};
+
+export const BUILTIN_THEMES = { dark, light, purple, blue, 'soft-canopy': softCanopy };
 
 /* ------------------------------------------------------------------ */
 /* Color parsing + WCAG contrast (pure functions — unit tested)        */

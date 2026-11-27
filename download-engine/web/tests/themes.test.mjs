@@ -11,9 +11,9 @@ const { BUILTIN_THEMES, THEME_VARS, contrastReport, sanitizeTheme, contrastRatio
 
 /* ---------- built-ins ---------- */
 
-test('four built-in themes exist with unique ids', () => {
+test('five built-in themes exist with unique ids', () => {
   const ids = Object.keys(BUILTIN_THEMES);
-  assert.deepEqual(ids.sort(), ['blue', 'dark', 'light', 'purple']);
+  assert.deepEqual(ids.sort(), ['blue', 'dark', 'light', 'purple', 'soft-canopy']);
 });
 
 test('every built-in defines every theme variable', () => {
