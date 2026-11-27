@@ -1193,6 +1193,14 @@ fn main() {
                 ),
             }
 
+            // BitTorrent engine (magnet links + .torrent files): librqbit
+            // session under the data dir; fastresume survives restarts.
+            let torrent_svc = engine_torrent::TorrentService::new(
+                data_dir.join("torrents-session"),
+                downloads_root.clone(),
+            );
+            manager.set_torrent_port(Some(Arc::new(torrent_svc)));
+
             let settings_path = data_dir.join("ui-settings.json");
             // Themes folder INSIDE the main Velox installation directory
             // ($INSTALLDIR/themes next to Velox.exe) so user-installed themes

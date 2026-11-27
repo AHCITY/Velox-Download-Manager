@@ -214,6 +214,7 @@ fn make_config(engine: &EngineConfig, opts: &Opts) -> DownloadConfig {
         auth: None,
         media_format: None,
         thumbnail_url: None,
+        torrent_id: None,
         media_height: None,
         media_fps: None,
         max_connections: opts.max_connections,
@@ -713,6 +714,16 @@ async fn cmd_verify(manager: &Arc<DownloadManager>, rest: Vec<String>) -> u8 {
 /// never blocks other commands, merge calls then fail with clear guidance
 /// (docs/FFMPEG_INTEGRATION.md §3).
 async fn wire_media_merge(manager: &Arc<DownloadManager>) {
+    // BitTorrent engine (magnet links + .torrent files): session state under
+    // the engine data dir; fastresume survives restarts.
+    if !manager.has_torrent() {
+        let ec = manager.engine_config();
+        let torrent_svc = engine_torrent::TorrentService::new(
+            ec.data_dir.join("torrents-session"),
+            ec.default_out_dir.clone(),
+        );
+        manager.set_torrent_port(Some(Arc::new(torrent_svc)));
+    }
     if manager.has_media_merge() {
         return;
     }

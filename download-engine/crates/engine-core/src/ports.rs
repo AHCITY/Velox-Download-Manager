@@ -244,6 +244,95 @@ pub trait MediaMergePort: Send + Sync {
     }
 }
 
+
+/// One torrent's metadata + live progress, as the manager's supervisor needs it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TorrentStatsView {
+    pub name: Option<String>,
+    pub total_bytes: u64,
+    pub progress_bytes: u64,
+    pub finished: bool,
+    pub paused: bool,
+    pub error: Option<String>,
+}
+
+/// What a torrent add reports right away (metadata may arrive later for magnets).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TorrentAdded {
+    /// BitTorrent engine id; also the manager's supervisor key.
+    pub id: i64,
+    pub info_hash_hex: String,
+    pub name: Option<String>,
+    pub total_bytes: Option<u64>,
+}
+
+/// BitTorrent seam (magnet links + .torrent files): the transfer engine routes
+/// torrent rows here; engine-torrent implements it with librqbit. Contract:
+/// `add` registers the torrent (paused when asked) and resolves metadata before
+/// returning when possible; `pause`/`remove` are idempotent on unknown ids so
+/// cancel-after-restart never errors. Docs: docs/TORRENTS.md.
+#[async_trait]
+pub trait TorrentPort: Send + Sync {
+    async fn add(
+        &self,
+        source: &str,
+        dest_dir: &std::path::Path,
+        paused: bool,
+    ) -> Result<TorrentAdded, EngineError>;
+
+    /// Metadata + progress snapshot (Ok(None) = id no longer managed).
+    async fn stats(&self, id: i64) -> Result<Option<TorrentStatsView>, EngineError>;
+
+    async fn pause(&self, id: i64) -> Result<(), EngineError>;
+    async fn unpause(&self, id: i64) -> Result<(), EngineError>;
+    /// Stop and forget; `delete_files` also removes the torrent's files.
+    async fn remove(&self, id: i64, delete_files: bool) -> Result<(), EngineError>;
+}
+
+/// True when the source routes to the BitTorrent engine: magnet URIs with an
+/// info-hash, http(s) .torrent files, or local .torrent paths.
+pub fn is_torrent_source(source: &str) -> bool {
+    let s = source.trim();
+    if s.starts_with("magnet:?") && s.contains("xt=urn:btih:") {
+        return true;
+    }
+    if s.starts_with("http://") || s.starts_with("https://") || !s.contains("://") {
+        let name = if let Ok(u) = url::Url::parse(s) {
+            u.path()
+                .rsplit('/')
+                .next()
+                .map(|p| p.to_ascii_lowercase())
+                .unwrap_or_default()
+        } else {
+            std::path::Path::new(s)
+                .file_name()
+                .map(|f| f.to_string_lossy().to_ascii_lowercase())
+                .unwrap_or_default()
+        };
+        return name.ends_with(".torrent");
+    }
+    false
+}
+
+#[cfg(test)]
+mod torrent_tests {
+    use super::*;
+
+    #[test]
+    fn torrent_source_classification() {
+        assert!(is_torrent_source(
+            "magnet:?xt=urn:btih:cab507494d02ebb1178b38f2e9d7be299c86b862&dn=ubuntu"
+        ));
+        assert!(is_torrent_source("https://example.com/linuxmint-22.iso.torrent"));
+        assert!(is_torrent_source("/home/me/downloads/x.torrent"));
+        assert!(is_torrent_source(r"C:\Downloads\big.iso.torrent"));
+        assert!(!is_torrent_source("https://example.com/file.zip"));
+        assert!(!is_torrent_source("magnet:?some=junk"));
+        assert!(!is_torrent_source("ftp://example.com/a.torrent"));
+        assert!(!is_torrent_source(""));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

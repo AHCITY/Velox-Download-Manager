@@ -21,7 +21,7 @@ export function openAddDialog(prefillUrl = '') {
       <div class="dialog-body">
         <div class="field">
           <label for="adUrl">Download URL</label>
-          <input id="adUrl" type="url" placeholder="https://example.com/file.zip" spellcheck="false" autocomplete="off" value="${esc(prefillUrl)}">
+          <input id="adUrl" type="url" placeholder="https://example.com/file.zip · magnet:?xt=urn:btih:…" spellcheck="false" autocomplete="off" value="${esc(prefillUrl)}">
           <div class="fe" id="adUrlErr" style="display:none"></div>
         </div>
         <div class="preview" id="adPrev" style="display:none"></div>
@@ -203,9 +203,18 @@ export function openAddDialog(prefillUrl = '') {
     const url = urlIn.value.trim();
     urlErr.style.display = 'none';
     if (!url || url === lastInspected) return;
-    if (!/^https?:\/\//i.test(url)) {
+    if (!/^https?:\/\//i.test(url) && !TORRENTISH(url)) {
       prev.style.display = 'none';
-      if (url) showUrlError('URL must start with http:// or https://');
+      if (url) showUrlError('URL must start with http:// or https:// (magnet: links and .torrent files also work)');
+      return;
+    }
+    if (TORRENTISH(url)) {
+      // torrent sources resolve inside the engine (metadata from DHT/trackers
+      // or the .torrent file); the HTTP preview does not apply
+      prev.style.display = 'block';
+      prev.className = 'preview';
+      prev.innerHTML = `<span>${icon('info', 14)} Torrent source — metadata (name, size, files) is resolved by the engine when you add it.</span>`;
+      lastInspected = url;
       return;
     }
     lastInspected = url;
@@ -285,10 +294,15 @@ export function openAddDialog(prefillUrl = '') {
     return { cfg };
   }
 
+  const TORRENTISH = (u) => /^magnet:\?xt=urn:btih:/i.test(u) || /\.torrent$/i.test(u.split(/[?#]/)[0]);
+
   async function start() {
     const url = urlIn.value.trim();
     if (!url) { showUrlError('Enter a URL first.'); return; }
-    if (!/^https?:\/\//i.test(url)) { showUrlError('URL must start with http:// or https://'); return; }
+    if (!/^https?:\/\//i.test(url) && !TORRENTISH(url)) {
+      showUrlError('URL must start with http:// or https:// (magnet: links and .torrent files also work)');
+      return;
+    }
 
     // duplicate check against the real list (engine also de-dupes destinations)
     const dupe = [...store.rows.values()].find((r) => r.url === url && !['failed', 'cancelled'].includes(r.state));

@@ -170,6 +170,9 @@ pub struct DownloadManager {
     /// In-flight adaptive media jobs (video ids currently running their audio
     /// download + merge orchestration). Guards single-flight per job.
     media_jobs: Mutex<HashSet<i64>>,
+    /// BitTorrent engine (magnet links + .torrent files), implemented in
+    /// engine-torrent (librqbit) and injected like the media merge port.
+    torrent: Mutex<Option<Arc<dyn crate::ports::TorrentPort>>>,
 }
 
 impl DownloadManager {
@@ -203,11 +206,22 @@ impl DownloadManager {
             merge_triggers: Mutex::new(HashMap::new()),
             merging: Mutex::new(HashSet::new()),
             media_jobs: Mutex::new(HashSet::new()),
+            torrent: Mutex::new(None),
         }))
     }
 
     /// Inject the MediaPipeline merge stage (engine-media). None disables merges:
     /// `merge_streams` then fails honestly instead of pretending.
+    /// Inject the BitTorrent engine (engine-torrent). Absent = magnet/.torrent
+    /// sources are refused with honest guidance instead of a broken row.
+    pub fn set_torrent_port(&self, port: Option<Arc<dyn crate::ports::TorrentPort>>) {
+        *self.torrent.lock().unwrap() = port;
+    }
+
+    pub fn has_torrent(&self) -> bool {
+        self.torrent.lock().unwrap().is_some()
+    }
+
     pub fn set_media_merge(&self, port: Option<Arc<dyn crate::ports::MediaMergePort>>) {
         *self.media_merge.lock().unwrap() = port;
     }
@@ -590,6 +604,10 @@ impl DownloadManager {
 
     /// Inspect a URL and register a download without starting it.
     pub async fn add(&self, url: &str, cfg: DownloadConfig) -> Result<AddedDownload, EngineError> {
+        // magnet links and .torrent sources route to the BitTorrent engine
+        if crate::ports::is_torrent_source(url) {
+            return self.add_torrent(url, cfg).await;
+        }
         Self::validate_url(url)?;
         let mut cfg = cfg;
         let headers = RequestHeaders::from_config(
@@ -723,6 +741,309 @@ impl DownloadManager {
         })
     }
 
+    /// Register a torrent row (magnet URI, http(s) .torrent URL, or local
+    /// .torrent path). The torrent is added to the session PAUSED so metadata
+    /// (name/size) lands in the row without starting traffic; start() unpauses.
+    async fn add_torrent(
+        &self,
+        url: &str,
+        mut cfg: DownloadConfig,
+    ) -> Result<AddedDownload, EngineError> {
+        let port = self.torrent.lock().unwrap().clone().ok_or_else(|| {
+            EngineError::new(
+                ErrorKind::InvalidConfig,
+                "torrent support is not available — the BitTorrent engine is not configured",
+            )
+        })?;
+        let dest_dir = cfg
+            .out_dir
+            .clone()
+            .unwrap_or_else(|| self.engine.default_out_dir.clone());
+
+        // duplicate detection: same source + destination → point at the record
+        if let Ok(Some(existing)) = self.db.find_same_destination(url, &dest_dir.display().to_string(), "") {
+            // empty name matches any row at this destination+url
+            return Ok(AddedDownload {
+                id: existing.id,
+                filename: existing.final_name.clone(),
+                dest_dir: existing.dest_dir.clone(),
+                temp_path: existing.temp_path.clone().unwrap_or_default(),
+                total_size: existing.total_size.map(|t| t as u64),
+                accept_ranges: existing.accept_ranges.clone(),
+                resumable: "yes",
+                resumed_from: existing.received.max(0) as u64,
+                existing_id: Some(existing.id),
+            });
+        }
+
+        let added = port.add(url, &dest_dir, true).await?;
+        let final_name = added
+            .name
+            .clone()
+            .unwrap_or_else(|| format!("torrent-{}", &added.info_hash_hex[..12.min(added.info_hash_hex.len())]));
+
+        cfg.torrent_id = Some(added.id);
+        let row = DownloadRow {
+            url: url.to_string(),
+            resolved_url: None,
+            dest_dir: dest_dir.display().to_string(),
+            final_name: final_name.clone(),
+            total_size: added.total_bytes.map(|t| t as i64),
+            mime: Some("application/x-bittorrent".into()),
+            accept_ranges: "no".into(),
+            mode: "torrent".into(),
+            state: states::CREATED.to_string(),
+            max_connections: 0,
+            config_json: serde_json::to_string(&cfg).unwrap_or_else(|_| "{}".into()),
+            ..Default::default()
+        };
+        let id = self.db.insert_download(&row).map_err(db_err)?;
+        let mut row = row;
+        row.id = id;
+        self.db.update_download(&row).map_err(db_err)?;
+        info!(id, torrent_id = added.id, name = %final_name, "torrent added (paused)");
+        if let Some(n) = &added.name {
+            // honest metadata event (no row content changed — name only known now)
+            let _ = self.events.send(crate::events::Event::Resolved {
+                url: url.to_string(),
+                note: Some(format!("torrent: {n}")),
+            });
+        }
+
+        Ok(AddedDownload {
+            id,
+            filename: final_name,
+            dest_dir: dest_dir.display().to_string(),
+            temp_path: String::new(),
+            total_size: added.total_bytes,
+            accept_ranges: "no".into(),
+            resumable: "yes",
+            resumed_from: 0,
+            existing_id: None,
+        })
+    }
+
+    /// Torrent rows bypass the HTTP task machinery entirely: unpause in the
+    /// session, then supervise stats → rows/events until terminal.
+    async fn start_torrent(self: Arc<Self>, id: i64, row: DownloadRow) -> Result<(), EngineError> {
+        if self.running.lock().unwrap().contains_key(&id) {
+            return Ok(());
+        }
+        let port = self.torrent.lock().unwrap().clone().ok_or_else(|| {
+            EngineError::new(
+                ErrorKind::InvalidConfig,
+                "torrent support is not available — the BitTorrent engine is not configured",
+            )
+        })?;
+        let cfg: DownloadConfig = serde_json::from_str(&row.config_json).unwrap_or_default();
+        let Some(tid) = cfg.torrent_id else {
+            return Err(EngineError::new(
+                ErrorKind::InvalidConfig,
+                "torrent row is missing its engine id; re-add the torrent",
+            ));
+        };
+        port.unpause(tid).await?;
+
+        let (cmd_tx, cmd_rx) = watch::channel(TaskCommand::Run);
+        self.running.lock().unwrap().insert(
+            id,
+            RunningTask {
+                cmd: cmd_tx.clone(),
+                live_table: Arc::new(Mutex::new(None)),
+            },
+        );
+        let mut row = row;
+        row.state = states::DOWNLOADING.to_string();
+        row.error_code = None;
+        row.error_message = None;
+        self.db.update_download(&row).map_err(db_err)?;
+        self.events
+            .send(crate::events::Event::DownloadState {
+                id,
+                state: states::DOWNLOADING.to_string(),
+            })
+            .ok();
+
+        let this = self.clone();
+        tokio::spawn(async move {
+            this.run_torrent_supervisor(id, tid, port, cmd_rx).await;
+        });
+        Ok(())
+    }
+
+    /// Poll the torrent session (2 s) and mirror progress into the row. Pause/
+    /// cancel arrive through the same watch channel HTTP tasks use, so the
+    /// manager's settle deadlines work unchanged.
+    async fn run_torrent_supervisor(
+        self: Arc<Self>,
+        id: i64,
+        tid: i64,
+        port: Arc<dyn crate::ports::TorrentPort>,
+        mut cmd: watch::Receiver<TaskCommand>,
+    ) {
+        let mut last_received = 0u64;
+        let mut last_tick = std::time::Instant::now();
+        let mut speed = 0f64;
+        let mut final_name: Option<String> = None;
+        loop {
+            tokio::select! {
+                _ = tokio::time::sleep(Duration::from_secs(2)) => {}
+                _ = cmd.changed() => {
+                    let c = *cmd.borrow_and_update();
+                    match c {
+                        TaskCommand::Pause => {
+                            let _ = port.pause(tid).await;
+                            if let Ok(Some(mut r)) = self.db.get_download(id) {
+                                r.state = states::PAUSED.to_string();
+                                let _ = self.db.update_download(&r);
+                                self.events
+                                    .send(crate::events::Event::DownloadState {
+                                        id,
+                                        state: states::PAUSED.to_string(),
+                                    })
+                                    .ok();
+                            }
+                            break;
+                        }
+                        TaskCommand::Cancel => {
+                            let _ = port.remove(tid, false).await;
+                            if let Ok(Some(mut r)) = self.db.get_download(id) {
+                                r.state = states::CANCELLED.to_string();
+                                let _ = self.db.update_download(&r);
+                                self.events
+                                    .send(crate::events::Event::DownloadState {
+                                        id,
+                                        state: states::CANCELLED.to_string(),
+                                    })
+                                    .ok();
+                            }
+                            break;
+                        }
+                        TaskCommand::Run => {}
+                    }
+                    continue;
+                }
+            }
+            match port.stats(tid).await {
+                Ok(Some(st)) => {
+                    if let Some(e) = st.error {
+                        if let Ok(Some(mut r)) = self.db.get_download(id) {
+                            r.state = states::FAILED.to_string();
+                            r.error_code = Some("TORRENT".into());
+                            r.error_message = Some(e.clone());
+                            let _ = self.db.update_download(&r);
+                        }
+                        self.events
+                            .send(crate::events::Event::Failed {
+                                id,
+                                kind: "TORRENT".into(),
+                                message: e,
+                            })
+                            .ok();
+                        break;
+                    }
+                    if let Some(n) = &st.name {
+                        final_name = Some(n.clone());
+                    }
+                    let now = std::time::Instant::now();
+                    let dt = now.duration_since(last_tick).as_secs_f64().max(0.001);
+                    let inst = (st.progress_bytes.saturating_sub(last_received)) as f64 / dt;
+                    speed = if speed == 0.0 { inst } else { speed * 0.7 + inst * 0.3 };
+                    last_tick = now;
+                    last_received = st.progress_bytes;
+                    self.events
+                        .send(crate::events::Event::Progress {
+                            id,
+                            received: st.progress_bytes,
+                            total: Some(st.total_bytes).filter(|t| *t > 0),
+                            speed_bps: speed,
+                            connections: 0,
+                        })
+                        .ok();
+                    if let Ok(Some(mut r)) = self.db.get_download(id) {
+                        r.received = st.progress_bytes as i64;
+                        if st.total_bytes > 0 {
+                            r.total_size = Some(st.total_bytes as i64);
+                        }
+                        if let Some(n) = &st.name {
+                            if !n.is_empty() {
+                                r.final_name = n.clone();
+                            }
+                        }
+                        let _ = self.db.update_download(&r);
+                    }
+                    if st.finished {
+                        let name = final_name.unwrap_or_else(|| format!("torrent-{tid}"));
+                        let path = {
+                            // the torrent's files live under dest_dir/<name>
+                            let base = self
+                                .db
+                                .get_download(id)
+                                .ok()
+                                .flatten()
+                                .map(|r| r.dest_dir)
+                                .unwrap_or_default();
+                            std::path::Path::new(&base).join(&name)
+                        };
+                        let size = st.progress_bytes;
+                        if let Ok(Some(mut r)) = self.db.get_download(id) {
+                            r.state = states::COMPLETED.to_string();
+                            r.final_name = name.clone();
+                            r.received = size as i64;
+                            r.temp_path = None;
+                            r.completed_at = Some(engine_state::now_iso());
+                            let _ = self.db.update_download(&r);
+                        }
+                        self.events
+                            .send(crate::events::Event::Completed {
+                                id,
+                                path: path.display().to_string(),
+                                size,
+                                sha256: None,
+                                blake3: None,
+                            })
+                            .ok();
+                        // thumbnail for the finished video file if applicable
+                        if let Some(p) = std::path::Path::new(&path)
+                            .extension()
+                            .and_then(|e| e.to_str())
+                            .map(|e| e.to_ascii_lowercase())
+                        {
+                            if matches!(
+                                p.as_str(),
+                                "mp4" | "mkv" | "webm" | "mov" | "m4v" | "avi"
+                            ) {
+                                self.maybe_spawn_frame_thumb(id, &path);
+                            }
+                        }
+                        break;
+                    }
+                }
+                Ok(None) => {
+                    // the torrent vanished from the session (removed underneath us)
+                    if let Ok(Some(mut r)) = self.db.get_download(id) {
+                        r.state = states::FAILED.to_string();
+                        r.error_code = Some("TORRENT".into());
+                        r.error_message = Some("torrent is no longer in the session".into());
+                        let _ = self.db.update_download(&r);
+                    }
+                    self.events
+                        .send(crate::events::Event::Failed {
+                            id,
+                            kind: "TORRENT".into(),
+                            message: "torrent is no longer in the session".into(),
+                        })
+                        .ok();
+                    break;
+                }
+                Err(e) => {
+                    warn!(id, error = %e.message, "torrent stats poll failed (transient)");
+                }
+            }
+        }
+        self.running.lock().unwrap().remove(&id);
+    }
+
     /// Start (or resume) a registered download.
     pub async fn start(self: Arc<Self>, id: i64) -> Result<(), EngineError> {
         if self.running.lock().unwrap().contains_key(&id) {
@@ -744,6 +1065,9 @@ impl DownloadManager {
                 ErrorKind::InvalidConfig,
                 "download was cancelled",
             ));
+        }
+        if row.mode == "torrent" {
+            return self.start_torrent(id, row).await;
         }
         // admission control (UI_READINESS §2.3): when the cap is reached, start()
         // returns IMMEDIATELY with the row marked queued and the runner waits for the
@@ -1645,6 +1969,22 @@ impl DownloadManager {
     /// `removed` state event lets UIs drop the row immediately.
     pub async fn remove(&self, id: i64, delete_file: bool) -> Result<(), EngineError> {
         self.forget_speed_stats(id);
+        // torrents: forget them in the session too (idempotent; completed rows
+        // have no running task, so the running-settle path below never fires)
+        if let Ok(Some(row)) = self.db.get_download(id) {
+            if row.mode == "torrent" {
+                if let Ok(cfg) = serde_json::from_str::<DownloadConfig>(&row.config_json) {
+                    if let Some(tid) = cfg.torrent_id {
+                        // clone the Arc out of the lock — the guard must not
+                        // cross the .await (spawned futures are Send-checked)
+                        let port = self.torrent.lock().unwrap().clone();
+                        if let Some(port) = port {
+                            let _ = port.remove(tid, delete_file).await;
+                        }
+                    }
+                }
+            }
+        }
         // never delete state under a live task (same guardrail as cancel, audit B1)
         if let Some(entry) = self.running_snapshot(id) {
             let _ = entry.cmd.send(TaskCommand::Cancel);
@@ -1662,7 +2002,13 @@ impl DownloadManager {
             .ok_or_else(|| EngineError::new(ErrorKind::InvalidConfig, "unknown download id"))?;
         if delete_file && row.state == states::COMPLETED {
             let p = std::path::Path::new(&row.dest_dir).join(&row.final_name);
-            match std::fs::remove_file(&p) {
+            // torrent artifacts may be FOLDERS (multi-file torrents)
+            let res = if p.is_dir() {
+                std::fs::remove_dir_all(&p)
+            } else {
+                std::fs::remove_file(&p)
+            };
+            match res {
                 Ok(()) => {}
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
                 Err(e) => {

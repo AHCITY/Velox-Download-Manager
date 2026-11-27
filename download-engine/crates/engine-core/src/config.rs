@@ -138,6 +138,10 @@ pub struct DownloadConfig {
     /// the fetched image itself lives in <data_dir>/thumbs/<id>.jpg.
     #[serde(default)]
     pub thumbnail_url: Option<String>,
+    /// BitTorrent engine id for torrent rows (magnet/.torrent). Persisted so
+    /// pause/resume/cancel survive an app restart (the session restores ids).
+    #[serde(default)]
+    pub torrent_id: Option<i64>,
 }
 
 /// Container/format choice for media downloads.
