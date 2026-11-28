@@ -119,3 +119,32 @@ of every built-in theme:
 - Want to build on a built-in? Copy `soft-canopy.json`, change its `id`, tweak
   the colors, drop it in the same folder — it installs as a third-party theme
   after the WCAG check.
+
+## Community themes (online catalog)
+
+Settings → Appearance → **Community themes** opens the community catalog: a
+modal listing downloadable third-party themes from the configured online
+sources, with a live preview and one-click download.
+
+- Sources are configured in `web/assets/themes.js` → `COMMUNITY_SOURCES`
+  (array of registry URLs). The catalog ships EMPTY — no registry is announced
+  yet; adding one URL is all it takes to light the catalog up.
+- A registry serves JSON of the shape
+  `{ "themes": [ { "id", "name", "type", "base", "author", "version",
+  "description", "colors": { … } } ] }` — a bare themes array works too.
+- Every entry runs through the same `sanitizeTheme()` gate as local installs:
+  only known color variables, only safe color values, WCAG contrast check.
+  Invalid entries are dropped and never offered.
+- **Preview** applies the theme live (same rendering path as `applyTheme`)
+  but never persists — closing the dialog or pressing "Stop preview" reverts.
+- **Download** persists the theme: browser mode in localStorage
+  (`velox.community.themes.v1`), desktop ALSO in the themes folder via the
+  existing `theme_install` command. Downloaded themes appear in the picker
+  like any installed theme and survive restarts (boot re-registers them
+  before the active theme is restored).
+- Downloaded themes that are no longer in the catalog (offline registry,
+  removed source, or no sources configured) stay listed and usable under
+  "Your downloaded themes".
+- The whole dialog is built from the shared `.overlay`/`.dialog` primitives
+  and theme variables only — it inherits every theme (built-in or custom)
+  with no extra styling work.

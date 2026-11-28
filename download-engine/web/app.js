@@ -14,7 +14,7 @@ import {
   $, el, esc, renderToasts, detailsDrawer, paintDetails, actions, contextMenu, openDialog,
 } from './assets/ui.js';
 import { openAddDialog } from './assets/screens/addDialog.js';
-import { initThemes, listInstalledThemes } from './assets/themes.js';
+import { initThemes, listInstalledThemes, restoreSavedCommunityThemes } from './assets/themes.js';
 
 const ROUTES = {
   downloads: { label: 'Downloads', icon: 'list', mod: () => import('./assets/screens/downloads.js') },
@@ -300,6 +300,7 @@ async function boot() {
   drawer = detailsDrawer();
   renderToasts($('#toasts'));
   await bootstrap();
+  restoreSavedCommunityThemes(); // downloaded community themes must exist before the picker restores the active one
   initThemes(store.prefs.theme);
   listInstalledThemes().then(() => { if (!store.prefs.theme) initThemes(null); });
   import('./assets/updater.js').then((m) => m.initUpdater());

@@ -371,3 +371,170 @@ export async function listInstalledThemes() {
     return []; // browser preview / command unavailable
   }
 }
+
+/* ------------------------------------------------------------------ */
+/* Community themes (online catalog + live preview + downloads)        */
+/* ------------------------------------------------------------------ */
+
+// Registry URLs that list downloadable community themes. EMPTY on purpose
+// for now: the browser UI ships first, a public theme registry comes later —
+// adding URLs here is all it takes to light the catalog up.
+// Each source must serve a JSON manifest of the shape
+//   { "themes": [ { "id": "ocean", "name": "Ocean", "type": "dark",
+//       "author": "…", "version": "1.0", "description": "…",
+//       "colors": { "--bg0": "…", … } } ] }
+// (a bare themes array is accepted too). Every entry runs through the same
+// sanitizeTheme() gate as a local install — community themes are DATA,
+// never code, and must pass the WCAG contrast check before being offered.
+export const COMMUNITY_SOURCES = [];
+
+const LS_COMMUNITY = 'velox.community.themes.v1';
+
+export function listCommunitySources() { return [...COMMUNITY_SOURCES]; }
+
+function readCommunityStore() {
+  try {
+    const arr = JSON.parse(localStorage.getItem(LS_COMMUNITY) || '[]');
+    return Array.isArray(arr) ? arr.filter((e) => e && typeof e === 'object') : [];
+  } catch { return []; }
+}
+
+function writeCommunityStore(list) {
+  try { localStorage.setItem(LS_COMMUNITY, JSON.stringify(list)); } catch { /* private mode */ }
+}
+
+function tauri() {
+  try { return typeof window !== 'undefined' ? window.__TAURI__ : null; } catch { return null; }
+}
+
+/** One manifest → catalog items (valid) + skipped count. Throws on bad shape. */
+function catalogFromManifest(data, sourceUrl) {
+  const entries = Array.isArray(data) ? data
+    : (data && typeof data === 'object' && Array.isArray(data.themes)) ? data.themes
+    : null;
+  if (!entries) throw new Error('manifest must be a themes array or {"themes":[…]}');
+  const items = []; let skipped = 0;
+  for (const raw of entries) {
+    const meta = {
+      source: sourceUrl,
+      description: typeof raw?.description === 'string' ? raw.description.slice(0, 160) : '',
+      homepage: typeof raw?.homepage === 'string' && /^https?:\/\//i.test(raw.homepage)
+        ? raw.homepage : '',
+    };
+    const res = sanitizeTheme(raw);
+    if (res.ok) items.push({ ...meta, theme: res.theme, raw });
+    else skipped += 1; // invalid entries are never offered — silently dropped
+  }
+  return { items, skipped };
+}
+
+/**
+ * Fetch every configured community source. Network/manifest failures are
+ * reported per source and never abort the whole catalog; entries are deduped
+ * by theme id (first source wins). `fetchImpl` is injectable for tests.
+ */
+export async function fetchCommunityCatalog(sources = COMMUNITY_SOURCES, fetchImpl) {
+  const f = fetchImpl || (typeof fetch === 'function' ? fetch : null);
+  const items = []; const sourceErrors = []; let skipped = 0;
+  const seen = new Set();
+  for (const url of sources) {
+    try {
+      if (!f) throw new Error('fetch is unavailable in this environment');
+      const res = await f(url, { headers: { Accept: 'application/json' } });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      const part = catalogFromManifest(data, url);
+      skipped += part.skipped;
+      for (const it of part.items) {
+        if (seen.has(it.theme.id)) continue;
+        seen.add(it.theme.id);
+        items.push(it);
+      }
+    } catch (e) {
+      sourceErrors.push({ url, message: String((e && e.message) || e) });
+    }
+  }
+  return { items, sourceErrors, skipped };
+}
+
+/** Downloaded community themes (browser mode) — re-validated on every read. */
+export function savedCommunityEntries() {
+  const out = [];
+  for (const e of readCommunityStore()) {
+    const res = sanitizeTheme(e.manifest);
+    if (res.ok) out.push({ savedAt: e.savedAt || 0, meta: e.meta || {}, theme: res.theme, raw: e.manifest });
+  }
+  return out;
+}
+
+export function isCommunitySaved(id) {
+  return readCommunityStore().some((e) => e?.manifest?.id === id);
+}
+
+/** Persist a community theme: browser → localStorage; desktop → ALSO the
+ *  app's themes folder via the existing theme_install command, so the theme
+ *  is available in both runtimes. */
+export async function saveCommunityTheme(manifest, meta = {}) {
+  const res = sanitizeTheme(manifest);
+  if (!res.ok) return { ok: false, errors: res.errors };
+  writeCommunityStore([
+    ...readCommunityStore().filter((e) => e?.manifest?.id !== res.theme.id),
+    { savedAt: Date.now(), meta, manifest },
+  ]);
+  registerCustomTheme(res.theme);
+  const t = tauri();
+  if (t?.core?.invoke) {
+    try { await t.core.invoke('theme_install', { json: JSON.stringify(manifest) }); }
+    catch { /* the localStorage copy still applies for this session */ }
+  }
+  return { ok: true, theme: res.theme };
+}
+
+export function removeSavedCommunityTheme(id) {
+  writeCommunityStore(readCommunityStore().filter((e) => e?.manifest?.id !== id));
+  unregisterCustomTheme(id);
+}
+
+/** Boot: re-register every downloaded community theme so getTheme() and the
+ *  theme picker can see them before settings restore the active one. */
+export function restoreSavedCommunityThemes() {
+  const entries = savedCommunityEntries();
+  for (const e of entries) registerCustomTheme(e.theme);
+  return entries.length;
+}
+
+/* Live preview (non-persistent): the same rendering path as applyTheme but
+ * without touching the persisted cache — a preview never survives a restart
+ * and is reverted by endThemePreview(). */
+let previewSnapshot = null;
+
+export function previewTheme(manifest) {
+  const res = sanitizeTheme(manifest);
+  if (!res.ok) return { ok: false, errors: res.errors };
+  const root = document.documentElement;
+  if (!previewSnapshot) {
+    previewSnapshot = {
+      dataset: root.dataset.theme || '',
+      scheme: root.style.colorScheme || '',
+      props: THEME_VARS.map((k) => root.style.getPropertyValue(k)),
+    };
+  }
+  root.dataset.theme = res.theme.built_in ? res.theme.id : 'custom';
+  root.style.colorScheme = res.theme.type;
+  for (const [k, v] of Object.entries(res.theme.colors)) root.style.setProperty(k, v);
+  return { ok: true, theme: res.theme };
+}
+
+export function endThemePreview() {
+  const snap = previewSnapshot;
+  previewSnapshot = null;
+  if (!snap || typeof document === 'undefined') return false;
+  const root = document.documentElement;
+  root.dataset.theme = snap.dataset;
+  root.style.colorScheme = snap.scheme;
+  THEME_VARS.forEach((k, i) => {
+    const v = snap.props[i];
+    if (v) root.style.setProperty(k, v); else root.style.removeProperty(k);
+  });
+  return true;
+}

@@ -7,7 +7,7 @@ import { checkNow, installUpdate, currentAppVersion } from '../updater.js';
 import { fmtBytes } from '../store.js';
 import { isDesktop, defaultDownloadDir, pickDirectory } from '../api.js';
 import { el, esc } from '../ui.js';
-import { BUILTIN_THEMES, customThemeList, applyTheme, registerCustomTheme, unregisterCustomTheme, sanitizeTheme, listInstalledThemes, getTheme } from '../themes.js';
+import { BUILTIN_THEMES, customThemeList, applyTheme, registerCustomTheme, unregisterCustomTheme, sanitizeTheme, listInstalledThemes, getTheme, listCommunitySources, fetchCommunityCatalog, savedCommunityEntries, isCommunitySaved, saveCommunityTheme, removeSavedCommunityTheme, previewTheme, endThemePreview } from '../themes.js';
 
 let built = false;
 let section = 'general';
@@ -224,13 +224,14 @@ function paintShell(root) {
 function themeRow() {
   const row = el(`<div class="setting-row"><div class="s-txt">
       <div class="s-name">Theme</div>
-      <div class="s-desc">Applies immediately and persists across restarts. Third-party themes (.json) can be installed below — see the Themes guide in the docs folder.</div>
+      <div class="s-desc">Applies immediately and persists across restarts. Third-party themes (.json) can be installed below, or browse the online community catalog.</div>
       <div class="theme-swatches" id="seThemeSw" style="margin-top:10px"></div>
       <div id="seThemeCustom" style="margin-top:10px"></div>
       <div id="seThemeErr" class="s-desc" style="color:var(--err);margin-top:6px"></div>
     </div>
     <div class="s-ctl" style="flex-direction:column;align-items:flex-end;gap:8px">
-      <button class="btn sm" id="seThemeInstall">${icon('plus', 12)} Install theme…</button>
+      <button class="btn sm" id="seThemeCommunity">${icon('globe', 12)} Community themes</button>
+      <button class="btn sm ghost" id="seThemeInstall">${icon('plus', 12)} Install theme…</button>
       <button class="btn sm ghost" id="seThemeReload">${icon('refresh', 12)} Refresh list</button>
     </div></div>`);
 
@@ -303,6 +304,7 @@ function themeRow() {
     await listInstalledThemes();
     paint();
   };
+  row.querySelector('#seThemeCommunity').onclick = () => openCommunityThemes({ repaint: paint });
   return row;
 }
 
@@ -350,4 +352,156 @@ function defaultDirRow() {
   }
   return row;
 }
+/* Community themes popup — Appearance → Community themes.
+ * Sources ship EMPTY for now (COMMUNITY_SOURCES in assets/themes.js): the
+ * modal, live preview and download flow are fully functional; pointing
+ * COMMUNITY_SOURCES at a registry lights the catalog up later. Downloaded
+ * themes persist in the browser and in the desktop themes folder, then show
+ * up in the picker above like any installed theme. The whole dialog uses the
+ * shared .overlay/.dialog primitives and theme variables — it inherits every
+ * theme automatically. */
+function openCommunityThemes({ repaint }) {
+  document.querySelectorAll('.ct-overlay').forEach((n) => n.remove());
+  const overlay = el(`<div class="overlay ct-overlay show"><div class="dialog" style="max-width:680px" role="dialog" aria-modal="true" aria-label="Community themes">
+    <div class="dialog-head"><h3 style="display:flex;align-items:center;gap:8px">${icon('globe', 14)} Community themes</h3>
+      <button class="theme-rm" id="ctClose" title="Close" aria-label="Close" style="position:static;width:24px;height:24px">${icon('x', 13)}</button></div>
+    <div class="dialog-body">
+      <div id="ctBanner"></div>
+      <div class="field" style="margin-bottom:10px"><input type="text" id="ctSearch" placeholder="Search community themes…" autocomplete="off"></div>
+      <div id="ctList"></div>
+    </div>
+    <div class="dialog-foot" style="justify-content:space-between;align-items:center;gap:10px">
+      <span class="s-desc" id="ctStatus" style="flex:1"></span>
+      <button class="btn sm ghost" id="ctRefresh">${icon('refresh', 12)} Refresh</button>
+    </div>
+  </div></div>`);
+  document.body.appendChild(overlay);
+  const list = overlay.querySelector('#ctList');
+  const banner = overlay.querySelector('#ctBanner');
+  const status = overlay.querySelector('#ctStatus');
+  const search = overlay.querySelector('#ctSearch');
+  let catalog = { items: [], sourceErrors: [], skipped: 0 };
+  let previewName = '';
+
+  const close = () => { endThemePreview(); document.removeEventListener('keydown', onKey); overlay.remove(); };
+  const onKey = (e) => { if (e.key === 'Escape') close(); };
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
+  document.addEventListener('keydown', onKey);
+  overlay.querySelector('#ctClose').onclick = close;
+
+  const paintBanner = () => {
+    banner.innerHTML = previewName
+      ? `<div class="ct-banner"><span>Previewing “${esc(previewName)}” — your theme is untouched until you apply one.</span>
+           <button class="btn sm ghost" id="ctStop">Stop preview</button></div>`
+      : '';
+    banner.querySelector('#ctStop')?.addEventListener('click', () => {
+      endThemePreview(); previewName = ''; paintBanner();
+    });
+  };
+
+  const card = ({ theme, raw, description }) => {
+    const saved = isCommunitySaved(theme.id);
+    const byline = [theme.author, theme.version ? `v${theme.version}` : ''].filter(Boolean).join(' · ') || 'community theme';
+    const actions = saved
+      ? `<button class="btn sm" data-act="use">${icon('check', 12)} Use theme</button>
+         <button class="btn sm ghost" data-act="remove">${icon('x', 11)} Remove</button>`
+      : `<button class="btn sm ghost" data-act="preview">${icon('eye', 12)} Preview</button>
+         <button class="btn sm" data-act="download">${icon('download', 12)} Download</button>`;
+    const node = el(`<div class="ct-card">
+      <span class="ct-sw" style="background:${theme.colors['--bg1']}" aria-hidden="true">
+        <span class="sw-bar" style="background:${theme.colors['--accent']}"></span>
+        <span class="sw-bar" style="background:${theme.colors['--ok']};width:60%"></span>
+        <span class="sw-bar" style="background:${theme.colors['--err']};width:38%"></span>
+      </span>
+      <div class="ct-meta">
+        <div class="ct-name">${esc(theme.name)} ${saved ? '<span class="ct-tag">saved</span>' : ''}
+          ${store.prefs.theme === theme.id ? '<span class="ct-tag ok">active</span>' : ''}</div>
+        <div class="ct-by">${esc(byline)}</div>
+        ${description ? `<div class="ct-desc">${esc(description)}</div>` : ''}
+        <div class="ct-actions">${actions}</div>
+      </div>
+    </div>`);
+    node.querySelector('[data-act="use"]')?.addEventListener('click', () => {
+      endThemePreview(); previewName = ''; paintBanner();
+      if (applyTheme(theme.id)) { setPrefs({ theme: theme.id }); toast('ok', 'Theme applied', theme.name); }
+      repaint(); render();
+    });
+    node.querySelector('[data-act="remove"]')?.addEventListener('click', () => {
+      removeSavedCommunityTheme(theme.id);
+      if (store.prefs.theme === theme.id) { setPrefs({ theme: 'dark' }); applyTheme('dark'); }
+      repaint(); render();
+    });
+    node.querySelector('[data-act="preview"]')?.addEventListener('click', () => {
+      endThemePreview(); previewName = '';
+      const res = previewTheme(raw);
+      if (res.ok) { previewName = theme.name; paintBanner(); }
+    });
+    node.querySelector('[data-act="download"]')?.addEventListener('click', async () => {
+      const btn = node.querySelector('[data-act="download"]');
+      if (btn) { btn.disabled = true; btn.textContent = 'Saving…'; }
+      const res = await saveCommunityTheme(raw, { description: description || '' });
+      if (!res.ok) {
+        toast('err', 'Theme rejected', (res.errors || []).slice(0, 2).join('; '));
+        render();
+        return;
+      }
+      toast('ok', 'Theme downloaded', res.theme.name);
+      repaint(); render();
+    });
+    return node;
+  };
+
+  const render = () => {
+    const q = search.value.trim().toLowerCase();
+    const hit = (...vals) => !q || vals.some((v) => (v || '').toLowerCase().includes(q));
+    const online = catalog.items.filter((it) => hit(it.theme.name, it.theme.author, it.description));
+    // downloaded themes that are NOT in the current catalog (offline registry,
+    // removed source, or no sources configured yet) — everything the catalog
+    // lists already carries its saved state on its own card
+    const onlineIds = new Set(catalog.items.map((it) => it.theme.id));
+    const saved = savedCommunityEntries()
+      .filter((e) => !onlineIds.has(e.theme.id))
+      .filter((e) => hit(e.theme.name, e.theme.author, e.meta.description));
+    const parts = [];
+    if (online.length) {
+      parts.push(el(`<div class="ct-section">Available online (${online.length})</div>`));
+      const wrap = el('<div class="ct-list"></div>');
+      for (const it of online) wrap.appendChild(card({ theme: it.theme, raw: it.raw, description: it.description }));
+      parts.push(wrap);
+    }
+    if (saved.length) {
+      parts.push(el(`<div class="ct-section">Your downloaded themes (${saved.length})</div>`));
+      const wrap = el('<div class="ct-list"></div>');
+      for (const e of saved) wrap.appendChild(card({ theme: e.theme, raw: e.raw, description: e.meta.description }));
+      parts.push(wrap);
+    }
+    if (!parts.length) {
+      const noSources = !listCommunitySources().length;
+      parts.push(el(`<div class="empty-state">
+        <h3>${noSources ? 'Community sources are not configured yet' : 'No community themes found'}</h3>
+        <p>${noSources
+          ? 'The community catalog ships empty for now — a public theme registry will be announced later. Once themes are published you will preview and download them right here.'
+          : 'Try a different search, or press Refresh to re-fetch the catalog.'}</p>
+      </div>`));
+    }
+    list.replaceChildren(...parts);
+    const sources = listCommunitySources();
+    const errs = catalog.sourceErrors || [];
+    status.innerHTML = sources.length
+      ? `${sources.length} source${sources.length > 1 ? 's' : ''} · ${catalog.items.length} theme${catalog.items.length === 1 ? '' : 's'} online · ${savedCommunityEntries().length} downloaded`
+        + (errs.length ? `<br><span style="color:var(--warn)">${esc(errs.map((e) => `${e.url}: ${e.message}`).join(' · '))}</span>` : '')
+      : 'No community sources configured yet — downloaded themes stay available and fully functional.';
+  };
+
+  const refresh = async () => {
+    list.replaceChildren(el('<div class="ct-empty">Loading community catalog…</div>'));
+    catalog = await fetchCommunityCatalog();
+    render();
+  };
+  overlay.querySelector('#ctRefresh').onclick = refresh;
+  search.addEventListener('input', render);
+  paintBanner();
+  refresh();
+}
+
 export { renderSettings as render };

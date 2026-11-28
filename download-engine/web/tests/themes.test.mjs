@@ -133,3 +133,108 @@ test('app.css :root defines exactly the theme variables (geometry excluded)', ()
   const cssVars = new Set([...rootBlock.matchAll(/^\s*(--[\w-]+)\s*:/gm)].map((m) => m[1]));
   for (const v of THEME_VARS) assert.ok(cssVars.has(v), `:root missing ${v}`);
 });
+
+/* ---------- community themes ---------- */
+
+const { COMMUNITY_SOURCES, getTheme, listCommunitySources, fetchCommunityCatalog, savedCommunityEntries,
+  isCommunitySaved, saveCommunityTheme, removeSavedCommunityTheme, restoreSavedCommunityThemes }
+  = await import('../assets/themes.js');
+
+// node has no localStorage — install a map-backed shim around each storage test
+async function withLocalStorage(run) {
+  const mem = new Map();
+  globalThis.localStorage = {
+    getItem: (k) => (mem.has(k) ? mem.get(k) : null),
+    setItem: (k, v) => mem.set(k, String(v)),
+    removeItem: (k) => mem.delete(k),
+  };
+  try { await run(); } finally { delete globalThis.localStorage; }
+}
+
+// accent-only override on the dark base — inherits every WCAG-checked pair
+const oceanManifest = {
+  id: 'ocean', name: 'Ocean', type: 'dark', base: 'dark',
+  author: 'Nova', version: '1.2', description: 'Deep sea blues for late-night downloading',
+  colors: {
+    '--accent': '#66c7ff', '--accent-h': '#8ad4ff',
+    '--accent-bg': 'rgba(102,199,255,.13)', '--on-accent': '#04121e',
+  },
+};
+
+test('community sources list ships empty (registry comes later)', () => {
+  assert.deepEqual(listCommunitySources(), []);
+  assert.deepEqual(COMMUNITY_SOURCES, []);
+});
+
+test('fetchCommunityCatalog parses manifests, dedupes ids and skips invalid entries', async () => {
+  const manifestA = {
+    themes: [
+      oceanManifest,
+      { ...oceanManifest, id: 'broken', colors: { '--t1': 'url(https://evil.example/x)' } },
+      { ...oceanManifest, id: 'ocean' }, // duplicate within one source
+    ],
+  };
+  const manifestB = [oceanManifest]; // bare array form from a second source
+  const fetchImpl = async (url) => {
+    if (url.includes('a-registry')) return { ok: true, status: 200, json: async () => manifestA };
+    if (url.includes('b-registry')) return { ok: true, status: 200, json: async () => manifestB };
+    return { ok: false, status: 404, json: async () => ({}) };
+  };
+  const res = await fetchCommunityCatalog(
+    ['https://a-registry.example/themes.json', 'https://b-registry.example/themes.json', 'https://dead.example/x.json'],
+    fetchImpl,
+  );
+  assert.equal(res.items.length, 1, 'deduped by theme id across sources');
+  assert.equal(res.items[0].theme.id, 'ocean');
+  assert.equal(res.items[0].theme.name, 'Ocean');
+  assert.equal(res.skipped, 1, 'invalid entry silently dropped, counted honestly');
+  assert.equal(res.sourceErrors.length, 1, 'dead source reported per source');
+  assert.match(res.sourceErrors[0].message, /HTTP 404/);
+  assert.deepEqual(res.items[0].theme.colors['--bg0'], BUILTIN_THEMES.dark.colors['--bg0'],
+    'catalog theme inherits unset variables from its base');
+});
+
+test('fetchCommunityCatalog rejects a malformed manifest shape per source', async () => {
+  const res = await fetchCommunityCatalog(['https://x.example/r.json'],
+    async () => ({ ok: true, status: 200, json: async () => ({ nope: true }) }));
+  assert.deepEqual(res.items, []);
+  assert.equal(res.sourceErrors.length, 1);
+  assert.match(res.sourceErrors[0].message, /manifest must be/);
+});
+
+test('save → restore → remove round-trip for downloaded community themes', async () => {
+  await withLocalStorage(async () => {
+    assert.equal(getTheme('ocean'), null, 'not registered yet in a fresh session');
+    assert.equal(await saveCommunityTheme({ id: 'nope', colors: { '--t1': 'url(x)' } }).then((r) => r.ok), false,
+      'invalid manifests are refused');
+    assert.equal(getTheme('ocean'), null, 'a refused manifest never registers');
+    const res = await saveCommunityTheme(oceanManifest, { description: oceanManifest.description });
+    assert.equal(res.ok, true, JSON.stringify(res.errors || []));
+    assert.equal(isCommunitySaved('ocean'), true);
+    assert.equal(getTheme('ocean')?.name, 'Ocean', 'saving registers the theme for this session');
+    // re-reads re-validate and inherit from the base
+    const entries = savedCommunityEntries();
+    assert.equal(entries.length, 1);
+    assert.equal(entries[0].theme.id, 'ocean');
+    assert.equal(entries[0].theme.colors['--bg0'], BUILTIN_THEMES.dark.colors['--bg0']);
+    // boot path: re-registering from storage is idempotent
+    assert.equal(restoreSavedCommunityThemes(), 1);
+    assert.equal(getTheme('ocean')?.name, 'Ocean');
+    // removing unregisters it again
+    removeSavedCommunityTheme('ocean');
+    assert.equal(isCommunitySaved('ocean'), false);
+    assert.equal(getTheme('ocean'), null);
+    assert.deepEqual(savedCommunityEntries(), []);
+  });
+});
+
+test('re-saving a community theme id replaces the stored manifest', async () => {
+  await withLocalStorage(async () => {
+    await saveCommunityTheme(oceanManifest, { description: 'v1' });
+    await saveCommunityTheme({ ...oceanManifest, version: '1.3' }, { description: 'v2' });
+    const entries = savedCommunityEntries();
+    assert.equal(entries.length, 1, 'no duplicate ids');
+    assert.equal(entries[0].theme.version, '1.3');
+    assert.equal(entries[0].meta.description, 'v2');
+  });
+});
