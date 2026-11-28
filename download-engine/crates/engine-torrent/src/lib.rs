@@ -64,11 +64,18 @@ impl TorrentEngine {
     ) -> Result<Arc<Self>, EngineError> {
         let session_dir = data_dir.join("torrents");
         std::fs::create_dir_all(&session_dir).map_err(io_err("cannot create torrent data dir"))?;
+        let listen = listen_options();
         let opts = SessionOptions {
             // DHT enabled (magnet resolution); trackers enabled; no persistence —
             // the Velox manifest is the single source of truth.
             persistence: None,
             fastresume: true,
+            // Accept inbound peer connections (seeding + swarm health). Without
+            // this the client can only connect OUT and behaves like a leech-only
+            // client. Default port 0 = ephemeral → several Velox instances can
+            // run side-by-side; set DXDL_TORRENT_PORT to a fixed port for NAT
+            // port-forwarding (UPnP runs by default, DXDL_TORRENT_UPNP=0 opt-out).
+            listen: Some(listen),
             ..Default::default()
         };
         let session = Session::new_with_opts(session_dir, opts)
@@ -393,6 +400,53 @@ fn stats_state_of(state: &TorrentStatsState, finished: bool) -> String {
 
 fn io_err(what: &'static str) -> impl Fn(std::io::Error) -> EngineError {
     move |e| EngineError::new(ErrorKind::Io, format!("{what}: {e}"))
+}
+
+/// Listener options for the librqbit session.
+///
+/// `DXDL_TORRENT_PORT` — fixed listen port (uTorrent-style "incoming port").
+/// Unset or 0 binds an EPHEMERAL port so several Velox instances can run
+/// side-by-side; each announces the port it actually bound. UPnP port
+/// forwarding is on by default (matches uTorrent/BitTorrent default), the
+/// announce port follows the bound port. `DXDL_TORRENT_UPNP=0` opts out.
+fn listen_options() -> librqbit::ListenerOptions {
+    let port = torrent_listen_port();
+    let upnp = std::env::var("DXDL_TORRENT_UPNP")
+        .ok()
+        .map(|v| v != "0" && !v.eq_ignore_ascii_case("false"))
+        .unwrap_or(true);
+    librqbit::ListenerOptions {
+        listen_addr: (std::net::Ipv6Addr::UNSPECIFIED, port).into(),
+        enable_upnp_port_forwarding: upnp,
+        ..Default::default()
+    }
+}
+
+fn torrent_listen_port() -> u16 {
+    std::env::var("DXDL_TORRENT_PORT")
+        .ok()
+        .and_then(|v| v.trim().parse::<u16>().ok())
+        .filter(|&p| p > 0)
+        .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn torrent_listen_port_env_overrides_ephemeral_default() {
+        // unset → ephemeral (0)
+        std::env::remove_var("DXDL_TORRENT_PORT");
+        assert_eq!(torrent_listen_port(), 0);
+        // garbage → ephemeral (0), honest fallback
+        std::env::set_var("DXDL_TORRENT_PORT", "not-a-port");
+        assert_eq!(torrent_listen_port(), 0);
+        // explicit port honored
+        std::env::set_var("DXDL_TORRENT_PORT", "4240");
+        assert_eq!(torrent_listen_port(), 4240);
+        std::env::remove_var("DXDL_TORRENT_PORT");
+    }
 }
 
 fn looks_like_placeholder(name: &str) -> bool {
