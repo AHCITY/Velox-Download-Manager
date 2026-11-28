@@ -49,6 +49,9 @@ pub trait MediaPipelinePort: Send + Sync {
 /// exact contract; `-c copy` is hardcoded — callers cannot introduce transcoding.
 /// ffmpeg args for MP3 extraction (yt-dlp -x parity: `-vn -q:a 0` VBR best).
 /// libmp3lame is LGPL — allowed in the LGPL-gated builds Velox bundles.
+/// The explicit `-f mp3` pins the muxer: conversions run through a crash-safe
+/// temp path (`<name>.mp3.converting.part`) whose suffix ffmpeg cannot infer a
+/// muxer from — same discipline as the stream-copy merges.
 pub fn build_mp3_args(input: &str, output: &str) -> Vec<String> {
     vec![
         "-y".into(),
@@ -62,6 +65,8 @@ pub fn build_mp3_args(input: &str, output: &str) -> Vec<String> {
         "libmp3lame".into(),
         "-q:a".into(),
         "0".into(),
+        "-f".into(),
+        "mp3".into(),
         output.into(),
     ]
 }

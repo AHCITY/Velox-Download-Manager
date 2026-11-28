@@ -1063,9 +1063,10 @@ impl DownloadManager {
             acfg.media_merge = None;
             acfg.verify = None;
             acfg.filename = spec.audio_name.clone();
-            Some((spec, acfg, row.dest_dir))
+            let user_filename = cfg.filename.clone();
+            Some((spec, acfg, row.dest_dir, user_filename))
         })();
-        let Some((spec, acfg, dest_dir)) = setup else {
+        let Some((spec, acfg, dest_dir, user_filename)) = setup else {
             self.media_jobs.lock().unwrap().remove(&video_id);
             return;
         };
@@ -1074,16 +1075,40 @@ impl DownloadManager {
         // audio half, no merge. The row keeps describing the final MP3.
         if spec.convert == Some(crate::config::MediaConvert::Mp3) {
             let row_file = std::path::Path::new(&dest_dir).join(self.video_final_name(video_id));
-            let out_name = spec
-                .output_name
-                .clone()
-                .unwrap_or_else(|| "audio.mp3".into());
+            // Output name priority (keep it simple — no "(merged)" suffixes, ever):
+            // 1) the name the user typed in the Add dialog → `<name>.mp3`;
+            // 2) the extractor's media-title name (the default from YouTube);
+            // 3) safe fallback "audio.mp3".
+            let user_stem = user_filename
+                .map(|n| n.trim().to_string())
+                .filter(|n| !n.is_empty())
+                .map(|u| match u.rsplit_once('.') {
+                    Some((s, e))
+                        if !e.is_empty()
+                            && e.len() <= 8
+                            && e.chars().all(|c| c.is_ascii_alphanumeric()) =>
+                    {
+                        s.to_string()
+                    }
+                    _ => u,
+                });
+            let out_name = match user_stem {
+                Some(stem) => crate::naming::sanitize_filename(&format!("{stem}.mp3")),
+                None => spec
+                    .output_name
+                    .clone()
+                    .unwrap_or_else(|| "audio.mp3".into()),
+            };
             let mut out = std::path::Path::new(&dest_dir).join(&out_name);
-            let mut n = 1u32;
-            while out.exists() {
-                let stem = out_name.trim_end_matches(".mp3");
-                out = std::path::Path::new(&dest_dir).join(format!("{stem}({n}).mp3"));
-                n += 1;
+            // In-place conversion is allowed when the MP3 takes the raw stream's own
+            // spot (the user typed that exact name): the raw file is an intermediate.
+            if out != row_file {
+                let mut n = 1u32;
+                while out.exists() {
+                    let stem = out_name.trim_end_matches(".mp3");
+                    out = std::path::Path::new(&dest_dir).join(format!("{stem}({n}).mp3"));
+                    n += 1;
+                }
             }
             let (kill_tx, kill_rx) = tokio::sync::watch::channel(false);
             self.merge_triggers
@@ -1091,9 +1116,18 @@ impl DownloadManager {
                 .unwrap()
                 .insert(video_id, kill_tx);
             let port = self.media_merge.lock().unwrap().clone();
+            // Crash-safe conversion (same discipline as merges): ffmpeg writes to a
+            // temp file; the user-visible name appears only after success. The port
+            // pins `-f mp3` so the muxer is chosen regardless of the temp suffix.
+            let part = std::path::Path::new(&dest_dir).join(format!(
+                "{}.converting.part",
+                out.file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_default()
+            ));
             let res = match port {
                 Some(port) => {
-                    port.convert_to_mp3(video_id, &row_file, &out, &self.events, kill_rx)
+                    port.convert_to_mp3(video_id, &row_file, &part, &self.events, kill_rx)
                         .await
                 }
                 None => Err(crate::error::EngineError::new(
@@ -1105,27 +1139,37 @@ impl DownloadManager {
             self.merge_triggers.lock().unwrap().remove(&video_id);
             match res {
                 Ok(()) => {
-                    // the row now describes the converted MP3
-                    if let Ok(Some(mut row)) = self.db.get_download(video_id) {
-                        if let Ok(mut cfg) =
-                            serde_json::from_str::<crate::config::DownloadConfig>(&row.config_json)
-                        {
-                            cfg.media_merge = None;
-                            if let Ok(json) = serde_json::to_string(&cfg) {
-                                row.config_json = json;
+                    if let Err(e) = std::fs::rename(&part, &out) {
+                        let _ = std::fs::remove_file(&part);
+                        warn!(video_id, error = %e, "media job: could not finalize the MP3 name");
+                    } else {
+                        // the row now describes the converted MP3
+                        if let Ok(Some(mut row)) = self.db.get_download(video_id) {
+                            if let Ok(mut cfg) = serde_json::from_str::<crate::config::DownloadConfig>(
+                                &row.config_json,
+                            ) {
+                                cfg.media_merge = None;
+                                if let Ok(json) = serde_json::to_string(&cfg) {
+                                    row.config_json = json;
+                                }
                             }
+                            row.final_name = out
+                                .file_name()
+                                .map(|n| n.to_string_lossy().into_owned())
+                                .unwrap_or_else(|| row.final_name.clone());
+                            row.total_size = std::fs::metadata(&out).ok().map(|m| m.len() as i64);
+                            let _ = self.db.update_download(&row);
                         }
-                        row.final_name = out
-                            .file_name()
-                            .map(|n| n.to_string_lossy().into_owned())
-                            .unwrap_or_else(|| row.final_name.clone());
-                        row.total_size = std::fs::metadata(&out).ok().map(|m| m.len() as i64);
-                        let _ = self.db.update_download(&row);
+                        // the raw stream is an intermediate — drop it, unless the MP3
+                        // replaced it in place (same name ⇒ nothing left to remove)
+                        if out != row_file {
+                            let _ = std::fs::remove_file(&row_file);
+                        }
+                        info!(video_id, "media job: MP3 extraction finalized");
                     }
-                    let _ = std::fs::remove_file(&row_file);
-                    info!(video_id, "media job: MP3 extraction finalized");
                 }
                 Err(e) => {
+                    let _ = std::fs::remove_file(&part);
                     warn!(video_id, error = %e.message, "media job: MP3 conversion failed");
                 }
             }
@@ -1283,11 +1327,33 @@ impl DownloadManager {
             .as_ref()
             .and_then(|m| m.output_ext.clone())
             .unwrap_or_else(|| "mp4".into());
-        let explicit_name = cfg
-            .media_merge
-            .as_ref()
-            .and_then(|m| m.output_name.clone())
-            .filter(|n| !n.is_empty());
+        // Output name priority (keep it simple — no "(merged)" suffixes, ever):
+        // 1) the name the user typed in the Add dialog, with the merged container
+        //    extension ("holiday" or "holiday.mp4" → "holiday.mp4");
+        // 2) the extractor's media-title name (the default from YouTube);
+        // 3) the video row's stem with the merged extension.
+        let user_stem = cfg
+            .filename
+            .clone()
+            .map(|n| n.trim().to_string())
+            .filter(|n| !n.is_empty())
+            .map(|u| match u.rsplit_once('.') {
+                Some((s, e))
+                    if !e.is_empty()
+                        && e.len() <= 8
+                        && e.chars().all(|c| c.is_ascii_alphanumeric()) =>
+                {
+                    s.to_string()
+                }
+                _ => u,
+            })
+            .map(|s| crate::naming::sanitize_filename(&format!("{s}.{ext}")));
+        let explicit_name = user_stem.or_else(|| {
+            cfg.media_merge
+                .as_ref()
+                .and_then(|m| m.output_name.clone())
+                .filter(|n| !n.is_empty())
+        });
         let mut output = match explicit_name {
             Some(name) => dest_dir.join(name),
             None => {
@@ -1299,7 +1365,13 @@ impl DownloadManager {
                 dest_dir.join(format!("{stem}.{ext}"))
             }
         };
-        if !cfg.overwrite {
+        // The raw video stream is an intermediate: when the merged artifact takes its
+        // exact spot (the user typed that name), replacing it in place is correct —
+        // ffmpeg reads it while writing the crash-safe temp, and the rename below
+        // happens only after the child exited. Collisions with any other existing
+        // file still dedupe to name(1).ext, name(2).ext, …
+        let in_place = output == video_path;
+        if !in_place && !cfg.overwrite {
             let mut n = 1;
             while output.exists() {
                 // (n) dedup works for both derived and explicit output names
@@ -1316,7 +1388,7 @@ impl DownloadManager {
                 n += 1;
             }
         }
-        if output == video_path || output == audio_path {
+        if output == audio_path {
             return Err(EngineError::new(
                 ErrorKind::InvalidConfig,
                 "merge output path would overwrite a source stream",
@@ -2310,6 +2382,208 @@ mod merge_tests {
             m.db.get_download(v).unwrap().unwrap().final_name,
             "video(1).mp4"
         );
+    }
+
+    /// Fake MP3 conversion stage: Ok writes the output (like ffmpeg would).
+    struct FakeConvert;
+
+    #[async_trait::async_trait]
+    impl crate::ports::MediaMergePort for FakeConvert {
+        async fn merge(
+            &self,
+            _id: i64,
+            _video: &std::path::Path,
+            _audio: &std::path::Path,
+            _output: &std::path::Path,
+            _bus: &crate::events::EventBus,
+            _kill: tokio::sync::watch::Receiver<bool>,
+        ) -> Result<(), EngineError> {
+            Err(EngineError::new(
+                ErrorKind::MergeFailed,
+                "merge unused in convert tests",
+            ))
+        }
+
+        async fn convert_to_mp3(
+            &self,
+            _id: i64,
+            _input: &std::path::Path,
+            output: &std::path::Path,
+            _bus: &crate::events::EventBus,
+            _kill: tokio::sync::watch::Receiver<bool>,
+        ) -> Result<(), EngineError> {
+            std::fs::write(output, b"mp3-bytes")
+                .map_err(|e| EngineError::new(ErrorKind::Io, format!("write failed: {e}")))?;
+            Ok(())
+        }
+    }
+
+    fn no_converting_residue(dest: &std::path::Path) -> bool {
+        std::fs::read_dir(dest)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .any(|e| {
+                e.file_name()
+                    .to_string_lossy()
+                    .ends_with(".converting.part")
+            })
+    }
+
+    /// The user typed their own name ("My Trip") while the extractor proposed the
+    /// media title ("T.mp4"): the user's name wins, plain — no "(merged)" suffix.
+    #[tokio::test]
+    async fn merge_output_prefers_the_user_filename_over_media_title() {
+        let data = tempfile::tempdir().unwrap();
+        let dest = tempfile::tempdir().unwrap();
+        let m = mgr(data.path());
+        std::fs::write(dest.path().join("video.m4s"), b"v").unwrap();
+        std::fs::write(dest.path().join("audio.m4s"), b"a").unwrap();
+        let cfg = r#"{"filename":"My Trip","media_merge":{"audio_url":"https://example.com/a.m4a","output_ext":"mp4","output_name":"T.mp4"}}"#;
+        let v =
+            m.db.insert_download(&completed_row(dest.path(), "video.m4s", cfg))
+                .unwrap();
+        let a =
+            m.db.insert_download(&completed_row(dest.path(), "audio.m4s", "{}"))
+                .unwrap();
+        m.set_media_merge(Some(Arc::new(FakeMerge(Mode::Ok))));
+
+        m.merge_streams(v, a).await.unwrap();
+
+        let row = m.db.get_download(v).unwrap().unwrap();
+        assert_eq!(
+            row.final_name, "My Trip.mp4",
+            "user filename wins, no suffixes"
+        );
+        assert_eq!(
+            std::fs::read(dest.path().join("My Trip.mp4")).unwrap(),
+            b"merged-bytes"
+        );
+        assert!(
+            !dest.path().join("T.mp4").exists(),
+            "media title must not be used when the user named the file"
+        );
+    }
+
+    /// The user typed the exact final name ("holiday.mp4"), which is also the raw
+    /// stream's name: the merged artifact replaces it in place — no (1) bump, no
+    /// residue, one file.
+    #[tokio::test]
+    async fn merge_output_keeps_user_name_in_place_when_it_matches_the_stream() {
+        let data = tempfile::tempdir().unwrap();
+        let dest = tempfile::tempdir().unwrap();
+        let m = mgr(data.path());
+        std::fs::write(dest.path().join("holiday.mp4"), b"v").unwrap();
+        std::fs::write(dest.path().join("audio.m4a"), b"a").unwrap();
+        let cfg = r#"{"filename":"holiday.mp4","media_merge":{"audio_url":"https://example.com/a.m4a","output_ext":"mp4"}}"#;
+        let v =
+            m.db.insert_download(&completed_row(dest.path(), "holiday.mp4", cfg))
+                .unwrap();
+        let a =
+            m.db.insert_download(&completed_row(dest.path(), "audio.m4a", "{}"))
+                .unwrap();
+        m.set_media_merge(Some(Arc::new(FakeMerge(Mode::Ok))));
+
+        m.merge_streams(v, a).await.unwrap();
+
+        let row = m.db.get_download(v).unwrap().unwrap();
+        assert_eq!(row.state, states::COMPLETED);
+        assert_eq!(row.final_name, "holiday.mp4");
+        assert_eq!(
+            std::fs::read(dest.path().join("holiday.mp4")).unwrap(),
+            b"merged-bytes",
+            "merged artifact replaced the raw stream in place"
+        );
+        assert!(!dest.path().join("holiday(1).mp4").exists());
+        let residue = std::fs::read_dir(dest.path())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .any(|e| e.file_name().to_string_lossy().ends_with(".merging.part"));
+        assert!(!residue, "merge residue leaked into the out dir");
+    }
+
+    /// MP3 path: the user's own name wins over the extractor's media title, and
+    /// the conversion is crash-safe (temp file, renamed only after success).
+    #[tokio::test]
+    async fn mp3_convert_prefers_the_user_filename() {
+        let data = tempfile::tempdir().unwrap();
+        let dest = tempfile::tempdir().unwrap();
+        let m = mgr(data.path());
+        m.set_media_merge(Some(Arc::new(FakeConvert)));
+        let cfg_json = serde_json::to_string(&DownloadConfig {
+            filename: Some("My Song".into()),
+            media_merge: Some(crate::config::MediaMergeSpec {
+                audio_url: String::new(),
+                output_ext: Some("mp3".into()),
+                output_name: Some("T.mp3".into()),
+                audio_name: None,
+                convert: Some(crate::config::MediaConvert::Mp3),
+            }),
+            ..Default::default()
+        })
+        .unwrap();
+        std::fs::write(dest.path().join("My Song"), b"raw-audio").unwrap();
+        let v =
+            m.db.insert_download(&completed_row(dest.path(), "My Song", &cfg_json))
+                .unwrap();
+
+        m.clone().run_media_job(v).await;
+
+        let row = m.db.get_download(v).unwrap().unwrap();
+        assert_eq!(row.state, states::COMPLETED);
+        assert_eq!(
+            row.final_name, "My Song.mp3",
+            "user filename wins, no suffixes"
+        );
+        assert_eq!(
+            std::fs::read(dest.path().join("My Song.mp3")).unwrap(),
+            b"mp3-bytes"
+        );
+        assert!(
+            !dest.path().join("My Song").exists(),
+            "raw stream removed after conversion"
+        );
+        assert!(
+            !dest.path().join("T.mp3").exists(),
+            "media title unused when the user named the file"
+        );
+        assert!(
+            !no_converting_residue(dest.path()),
+            "conversion residue leaked into the out dir"
+        );
+    }
+
+    /// MP3 path without a user name: the extractor's media-title name is kept.
+    #[tokio::test]
+    async fn mp3_convert_without_user_name_keeps_media_title() {
+        let data = tempfile::tempdir().unwrap();
+        let dest = tempfile::tempdir().unwrap();
+        let m = mgr(data.path());
+        m.set_media_merge(Some(Arc::new(FakeConvert)));
+        let cfg_json = serde_json::to_string(&DownloadConfig {
+            media_merge: Some(crate::config::MediaMergeSpec {
+                audio_url: String::new(),
+                output_ext: Some("mp3".into()),
+                output_name: Some("T.mp3".into()),
+                audio_name: None,
+                convert: Some(crate::config::MediaConvert::Mp3),
+            }),
+            ..Default::default()
+        })
+        .unwrap();
+        std::fs::write(dest.path().join("T (audio).webm"), b"raw-audio").unwrap();
+        let v =
+            m.db.insert_download(&completed_row(dest.path(), "T (audio).webm", &cfg_json))
+                .unwrap();
+
+        m.clone().run_media_job(v).await;
+
+        let row = m.db.get_download(v).unwrap().unwrap();
+        assert_eq!(row.final_name, "T.mp3");
+        assert_eq!(
+            std::fs::read(dest.path().join("T.mp3")).unwrap(),
+            b"mp3-bytes"
+        );
+        assert!(!dest.path().join("T (audio).webm").exists());
     }
 
     /// Resume path: the audio row ALREADY EXISTS (crash mid-job; media URLs such as
